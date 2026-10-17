@@ -1,5 +1,6 @@
 """Create local configuration without overwriting an existing file."""
 import secrets
+import base64
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
@@ -9,6 +10,7 @@ if target.exists():
 example = (root / ".env.example").read_text()
 example = example.replace("ADBOT_API_KEYS=\n", "ADBOT_API_KEYS=" + secrets.token_urlsafe(36) + "\n")
 example = example.replace("ADBOT_POSTGRES_PASSWORD=\n", "ADBOT_POSTGRES_PASSWORD=" + secrets.token_urlsafe(32) + "\n")
+example = example.replace("ADBOT_SESSION_ENCRYPTION_KEY=\n", "ADBOT_SESSION_ENCRYPTION_KEY=" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode() + "\n")
 with target.open("x", encoding="utf-8") as file:
     file.write(example)
 try:

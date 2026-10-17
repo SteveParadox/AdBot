@@ -122,6 +122,51 @@ class Lease(Base):
     expires_at: Mapped[float] = mapped_column(Float, default=0)
 
 
+class AgentTask(Base):
+    __tablename__ = "agent_tasks"
+    job_id: Mapped[str] = mapped_column(ForeignKey("automation_jobs.id", ondelete="CASCADE"), primary_key=True)
+    objective: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(String(16))
+    options: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    pending_step_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory: Mapped[dict] = mapped_column(JSON, default=dict)
+    encrypted_session: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    model_calls: Mapped[int] = mapped_column(Integer, default=0)
+    model_latency_ms: Mapped[float] = mapped_column(Float, default=0)
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+    __table_args__ = (UniqueConstraint("job_id", "number"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("agent_tasks.job_id", ondelete="CASCADE"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    observation: Mapped[dict] = mapped_column(JSON)
+    decision: Mapped[dict] = mapped_column(JSON, default=dict)
+    outcome: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(24), default="observed")
+    approved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    user_answer: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AgentMemory(Base):
+    __tablename__ = "agent_memories"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    owner: Mapped[str] = mapped_column(String(64), index=True)
+    website_id: Mapped[str] = mapped_column(ForeignKey("websites.id", ondelete="CASCADE"), index=True)
+    source_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("automation_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    objective: Mapped[str] = mapped_column(Text)
+    content: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    expires_at: Mapped[float] = mapped_column(Float, index=True)
+
+
 engine = create_engine(
     settings().database_url,
     pool_pre_ping=True,

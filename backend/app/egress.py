@@ -12,7 +12,7 @@ from .security import Policy, PolicyError
 
 
 @asynccontextmanager
-async def egress_proxy(policy: Policy):
+async def egress_proxy(policy: Policy, allow_method=None):
     clients: set[asyncio.Task] = set()
 
     async def handle(reader, writer):
@@ -24,7 +24,7 @@ async def egress_proxy(policy: Policy):
             method, target, version = header.split(b"\r\n", 1)[0].decode("ascii").split(" ")
             if method == "CONNECT":
                 url = "https://" + target
-            elif method in {"GET", "HEAD"}:
+            elif method in {"GET", "HEAD"} or (allow_method and allow_method(method, target)):
                 url = target
             else:
                 raise PolicyError("Read-only HTTP methods required")
@@ -40,6 +40,21 @@ async def egress_proxy(policy: Policy):
                 if parsed.query:
                     path += "?" + parsed.query
                 headers = [f"{method} {path} {version}", f"Host: {parsed.netloc}", "Connection: close"]
+                fields = {}
+                for line in header.decode("latin1").split("\r\n")[1:]:
+                    key, sep, value = line.partition(":")
+                    if sep:
+                        if key.lower() in fields:
+                            raise PolicyError("Duplicate HTTP headers are not supported")
+                        fields[key.lower()] = value.strip()
+                if "transfer-encoding" in fields:
+                    raise PolicyError("Chunked request bodies are unavailable")
+                length = int(fields.get("content-length", "0"))
+                if not 0 <= length <= 262144:
+                    raise PolicyError("Request body exceeds limit")
+                body = await asyncio.wait_for(reader.readexactly(length), 10) if length else b""
+                if method not in {"GET", "HEAD"}:
+                    headers.append(f"Content-Length: {len(body)}")
                 for line in header.decode("latin1").split("\r\n")[1:]:
                     if line and line.partition(":")[0].lower() not in {
                         "host",
@@ -50,7 +65,7 @@ async def egress_proxy(policy: Policy):
                         "content-length",
                     }:
                         headers.append(line)
-                remote.write(("\r\n".join(headers) + "\r\n\r\n").encode("latin1"))
+                remote.write(("\r\n".join(headers) + "\r\n\r\n").encode("latin1") + body)
                 await remote.drain()
             await writer.drain()
 
@@ -59,7 +74,9 @@ async def egress_proxy(policy: Policy):
                     destination.write(chunk)
                     await destination.drain()
 
-            pipes = [asyncio.create_task(pipe(reader, remote)), asyncio.create_task(pipe(upstream, writer))]
+            pipes = [asyncio.create_task(pipe(upstream, writer))]
+            if method == "CONNECT":
+                pipes.append(asyncio.create_task(pipe(reader, remote)))
             try:
                 await asyncio.wait(pipes, timeout=180, return_when=asyncio.FIRST_COMPLETED)
             finally:

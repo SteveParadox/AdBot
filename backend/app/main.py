@@ -1,18 +1,16 @@
 import asyncio
 import hashlib
-import hmac
 import json
 import logging
 import time
-from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from sqlalchemy import case, func, inspect, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
@@ -20,6 +18,9 @@ from .db import AutomationEvent, Frontier, Job, PageVisit, Schedule, Session, We
 from .jobs import TERMINAL, make_job, next_occurrence
 from .schemas import JobInput, ScheduleInput, SchedulePatch, WebsiteInput, WorkflowInput
 from .security import Policy
+from .api_support import Limit, Offset, Owner, collection, output, owned, workflow_for
+from .api_support import rate_windows as rate_windows
+from .agent.api import router as agent_router
 
 logger = logging.getLogger("adbot.api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -45,7 +46,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"],
 )
-rate_windows = defaultdict(deque)
+app.include_router(agent_router)
 
 
 @app.middleware("http")
@@ -76,65 +77,6 @@ async def headers(request, call_next):
         )
     )
     return response
-
-
-async def authenticate(request: Request, authorization: Annotated[str | None, Header()] = None):
-    token = (authorization or "").removeprefix("Bearer ")
-    if not any(hmac.compare_digest(token, k.strip()) for k in settings().api_keys.split(",")):
-        raise HTTPException(401, "Valid Bearer API key required", headers={"WWW-Authenticate": "Bearer"})
-    owner = hashlib.sha256(token.encode()).hexdigest()
-    redis = getattr(request.app.state, "redis", None)
-    if redis:
-        key = f"adbot:rate:{owner}:{int(time.time() // 60)}"
-        hits = await redis.incr(key)
-        await redis.expire(key, 120)
-        if hits > settings().rate_per_minute:
-            raise HTTPException(429, "Rate limit exceeded", headers={"Retry-After": "60"})
-    else:
-        window = rate_windows[owner]
-        now = time.monotonic()
-        while window and window[0] < now - 60:
-            window.popleft()
-        if len(window) >= settings().rate_per_minute:
-            raise HTTPException(429, "Rate limit exceeded", headers={"Retry-After": "60"})
-        window.append(now)
-    return owner
-
-
-Owner = Annotated[str, Depends(authenticate)]
-Offset = Annotated[int, Query(ge=0)]
-Limit = Annotated[int, Query(ge=1, le=200)]
-
-
-def owned(session, model, identifier, owner):
-    item = session.get(model, identifier)
-    if not item:
-        raise HTTPException(404, "Resource not found")
-    actual_owner = item.owner if hasattr(item, "owner") else session.get(Website, item.website_id).owner
-    if actual_owner != owner:
-        raise HTTPException(404, "Resource not found")
-    return item
-
-
-def output(item):
-    # Only column values; leases, owner identity, idempotency metadata and raw
-    # snapshots are internal and never returned to clients.
-    excluded = {"owner", "lease_token", "lease_until", "payload_hash", "idempotency_key", "snapshot"}
-    return {c.key: getattr(item, c.key) for c in inspect(item).mapper.column_attrs if c.key not in excluded}
-
-
-def collection(session, query, offset, limit):
-    count = session.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
-    return {"items": [output(item) for item in session.scalars(query.offset(offset).limit(limit))], "total": count}
-
-
-def workflow_for(session, identifier, website_id, owner):
-    if not identifier:
-        return None
-    workflow = owned(session, Workflow, identifier, owner)
-    if workflow.website_id != website_id or not workflow.enabled:
-        raise HTTPException(422, "Workflow must be enabled and belong to the website")
-    return workflow
 
 
 @app.get("/api/health")
@@ -290,7 +232,7 @@ def resume_job(identifier: str, owner: Owner):
 def pause_resume(identifier, owner, pause):
     with transaction() as session:
         item = owned(session, Job, identifier, owner)
-        if item.status not in {"running", "paused"}:
+        if item.status not in {"running", "paused", "waiting_user"}:
             raise HTTPException(409, "Job must be running or paused")
         item.pause_requested = pause
         emit(session, identifier, "pause_requested" if pause else "resume_requested", "Control requested")
@@ -301,6 +243,8 @@ def pause_resume(identifier, owner, pause):
 def retry_job(identifier: str, owner: Owner):
     with transaction() as session:
         item = owned(session, Job, identifier, owner)
+        if item.job_type == "agent":
+            raise HTTPException(409, "Create a new agent task explicitly after reviewing its outcomes")
         if item.status not in {"failed", "cancelled"}:
             raise HTTPException(409, "Only failed or cancelled jobs can be retried")
         if "workflow" in item.snapshot and any(s["action"] == "CLICK" for s in item.snapshot["workflow"]["steps"]):
@@ -391,7 +335,7 @@ async def events(
 
 @app.get("/api/artifacts/{name}")
 def artifact(name: str, owner: Owner):
-    if Path(name).name != name or not name.endswith(".png") or len(name) > 150:
+    if Path(name).name != name or not name.endswith((".png", ".bin")) or len(name) > 150:
         raise HTTPException(404, "Artifact not found")
     with Session() as session:
         owned(session, Job, name[:36], owner)
@@ -399,7 +343,11 @@ def artifact(name: str, owner: Owner):
     path = (root / name).resolve()
     if path.parent != root or not path.is_file():
         raise HTTPException(404, "Artifact not found or retention expired")
-    return FileResponse(path, media_type="image/png")
+    return FileResponse(
+        path,
+        media_type="image/png" if name.endswith(".png") else "application/octet-stream",
+        filename=name if name.endswith(".bin") else None,
+    )
 
 
 @app.get("/api/workflows")

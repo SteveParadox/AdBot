@@ -9,7 +9,20 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
-from .db import Frontier, Job, Lease, Schedule, Website, Workflow, emit, transaction, uid
+from .db import (
+    AgentMemory,
+    AgentStep,
+    AgentTask,
+    Frontier,
+    Job,
+    Lease,
+    Schedule,
+    Website,
+    Workflow,
+    emit,
+    transaction,
+    uid,
+)
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
@@ -118,11 +131,13 @@ def claim():
 def recover_expired():
     now = time.time()
     with transaction() as session:
-        jobs = session.scalars(select(Job).where(Job.status.in_(["running", "paused"]), Job.lease_until < now)).all()
+        jobs = session.scalars(
+            select(Job).where(Job.status.in_(["running", "paused", "waiting_user"]), Job.lease_until < now)
+        ).all()
         for job in jobs:
             if not session.execute(
                 update(Job)
-                .where(Job.id == job.id, Job.lease_until < now, Job.status.in_(["running", "paused"]))
+                .where(Job.id == job.id, Job.lease_until < now, Job.status.in_(["running", "paused", "waiting_user"]))
                 .values(lease_token=None, lease_until=0)
             ).rowcount:
                 continue
@@ -130,6 +145,18 @@ def recover_expired():
             unsafe = job.job_type == "workflow" and any(
                 s["action"] == "CLICK" for s in job.snapshot["workflow"]["steps"]
             )
+            if job.job_type == "agent":
+                last = session.scalar(
+                    select(AgentStep).where(AgentStep.job_id == job.id).order_by(AgentStep.number.desc()).limit(1)
+                )
+                unsafe = bool(
+                    last and last.status == "executing" and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH"}
+                )
+                task = session.get(AgentTask, job.id)
+                task.pending_step_id = None
+                if last and last.status in {"executing", "waiting_user"}:
+                    last.status = "interrupted"
+                    last.outcome = {"error": "Worker lease expired before a durable action outcome"}
             job.status = (
                 "cancelled" if job.cancel_requested else "failed" if unsafe or job.retry_count >= 3 else "queued"
             )
@@ -153,7 +180,10 @@ def heartbeat(job_id, token):
         changed = session.execute(
             update(Job)
             .where(
-                Job.id == job_id, Job.lease_token == token, Job.lease_until > now, Job.status.in_(["running", "paused"])
+                Job.id == job_id,
+                Job.lease_token == token,
+                Job.lease_until > now,
+                Job.status.in_(["running", "paused", "waiting_user"]),
             )
             .values(lease_until=now + settings().lease_seconds)
         ).rowcount
@@ -209,9 +239,10 @@ def tick(now=None):
 def cleanup():
     cutoff = time.time() - settings().retention_days * 86400
     with transaction() as session:
+        session.execute(delete(AgentMemory).where(AgentMemory.expires_at < time.time()))
         session.execute(delete(Job).where(Job.status.in_(TERMINAL), Job.completed_at < cutoff))
     root = settings().artifact_dir
     if root.exists():
-        for path in root.glob("*.png"):
+        for path in list(root.glob("*.png")) + list(root.glob("*.bin")):
             if path.stat().st_mtime < cutoff:
                 path.unlink(missing_ok=True)

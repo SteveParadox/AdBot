@@ -1,4 +1,60 @@
 @import "tailwindcss";
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: 1.7fr 1fr;
+  gap: 22px;
+}
+.agent-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-top: 1px solid #e6e9f1;
+}
+.agent-json {
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow: auto;
+  color: #6f7d96;
+  background: #f7f9fd;
+  border-radius: 6px;
+  padding: 12px;
+}
+.agent-subheading {
+  margin-top: 24px !important;
+}
+.agent-claim {
+  padding: 14px 0;
+  border-bottom: 1px solid #edf0f6;
+}
+.review-panel {
+  border-color: #d1c39a !important;
+  background: #fffcf4 !important;
+}
+.review-panel .field {
+  margin: 15px 0;
+}
+.provider-settings {
+  margin-bottom: 15px;
+}
+blockquote {
+  border-left: 3px solid #d4ddff;
+  margin: 15px 0;
+  padding: 8px 15px;
+  font-size: 12px;
+}
+blockquote a {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  color: #5871d5;
+}
+@media (max-width: 900px) {
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
+}
 @theme {
   --font-sans:
     "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,

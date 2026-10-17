@@ -1,7 +1,9 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +22,24 @@ class Settings(BaseSettings):
     artifact_dir: Path = Path("./data/screenshots")
     retention_days: int = Field(30, ge=1)
     rate_per_minute: int = Field(120, ge=1)
+    ai_provider: Literal["disabled", "groq", "openai_compatible", "local"] = "disabled"
+    ai_base_url: str = "https://api.openai.com/v1"
+    ai_api_key: SecretStr = SecretStr("")
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_api_key: SecretStr = SecretStr("")
+    ai_model: str = ""
+    ai_timeout_seconds: int = Field(30, ge=1, le=120)
+    ai_retries: int = Field(2, ge=0, le=4)
+    ai_max_output_tokens: int = Field(1800, ge=256, le=8000)
+    ai_json_mode: bool = True
+    agent_max_steps: int = Field(30, ge=1, le=100)
+    agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
+    agent_max_tabs: int = Field(4, ge=1, le=10)
+    agent_max_retries: int = Field(3, ge=1, le=10)
+    agent_memory_enabled: bool = True
+    agent_visual_reasoning: bool = False
+    browser_session_persistence: bool = False
+    session_encryption_key: SecretStr = SecretStr("")
 
     @model_validator(mode="after")
     def secure(self):
@@ -31,6 +51,31 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires PostgreSQL, Redis and fixture mode disabled")
             if not self.authorized_domains:
                 raise ValueError("Production requires ADBOT_AUTHORIZED_DOMAINS")
+        if self.ai_provider != "disabled":
+            if not self.ai_model:
+                raise ValueError("Set ADBOT_AI_MODEL when enabling an AI provider")
+            endpoint = self.groq_base_url if self.ai_provider == "groq" else self.ai_base_url
+            parsed = urlsplit(endpoint)
+            if (
+                parsed.scheme not in {"https", "http"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+            ):
+                raise ValueError("Invalid AI endpoint")
+            if self.ai_provider != "local" and parsed.scheme != "https":
+                raise ValueError("Remote AI providers require HTTPS")
+            key = self.groq_api_key if self.ai_provider == "groq" else self.ai_api_key
+            if self.ai_provider != "local" and not key.get_secret_value():
+                raise ValueError("Configure the selected provider API key")
+        if self.browser_session_persistence:
+            from cryptography.fernet import Fernet
+
+            try:
+                Fernet(self.session_encryption_key.get_secret_value().encode())
+            except Exception as exc:
+                raise ValueError("Session persistence requires a valid ADBOT_SESSION_ENCRYPTION_KEY") from exc
         return self
 
 

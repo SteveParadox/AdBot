@@ -6,6 +6,11 @@ execution events. This repository implements the attached browser-monitoring
 specification. Its name does not imply ad interaction: it does not click ads or
 generate artificial engagement.
 
+**Goal-driven AI browsing is now available.** Open the **AI Agent** workspace to
+submit a natural-language objective, inspect live decisions/captures and retrieve
+cited results. Configure Groq, another compatible provider or a local model using
+the [agent setup guide](docs/AGENT_GUIDE.md). Existing crawls work with AI disabled.
+
 ## Start locally on Windows
 
 Install Python 3.12+ and Node.js 22.12+ (or Node 24). Run from the repository root
@@ -165,6 +170,9 @@ blocked. Fixture mode is forbidden in production.
 - [API and workflow reference](docs/API.md)
 - [Architecture and durability](docs/ARCHITECTURE.md)
 - [Implementation verification report](docs/VERIFICATION.md)
+- [Agent architecture, provider setup and operation](docs/AGENT_GUIDE.md)
+- [Agent implementation audit](docs/AGENT_IMPLEMENTATION_MAP.md)
+- [Agent verification and limitations](docs/AGENT_VERIFICATION.md)
 - OpenAPI: http://127.0.0.1:8000/docs during local development.
 
 The initial release is a runnable monitoring platform. Production certification

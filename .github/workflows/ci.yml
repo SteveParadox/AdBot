@@ -22,7 +22,7 @@ jobs:
       - run: python -m venv .venv
       - run: .venv/bin/python -m pip install -r backend/requirements-dev.txt
       - run: .venv/bin/python -m playwright install --with-deps chromium
-      - run: ../.venv/bin/ruff check app tests
+      - run: ../.venv/bin/ruff check app tests testsupport
         working-directory: backend
       - run: ../.venv/bin/python -m pytest -q
         working-directory: backend

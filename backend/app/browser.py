@@ -342,9 +342,25 @@ class Runner:
                     emit(session, self.id, "action_completed", f"{action} completed", index=index, **details)
             await asyncio.sleep(self.cfg["delay_seconds"])
 
+    def context_options(self):
+        return {"accept_downloads": False}
+
+    def proxy_method_allowed(self, method, url):
+        return False
+
+    def handle_popup(self, popup, initial):
+        if popup != initial:
+            asyncio.create_task(popup.close())
+
+    async def execute_page(self, page, context):
+        if "workflow" in self.snapshot:
+            await self.workflow(page)
+        else:
+            await self.crawl(page)
+
     async def run(self):
         self.crawl_delay = 0
-        async with egress_proxy(self.policy) as proxy, async_playwright() as playwright:
+        async with egress_proxy(self.policy, self.proxy_method_allowed) as proxy, async_playwright() as playwright:
             self.proxy = proxy
             engine = getattr(playwright, self.cfg["browser"])
             options = {"headless": self.cfg["headless"], "proxy": {"server": proxy}}
@@ -368,7 +384,7 @@ class Runner:
                     viewport={"width": 390 if mobile else 1440, "height": 844 if mobile else 900},
                     user_agent=USER_AGENT,
                     service_workers="block",
-                    accept_downloads=False,
+                    **self.context_options(),
                 )
                 await context.route("**/*", self.route)
                 await context.route_web_socket("**/*", lambda ws: ws.close())
@@ -381,13 +397,10 @@ class Runner:
 
                 page.on("response", remember_response)
                 page.set_default_timeout(self.cfg["navigation_timeout_ms"])
-                context.on("page", lambda popup: asyncio.create_task(popup.close()) if popup != page else None)
+                context.on("page", lambda popup: self.handle_popup(popup, page))
                 page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
                 self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
-                if "workflow" in self.snapshot:
-                    await self.workflow(page)
-                else:
-                    await self.crawl(page)
+                await self.execute_page(page, context)
             finally:
                 await browser.close()
 

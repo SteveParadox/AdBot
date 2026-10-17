@@ -21,6 +21,11 @@ const env = {
   ADBOT_ENVIRONMENT: "development",
   ADBOT_RATE_PER_MINUTE: "10000",
   ADBOT_AUTHORIZED_DOMAINS: "",
+  ADBOT_AI_PROVIDER: "local",
+  ADBOT_AI_MODEL: "fixture-model-not-live-llm",
+  ADBOT_AI_BASE_URL: "http://127.0.0.1:8766/v1",
+  ADBOT_AGENT_MAX_STEPS: "15",
+  ADBOT_AGENT_MAX_TOKENS: "100000",
 };
 const children = [];
 let logs = "";
@@ -77,6 +82,19 @@ try {
   start(python, ["-m", "app.worker"], join(root, "backend"));
   start(python, ["-m", "app.scheduler"], join(root, "backend"));
   start(
+    python,
+    [
+      "-m",
+      "uvicorn",
+      "testsupport.model_fixture:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8766",
+    ],
+    join(root, "backend"),
+  );
+  start(
     process.execPath,
     [
       join(root, "frontend/node_modules/vite/bin/vite.js"),
@@ -90,6 +108,7 @@ try {
     ready("http://127.0.0.1:8000/api/ready"),
     ready("http://127.0.0.1:8765/"),
     ready("http://127.0.0.1:5173/"),
+    ready("http://127.0.0.1:8766/docs"),
   ]);
   const test = spawn(
     process.execPath,

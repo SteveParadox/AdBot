@@ -40,8 +40,15 @@ import {
   type Workflow,
 } from "./api";
 import { Badge, Button, Empty, Field, Pager } from "./ui";
+import AgentPanel from "./AgentPanel";
 
-type Tab = "Overview" | "Websites" | "Jobs" | "Workflows" | "Schedules";
+type Tab =
+  | "Overview"
+  | "Websites"
+  | "Jobs"
+  | "Workflows"
+  | "Schedules"
+  | "AI Agent";
 type Run = (
   action: () => Promise<unknown>,
   success?: () => void,
@@ -179,6 +186,7 @@ export default function App() {
           {(
             [
               ["Overview", LayoutDashboard],
+              ["AI Agent", Radar],
               ["Websites", Globe2],
               ["Jobs", Activity],
               ["Workflows", Route],
@@ -235,6 +243,8 @@ export default function App() {
                 {
                   {
                     Overview: "Monitor every run. Understand every result.",
+                    "AI Agent":
+                      "Set an objective. Let the browser observe, act, and verify.",
                     Websites:
                       "Configure authorized targets and keep your crawls in bounds.",
                     Jobs: "Launch, inspect, and control your browser sessions.",
@@ -275,6 +285,9 @@ export default function App() {
                 <X size={14} />
               </button>
             </div>
+          )}
+          {tab === "AI Agent" && (
+            <AgentPanel token={token} sites={items} run={run} busy={busy} />
           )}
           {tab === "Overview" && (
             <>
