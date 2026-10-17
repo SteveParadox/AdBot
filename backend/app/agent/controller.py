@@ -5,15 +5,18 @@ from urllib.parse import urlsplit, urljoin
 import httpx
 
 from ..config import settings
+from ..browser import USER_AGENT
 from ..db import uid
 from ..security import PolicyError
 from .observe import Observer
+from .interaction import InteractionEngine
 
 
 class Controller:
     def __init__(self, runner, context, page, memory):
         self.runner, self.context, self.page = runner, context, page
         self.observer = Observer()
+        self.engine = InteractionEngine(min(runner.cfg["navigation_timeout_ms"], 3000))
         self.tabs = {"t1": {"page": page, "purpose": "Initial task page", "history": []}}
         self.active = "t1"
         self.memory = memory
@@ -45,7 +48,8 @@ class Controller:
             await self.runner.permitted(url)
         else:
             raise PolicyError("Navigation requires an absolute HTTP(S) URL")
-        _, _, error = await self.runner.visit(self.page, url)
+        with self.engine.phase("loading", url=url):
+            _, _, error = await self.runner.visit(self.page, url)
         if error:
             raise RuntimeError("Navigation failed: " + error)
         self.tabs[self.active]["history"].append(self.page.url)
@@ -72,6 +76,7 @@ class Controller:
             "CLICK",
             "TYPE",
             "SEARCH",
+            "PRESS_KEY",
             "OPEN_TAB",
             "GO_BACK",
             "CLOSE_TAB",
@@ -110,13 +115,30 @@ class Controller:
         action = decision.decision
         result = {}
         before_url = self.page.url
-        before_text = (await self.page.locator("body").inner_text())[:12000]
         if action == "DOWNLOAD":
             return await self.download(decision, options)
         elif action == "NAVIGATE":
             await self.navigate(decision.url)
-        elif action in {"CLICK", "TYPE", "SEARCH"}:
+        elif action in {"CLICK", "TYPE", "SEARCH", "HOVER", "FOCUS"}:
             locator, element = self.observer.target(decision)
+            live = await locator.evaluate(
+                """e => {
+                const labelled=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.textContent||'').join(' ').trim();
+                const type=(e.type||'').toLowerCase();
+                const name=(e.getAttribute('aria-label')||labelled||[...(e.labels||[])].map(l=>l.textContent).join(' ')||e.innerText||e.getAttribute('alt')||e.getAttribute('placeholder')||(type==='submit'?e.value:'')||'').trim().replace(/\\s+/g,' ').slice(0,160);
+                return {name,safe:e.dataset.adbotSafe==='true',type:(e.type||'').toLowerCase(),href:e.tagName==='A'?e.href:null,
+                form:e.closest('form')?{method:e.closest('form').method.toUpperCase(),action:e.closest('form').action}:null}}""",
+                timeout=self.engine.timeout_ms,
+            )
+            expected_form = element.get("form")
+            if (
+                live["name"] != element["name"]
+                or live["safe"] != element["safe"]
+                or live["type"] != element["type"]
+                or live["href"] != element.get("href")
+                or live["form"] != ({k: expected_form[k] for k in ("method", "action")} if expected_form else None)
+            ):
+                raise ValueError("Target changed since observation; inspect and replan")
             if element["disabled"]:
                 raise ValueError("Element is disabled")
             if action in {"TYPE", "SEARCH"}:
@@ -128,14 +150,12 @@ class Controller:
                     raise ValueError("Secret, payment and file fields are unavailable")
                 if element["role"] not in {"textbox", "searchbox"}:
                     raise ValueError("TYPE/SEARCH requires an observed text input")
-                await locator.fill(decision.text)
                 if action == "SEARCH":
                     form = element.get("form")
                     if not form or not form["search"] or form["method"] != "GET":
                         raise ValueError("SEARCH requires an observed GET search form")
                     await self.runner.permitted(form["action"])
-                    await locator.press("Enter")
-            else:
+            elif action == "CLICK":
                 if self.needs_review(decision, "autonomous") and not approved:
                     raise ValueError("This interaction requires approval")
                 if element.get("href"):
@@ -150,29 +170,22 @@ class Controller:
                         "destination": (destination.scheme, destination.netloc, destination.path),
                         "until": time.monotonic() + 5,
                     }
-                await locator.click(timeout=self.runner.cfg["navigation_timeout_ms"])
-            # Event-driven DOM change detection with a bounded quiet-page fallback.
             try:
-                await self.page.wait_for_function(
-                    "p => location.href!==p.url || document.body.innerText.slice(0,12000)!==p.text",
-                    arg={"url": before_url, "text": before_text},
-                    timeout=2000,
-                )
-            except Exception:
-                result["page_changed"] = False
+                result = await self.engine.perform(self.page, decision, locator, self.active)
+            finally:
+                self.mutation = None
             if self.page.url != before_url:
                 self.runner.policy.check(self.page.url)
                 await self.runner.visit(self.page, self.page.url, navigate=False)
                 self.tabs[self.active]["history"].append(self.page.url)
-        elif action == "SCROLL":
-            if decision.target:
-                locator, _ = self.observer.target(decision)
-                await locator.scroll_into_view_if_needed()
-            else:
-                await self.page.mouse.wheel(
-                    0, int(self.page.viewport_size["height"] * 0.8) * (1 if decision.direction == "down" else -1)
-                )
-                await self.page.wait_for_timeout(150)
+        elif action in {"SCROLL", "SCROLL_BACK", "PRESS_KEY", "WAIT"}:
+            if action == "PRESS_KEY" and not options.get("allow_form_input", False):
+                edits_field = await self.page.evaluate("""() => !!document.activeElement?.matches(
+                    'input,textarea,select,[contenteditable=true],[role=combobox],[role=slider],[role=spinbutton],[role=radio]')""")
+                if edits_field and decision.key not in {"Tab", "Shift+Tab", "Escape"}:
+                    raise ValueError("Enable form input before sending keys to an editable control")
+            locator = self.observer.target(decision)[0] if decision.target else None
+            result = await self.engine.perform(self.page, decision, locator, self.active)
         elif action == "OPEN_TAB":
             if len(self.tabs) >= settings().agent_max_tabs:
                 raise ValueError("Tab budget exhausted; close a tab first")
@@ -207,13 +220,6 @@ class Controller:
             previous = history[-2]
             await self.navigate(previous)
             self.tabs[self.active]["history"] = history[:-2] + [previous]
-        elif action == "WAIT":
-            try:
-                await self.page.wait_for_function(
-                    "text => document.body.innerText.slice(0,12000)!==text", arg=before_text, timeout=2000
-                )
-            except Exception:
-                result["page_changed"] = False
         elif action not in {"OBSERVE", "SUMMARIZE", "EXTRACT", "ASK_USER", "COMPLETE", "FAIL"}:
             raise ValueError("Unsupported action")
         self.mutation = None
@@ -231,7 +237,12 @@ class Controller:
         root.mkdir(parents=True, exist_ok=True)
         path = root / name
         try:
-            async with httpx.AsyncClient(proxy=self.runner.proxy, trust_env=False, timeout=20) as client:
+            async with httpx.AsyncClient(
+                proxy=self.runner.proxy,
+                trust_env=False,
+                timeout=20,
+                headers={"User-Agent": USER_AGENT, "X-AdBot-Automation": "true", "X-AdBot-Session": self.runner.id},
+            ) as client:
                 for _ in range(6):
                     await self.runner.permitted(url)
                     async with client.stream("GET", url) as response:

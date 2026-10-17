@@ -54,7 +54,11 @@ type Step = {
     expected_result?: string;
     target?: { element_id: string };
   };
-  outcome: Record<string, unknown>;
+  outcome: {
+    trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
+    interaction?: { changed: boolean; verified: boolean; verification: string; scroll: {y: number; height: number} };
+    [key: string]: unknown;
+  };
 };
 type Config = {
   provider: string;
@@ -768,6 +772,7 @@ function AgentDetail({
       <section className="panel">
         <div className="panel-heading">
           <h2>Observed actions and verification</h2>
+          <p className="hint">These metrics describe automated sessions only. Filter X-AdBot-Automation or the AdBotMonitor user agent in your site analytics to exclude this traffic from visitor reports.</p>
         </div>
         {steps.error && (
           <p role="alert" className="error">
@@ -785,6 +790,19 @@ function AgentDetail({
                 </strong>
                 <p className="hint">{step.decision.reason}</p>
                 <small className="url">{step.observation.url}</small>
+                {step.outcome.interaction && <p className="hint">
+                  UI outcome: {step.outcome.interaction.verified ? "verified" : "no confirmed change"}
+                  {" · "}{step.outcome.interaction.verification}
+                  {" · Scroll "}{step.outcome.interaction.scroll.y}px
+                </p>}
+                {!!step.outcome.trace?.length && <details>
+                  <summary>Interaction trace · automated session</summary>
+                  <table className="interaction-trace"><thead><tr><th scope="col">Phase</th><th scope="col">Started (UTC)</th><th scope="col">Duration</th><th scope="col">Status</th></tr></thead>
+                    <tbody>{step.outcome.trace.map((span, i) => <tr key={i}>
+                      <td>{span.phase}</td><td>{new Date(span.started_at * 1000).toISOString().slice(11, 23)}</td>
+                      <td>{Math.round(span.duration_ms)} ms</td><td>{span.status}</td>
+                    </tr>)}</tbody></table>
+                </details>}
                 <details>
                   <summary>Observation and outcome</summary>
                   <pre className="agent-json">

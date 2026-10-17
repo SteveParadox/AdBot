@@ -147,3 +147,38 @@ async def agent_form_result(request: Request):
 @app.get("/agent/manual.txt", response_class=PlainTextResponse)
 def manual():
     return "Orion AI will launch in November 2026."
+
+
+@app.get("/agent/interactions", response_class=HTMLResponse)
+def agent_interactions(request: Request):
+    from html import escape
+
+    marker = escape(request.headers.get("x-adbot-automation", "unmarked"))
+    return (
+        """<title>Interaction laboratory</title><style>
+    body{margin:0}header{position:sticky;top:0;height:70px;background:#ddd;z-index:5}
+    .menu #reveal{display:none}.menu:hover #reveal{display:block}
+    .covered{position:relative;width:200px;height:50px}.cover{position:absolute;inset:0;background:#aaa;z-index:2}
+    </style><header>Sticky navigation</header><main>
+    <p id='marker'>Automation marker: """
+        + marker
+        + """</p>
+    <div class='menu'><button data-adbot-safe='true'>Resources</button>
+    <a id='reveal' href='/agent/article/orion'>Hover release notes</a></div>
+    <label>Keyboard widget<input id='widget' onfocus="document.querySelector('#focus').textContent='Widget focused'"
+    onkeydown="document.querySelector('#keys').textContent='Key: '+event.key"></label>
+    <p id='focus'></p><p id='keys'></p>
+    <button data-adbot-safe='true' onclick="setTimeout(()=>document.querySelector('#result').textContent='Delayed confirmation',180)">Delayed action</button>
+    <button data-adbot-safe='true'>No effect</button><button disabled>Disabled action</button>
+    <div class='covered'><button data-adbot-safe='true'>Covered action</button><div class='cover'></div></div>
+    <p id='result'></p><div style='height:1100px'>Relevant content below</div>
+    <a id='section' href='/agent/article/orion'>Lower release notes</a>
+    <div id='lazy'></div></main><script>
+    let batches=0,pending=false;
+    addEventListener('scroll',()=>{if(innerHeight+scrollY>=document.documentElement.scrollHeight-100&&!pending&&batches<2){
+      pending=true;document.querySelector('#lazy').setAttribute('aria-busy','true');
+      setTimeout(()=>{batches++;document.querySelector('#lazy').insertAdjacentHTML('beforeend',
+      '<section style="height:500px"><h2>Loaded batch '+batches+'</h2><p>New relevant evidence '+batches+'</p></section>');
+      document.querySelector('#lazy').setAttribute('aria-busy','false');pending=false},160)}});
+    </script>"""
+    )

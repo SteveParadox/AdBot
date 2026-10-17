@@ -173,6 +173,7 @@ blocked. Fixture mode is forbidden in production.
 - [Agent architecture, provider setup and operation](docs/AGENT_GUIDE.md)
 - [Agent implementation audit](docs/AGENT_IMPLEMENTATION_MAP.md)
 - [Agent verification and limitations](docs/AGENT_VERIFICATION.md)
+- [Natural interaction actions, traces and analytics](docs/INTERACTION_ENGINE.md)
 - OpenAPI: http://127.0.0.1:8000/docs during local development.
 
 The initial release is a runnable monitoring platform. Production certification

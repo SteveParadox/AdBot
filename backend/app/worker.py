@@ -99,7 +99,7 @@ async def execute(job_id, token):
                         safe = not (
                             last
                             and last.status == "executing"
-                            and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH"}
+                            and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY"}
                         )
                         if safe and last and last.status in {"observed", "executing"}:
                             last.status, last.outcome = (

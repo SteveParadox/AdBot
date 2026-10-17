@@ -364,3 +364,55 @@ async def test_failed_action_replans_from_fresh_observation(client, target, agen
     steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
     assert steps[0]["status"] == "failed" and steps[0]["outcome"]["replanning"]
     assert steps[1]["status"] == "succeeded"
+
+
+@pytest.mark.browser
+async def test_natural_interactions_persist_traces_and_automation_identity(
+    client, target, agent_config, agent_servers, monkeypatch
+):
+    from testsupport.model_fixture import decide
+
+    actions = iter(
+        [
+            ("FOCUS", "Keyboard widget", {}),
+            ("TYPE", "Keyboard widget", {"text": "Orion", "input_method": "keyboard", "expected_text": "Key: n"}),
+            ("PRESS_KEY", None, {"key": "Tab"}),
+            ("HOVER", "Resources", {"expected_text": "Hover release notes"}),
+            ("CLICK", "Hover release notes", {"expected_text": "Orion AI will launch in November 2026."}),
+        ]
+    )
+
+    async def responses(self, kind, payload, schema, account, image_path=None):
+        action = next(actions, None) if kind == "decide" else None
+        if action:
+            name, label, extras = action
+            body = dict(
+                observation="Observed fixture controls",
+                decision=name,
+                reason="Verify native input",
+                confidence=1,
+                expected_result="Expected UI transition",
+                **extras,
+            )
+            if label:
+                item = next(e for e in payload["current_page"]["elements"] if e["name"] == label)
+                body["target"] = {"element_id": item["element_id"]}
+            return schema.model_validate(body)
+        return schema.model_validate(decide({"purpose": kind, **payload}))
+
+    monkeypatch.setattr(ModelClient, "request", responses)
+    set_url(client, target, "/agent/interactions")
+    task = new_task(client, target, allow_form_input=True)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + task["id"]).json()
+    assert result["status"] == "completed", result
+    assert result["traffic_kind"] == "automated" and result["automation_session_id"] == task["id"]
+    steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
+    assert "Automation marker: true" in steps[0]["observation"]["text"]
+    assert [s["decision"]["decision"] for s in steps[:5]] == ["FOCUS", "TYPE", "PRESS_KEY", "HOVER", "CLICK"]
+    for step in steps[:5]:
+        assert step["outcome"]["interaction"]["verified"], step
+        trace = step["outcome"]["trace"]
+        assert {"decision", "inspection", "action", "waiting"} <= {span["phase"] for span in trace}
+        assert all(span["ended_at"] >= span["started_at"] for span in trace)
+    assert client.get("/api/agent/metrics").json()["traffic_kind"] == "automated"

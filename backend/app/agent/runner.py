@@ -43,6 +43,7 @@ class AgentRunner(Runner):
     def context_options(self):
         return {
             "accept_downloads": False,
+            "extra_http_headers": {"X-AdBot-Automation": "true", "X-AdBot-Session": self.id},
             **({"storage_state": self.restored_session} if self.restored_session else {}),
         }
 
@@ -219,7 +220,9 @@ class AgentRunner(Runner):
         stagnant, last_fingerprint, consecutive_failures = 0, None, 0
         for number in range(start + 1, self.options["max_steps"] + 1):
             await self.gate.wait()
-            observation = await controller.observe()
+            controller.engine.trace = []
+            with controller.engine.phase("inspection"):
+                observation = await controller.observe()
             if observation["url"] not in self.memory["visited_urls"]:
                 self.memory["visited_urls"].append(observation["url"])
             with transaction() as session:
@@ -239,20 +242,21 @@ class AgentRunner(Runner):
                 )
             decision = None
             try:
-                decision = await self.ask_model(
-                    "decide",
-                    {
-                        "objective": self.objective,
-                        "success_criteria": self.options["success_criteria"],
-                        "current_page": observation,
-                        "session_memory": self.context_memory(),
-                        "historical_hints": self.hints,
-                        "steps_remaining": self.options["max_steps"] - number,
-                        "form_input_enabled": self.options["allow_form_input"],
-                    },
-                    Decision,
-                    observation,
-                )
+                with controller.engine.phase("decision"):
+                    decision = await self.ask_model(
+                        "decide",
+                        {
+                            "objective": self.objective,
+                            "success_criteria": self.options["success_criteria"],
+                            "current_page": observation,
+                            "session_memory": self.context_memory(),
+                            "historical_hints": self.hints,
+                            "steps_remaining": self.options["max_steps"] - number,
+                            "form_input_enabled": self.options["allow_form_input"],
+                        },
+                        Decision,
+                        observation,
+                    )
                 key = action_key(decision.model_dump())
                 if any(
                     f["action_key"] == key and f["fingerprint"] == observation["fingerprint"]
@@ -292,6 +296,8 @@ class AgentRunner(Runner):
                 else:
                     outcome = await controller.act(decision, self.options, approved)
                 after = await controller.observe()
+                outcome["trace"] = controller.engine.trace.copy()
+                outcome["traffic_kind"] = "automated"
                 outcome["after_url"] = after["url"]
                 outcome["page_changed"] = after["fingerprint"] != observation["fingerprint"]
                 self.memory["recent_actions"].append(
@@ -309,7 +315,10 @@ class AgentRunner(Runner):
                         session,
                         self.id,
                         "agent_action_completed",
-                        f"{decision.decision} verified",
+                        f"{decision.decision} observed",
+                        interaction=outcome.get("interaction"),
+                        trace=outcome["trace"],
+                        traffic_kind="automated",
                         step_id=step_id,
                         url=after["url"],
                         screenshot_path=after["screenshot_path"],
@@ -341,18 +350,28 @@ class AgentRunner(Runner):
                 self.memory["failures"].append(
                     {"action_key": key, "fingerprint": observation["fingerprint"], "error": str(exc)[:500]}
                 )
+                # Re-observe before replanning; never replay ambiguous input.
+                with controller.engine.phase("recovery"):
+                    await controller.observe()
                 with transaction() as session:
                     owned_job(session, self.id, self.token)
                     task = session.get(AgentTask, self.id)
                     task.pending_step_id = None
                     step = session.get(AgentStep, step_id)
-                    step.status, step.outcome = "failed", {"error": str(exc)[:500], "replanning": True}
+                    step.status, step.outcome = (
+                        "failed",
+                        {
+                            "error": str(exc)[:500],
+                            "replanning": True,
+                            "trace": controller.engine.trace.copy(),
+                            "traffic_kind": "automated",
+                        },
+                    )
                     emit(session, self.id, "agent_replanning", str(exc)[:500], step_id=step_id)
                 await self.checkpoint(controller)
                 consecutive_failures += 1
                 if consecutive_failures >= settings().agent_max_retries:
                     raise RuntimeError("Agent recovery budget exhausted; inspect failed steps") from exc
-                await asyncio.sleep(min(2 ** min(number, 3), 8))
         raise RuntimeError("Agent step budget exhausted before verified completion")
 
     def context_memory(self):

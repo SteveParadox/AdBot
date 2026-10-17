@@ -150,7 +150,9 @@ def recover_expired():
                     select(AgentStep).where(AgentStep.job_id == job.id).order_by(AgentStep.number.desc()).limit(1)
                 )
                 unsafe = bool(
-                    last and last.status == "executing" and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH"}
+                    last
+                    and last.status == "executing"
+                    and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY"}
                 )
                 task = session.get(AgentTask, job.id)
                 task.pending_step_id = None

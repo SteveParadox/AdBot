@@ -343,7 +343,10 @@ class Runner:
             await asyncio.sleep(self.cfg["delay_seconds"])
 
     def context_options(self):
-        return {"accept_downloads": False}
+        return {
+            "accept_downloads": False,
+            "extra_http_headers": {"X-AdBot-Automation": "true", "X-AdBot-Session": self.id},
+        }
 
     def proxy_method_allowed(self, method, url):
         return False

@@ -18,7 +18,21 @@ def fingerprint(observation):
 def action_key(decision):
     return hashlib.sha256(
         json.dumps(
-            {k: decision.get(k) for k in ("decision", "target", "text", "url", "direction", "tab_id")}, sort_keys=True
+            {
+                k: decision.get(k)
+                for k in (
+                    "decision",
+                    "target",
+                    "text",
+                    "url",
+                    "direction",
+                    "tab_id",
+                    "key",
+                    "input_method",
+                    "expected_text",
+                )
+            },
+            sort_keys=True,
         ).encode()
     ).hexdigest()
 

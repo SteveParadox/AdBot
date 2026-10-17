@@ -1003,3 +1003,6 @@ footer {
     font-size: 10px;
   }
 }
+
+.interaction-trace { width:100%; font-size:12px; border-collapse:collapse; }
+.interaction-trace th,.interaction-trace td { text-align:left; padding:6px; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }

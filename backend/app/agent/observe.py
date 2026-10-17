@@ -19,7 +19,7 @@ DOM = """() => {
    const labelled=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.textContent||'').join(' ').trim();
    const name=(e.getAttribute('aria-label')||labelled||[...(e.labels||[])].map(l=>l.textContent).join(' ')||e.innerText||e.getAttribute('alt')||e.getAttribute('placeholder')||(type==='submit'?e.value:'')||'').trim().replace(/\\s+/g,' ').slice(0,160);
    const f=e.closest('form'),r=e.getBoundingClientRect();
-   return {index,role,name,tag,type,visible:visible(e),href:tag==='a'?e.href:null,disabled:!!e.disabled,
+   return {index,role,name,tag,type,visible:visible(e),href:tag==='a'?e.href:null,disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',focused:document.activeElement===e,expanded:e.getAttribute('aria-expanded'),
      form:f?{method:(f.method||'get').toUpperCase(),action:f.action||location.href,search:!!(f.querySelector('input[type=search]')||f.getAttribute('role')==='search')}:null,
      safe:e.dataset.adbotSafe==='true', in_view:r.top<innerHeight&&r.bottom>0};
  }).filter(e=>e.visible&&!['password','file','hidden'].includes(e.type)).slice(0,80);
@@ -45,8 +45,8 @@ class Observer:
         data["tab_id"] = tab_id
         data["text"] = redact(data["text"])
         data["viewport_text"] = redact(data["viewport_text"])
-        fields = await page.locator("form").evaluate_all(
-            "forms => forms.slice(0,20).map(f => [...f.elements].slice(0,100).map(e => ({name:e.name,type:e.type,value:['password','file'].includes(e.type)?'[secret]':String(e.value||'').slice(0,4000),checked:!!e.checked})))"
+        fields = await page.locator("input,textarea,select").evaluate_all(
+            "fields => fields.slice(0,100).map(e => ({name:e.name,type:e.type,value:['password','file'].includes(e.type)?'[secret]':String(e.value||'').slice(0,4000),checked:!!e.checked}))"
         )
         data["form_state"] = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
         try:

@@ -33,6 +33,8 @@ test("natural-language objective uses observed links and returns cited evidence"
       exact: true,
     }),
   ).toBeVisible();
+  await page.getByText("Interaction trace · automated session", { exact: true }).first().click();
+  await expect(page.getByRole("columnheader", { name: "Started (UTC)" }).first()).toBeVisible();
   await page.screenshot({
     path: "test-results/agent-desktop.png",
     fullPage: true,

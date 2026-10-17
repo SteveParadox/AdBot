@@ -26,6 +26,8 @@ def task_for(session, identifier, owner):
 
 def task_output(job, task):
     return output(job) | {
+        "traffic_kind": "automated",
+        "automation_session_id": job.id,
         "objective": task.objective,
         "mode": task.mode,
         "options": task.options,
@@ -184,6 +186,7 @@ def metrics(owner: Owner):
         visits = session.scalars(select(PageVisit).join(Job).where(Job.owner == owner, Job.job_type == "agent")).all()
         total_steps = sum(n for _, n in steps)
         return {
+            "traffic_kind": "automated",
             "tasks": len(jobs),
             "statuses": counts,
             "success_rate": counts.get("completed", 0) / len(finished) if finished else None,

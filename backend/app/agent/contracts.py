@@ -20,6 +20,10 @@ class Decision(Strict):
         "NAVIGATE",
         "OBSERVE",
         "CLICK",
+        "HOVER",
+        "FOCUS",
+        "PRESS_KEY",
+        "SCROLL_BACK",
         "TYPE",
         "SCROLL",
         "SEARCH",
@@ -45,9 +49,28 @@ class Decision(Strict):
     claims: list[Claim] = Field(default_factory=list, max_length=30)
     direction: Literal["down", "up"] = "down"
 
+    key: (
+        Literal[
+            "Tab",
+            "Shift+Tab",
+            "ArrowDown",
+            "ArrowUp",
+            "ArrowLeft",
+            "ArrowRight",
+            "Escape",
+            "PageDown",
+            "PageUp",
+            "Home",
+            "End",
+        ]
+        | None
+    ) = None
+    input_method: Literal["auto", "keyboard"] = "auto"
+    expected_text: str | None = Field(None, min_length=1, max_length=1000)
+
     @model_validator(mode="after")
     def parameters(self):
-        if self.decision in {"CLICK", "TYPE", "SEARCH", "DOWNLOAD"} and self.target is None:
+        if self.decision in {"CLICK", "TYPE", "SEARCH", "DOWNLOAD", "HOVER", "FOCUS"} and self.target is None:
             raise ValueError("This action requires an observed element_id")
         if self.decision in {"TYPE", "SEARCH", "EXTRACT", "ASK_USER", "FAIL"} and not self.text:
             raise ValueError("This action requires text")
@@ -55,6 +78,8 @@ class Decision(Strict):
             raise ValueError("Navigation requires a URL")
         if self.decision in {"SWITCH_TAB", "CLOSE_TAB"} and not self.tab_id:
             raise ValueError("Tab action requires tab_id")
+        if self.decision == "PRESS_KEY" and not self.key:
+            raise ValueError("PRESS_KEY requires a permitted navigation key")
         if self.decision == "COMPLETE" and not self.claims:
             raise ValueError("Completion requires claims with evidence citations")
         return self
