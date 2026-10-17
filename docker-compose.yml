@@ -1,0 +1,90 @@
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: docker/backend.Dockerfile
+  init: true
+  restart: unless-stopped
+  env_file: .env
+  environment: &environment
+    ADBOT_DATABASE_URL: postgresql+psycopg://adbot:${ADBOT_POSTGRES_PASSWORD:?Run python scripts/init_env.py}@postgres:5432/adbot
+    ADBOT_REDIS_URL: redis://redis:6379/0
+    ADBOT_ARTIFACT_DIR: /app/data/screenshots
+    ADBOT_FIXTURE_MODE: "false"
+  volumes:
+    - artifacts:/app/data
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: adbot
+      POSTGRES_PASSWORD: ${ADBOT_POSTGRES_PASSWORD:?Run python scripts/init_env.py}
+      POSTGRES_DB: adbot
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adbot -d adbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    env_file: .env
+    environment: *environment
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    <<: *backend
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    shm_size: 1gb
+    mem_limit: 2g
+    cpus: 2
+    stop_grace_period: 20s
+  scheduler:
+    <<: *backend
+    command: ["python", "-m", "app.scheduler"]
+    mem_limit: 256m
+    cpus: 0.5
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    restart: unless-stopped
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: 128m
+
+volumes:
+  postgres:
+  redis:
+  artifacts:

@@ -1,0 +1,67 @@
+name: Verify AdBot
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: python -m venv .venv
+      - run: .venv/bin/python -m pip install -r backend/requirements-dev.txt
+      - run: .venv/bin/python -m playwright install --with-deps chromium
+      - run: ../.venv/bin/ruff check app tests
+        working-directory: backend
+      - run: ../.venv/bin/python -m pytest -q
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test && npm run build && npm audit --audit-level=moderate
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+      - run: python scripts/init_env.py
+      - run: docker compose config -q
+      - run: .venv/bin/python -m pip install pip-audit && .venv/bin/pip-audit -r backend/requirements.txt
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: adbot
+          POSTGRES_PASSWORD: ci-only-not-production
+          POSTGRES_DB: adbot_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U adbot -d adbot_test" --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      ADBOT_API_KEYS: ci-local-key-000000000000000000000000
+      ADBOT_DATABASE_URL: postgresql+psycopg://adbot:ci-only-not-production@127.0.0.1:5432/adbot_test
+      ADBOT_TEST_DATABASE_URL: postgresql+psycopg://adbot:ci-only-not-production@127.0.0.1:5432/adbot_test
+      ADBOT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements-dev.txt
+      - run: python -m alembic upgrade head && python -m alembic check
+        working-directory: backend
+      - run: python -m pytest -q -m "not browser"
+        working-directory: backend
