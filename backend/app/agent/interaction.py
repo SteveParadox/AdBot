@@ -1,11 +1,14 @@
 """Deterministic Playwright input, bounded state waits and auditable outcomes."""
 
+import asyncio
 import hashlib
 import json
+import random
 import time
 from contextlib import contextmanager
 
 from playwright.async_api import TimeoutError as PlaywrightTimeout
+from .. import polymorph
 
 # Values participate in change detection but never appear in persisted traces.
 STATE = """() => JSON.stringify({url:location.href,ready:document.readyState,
@@ -81,18 +84,23 @@ class InteractionEngine:
             if locator is not None:
                 await self.actionable(locator, action in {"CLICK", "HOVER"})
             if action == "HOVER":
+                await asyncio.sleep(polymorph.get_random_wait_time(0.01, 0.05))
                 await locator.hover(timeout=self.timeout_ms)
             elif action == "FOCUS":
                 await locator.focus(timeout=self.timeout_ms)
             elif action == "CLICK":
+                await asyncio.sleep(polymorph.get_random_wait_time(0.01, 0.03))
                 await locator.click(timeout=self.timeout_ms)
             elif action in {"TYPE", "SEARCH"}:
                 if decision.input_method == "keyboard":
                     await locator.fill("")
+                    await asyncio.sleep(polymorph.get_random_wait_time(0.05, 0.15))
                     await locator.press_sequentially(decision.text, timeout=self.timeout_ms)
                 else:
+                    await asyncio.sleep(polymorph.get_random_wait_time(0.05, 0.1))
                     await locator.fill(decision.text, timeout=self.timeout_ms)
                 if action == "SEARCH":
+                    await asyncio.sleep(polymorph.get_random_wait_time(0.1, 0.2))
                     await locator.press("Enter", timeout=self.timeout_ms)
             elif action == "PRESS_KEY":
                 await page.keyboard.press(decision.key)
@@ -112,7 +120,7 @@ class InteractionEngine:
                         await locator.evaluate("e => e.scrollIntoView({block:'center',behavior:'instant'})")
                     else:
                         await page.mouse.wheel(
-                            0, int(page.viewport_size["height"] * 0.7) * (1 if decision.direction == "down" else -1)
+                            0, int(page.viewport_size["height"] * random.uniform(0.5, 0.9)) * (1 if decision.direction == "down" else -1)
                         )
             elif action != "WAIT":
                 raise ValueError("Unsupported interaction")

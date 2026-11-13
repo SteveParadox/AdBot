@@ -1,0 +1,12 @@
+# Optional overlay: docker compose -f docker-compose.yml -f docker/security/compose.tunnel.yml up -d
+# Create a named tunnel and a read-only connector credential file outside the repository first.
+services:
+  cloudflared:
+    image: ${ADBOT_CLOUDFLARED_IMAGE:?Set a reviewed cloudflared image pinned by digest}
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ${ADBOT_TUNNEL_CONFIG_PATH:?Set absolute config path}:/etc/cloudflared/config.yml:ro
+      - ${ADBOT_TUNNEL_CREDENTIALS_PATH:?Set absolute credential path}:/run/secrets/tunnel.json:ro
+    depends_on:
+      - frontend

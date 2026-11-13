@@ -8,10 +8,12 @@ from sqlalchemy import update, select
 
 from .browser import BrowserCrashed, Runner
 from .config import settings
+from .privacy import install_redaction
 from .db import AgentStep, AgentTask, Frontier, Job, Lease, emit, transaction
 from .jobs import claim, heartbeat, owned_job, recover_expired
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+install_redaction()
 logger = logging.getLogger("adbot.worker")
 
 
@@ -129,7 +131,7 @@ async def execute(job_id, token):
                         step.outcome = {"error": error or "Task stopped before a durable step outcome"}
                 emit(session, job_id, job.status, f"Job {job.status}", error=error)
             session.execute(update(Lease).where(Lease.token == token).values(expires_at=0))
-        logger.info(json.dumps({"event": "job_finished", "job_id": job_id, "status": status, "error": error}))
+        logger.info(json.dumps({"event": "job_finished", "job_id": job_id, "status": status, "error": "job_failed" if error else None}))
 
 
 async def main():

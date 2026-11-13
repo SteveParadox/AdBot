@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,9 +12,14 @@ const python = join(
   ".venv",
   process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
 );
+const apiPort = process.env.ADBOT_E2E_API_PORT || "8000";
+const frontendPort = process.env.ADBOT_E2E_FRONTEND_PORT || "5173";
 const env = {
   ...process.env,
+  ADBOT_E2E_BASE_URL: "http://127.0.0.1:" + frontendPort,
+  ADBOT_API_PROXY_TARGET: "http://127.0.0.1:" + apiPort,
   ADBOT_API_KEYS: "e2e-local-key-000000000000000000000000",
+  ADBOT_CONTENT_ADMIN_KEYS: "e2e-local-key-000000000000000000000000",
   ADBOT_DATABASE_URL: "sqlite:///" + join(temp, "e2e.db").replaceAll("\\", "/"),
   ADBOT_FIXTURE_MODE: "true",
   ADBOT_ARTIFACT_DIR: join(temp, "screenshots"),
@@ -22,6 +28,7 @@ const env = {
   ADBOT_RATE_PER_MINUTE: "10000",
   ADBOT_AUTHORIZED_DOMAINS: "",
   ADBOT_AI_PROVIDER: "local",
+  ADBOT_AI_FALLBACK_PROVIDER: "disabled",
   ADBOT_AI_MODEL: "fixture-model-not-live-llm",
   ADBOT_AI_BASE_URL: "http://127.0.0.1:8766/v1",
   ADBOT_AGENT_MAX_STEPS: "15",
@@ -45,7 +52,7 @@ function start(command, args, cwd) {
   return child;
 }
 async function ready(url) {
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + Number(process.env.ADBOT_E2E_STARTUP_MS || 20000);
   while (Date.now() < deadline) {
     try {
       if ((await fetch(url)).ok) return;
@@ -55,6 +62,13 @@ async function ready(url) {
   throw new Error("Service failed to become ready: " + url);
 }
 try {
+  for (const port of [apiPort, frontendPort, "8765", "8766"]) {
+    await new Promise((resolve, reject) => {
+      const probe = createServer();
+      probe.once("error", () => reject(new Error("E2E port is occupied: " + port)));
+      probe.listen(Number(port), "127.0.0.1", () => probe.close(resolve));
+    });
+  }
   const migration = spawnSync(python, ["-m", "alembic", "upgrade", "head"], {
     cwd: join(root, "backend"),
     env,
@@ -76,7 +90,7 @@ try {
   );
   start(
     python,
-    ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
+    ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", apiPort, "--no-proxy-headers", "--no-server-header", "--no-access-log"],
     join(root, "backend"),
   );
   start(python, ["-m", "app.worker"], join(root, "backend"));
@@ -101,13 +115,14 @@ try {
       "--host",
       "127.0.0.1",
       "--strictPort",
+      "--port", frontendPort,
     ],
     join(root, "frontend"),
   );
   await Promise.all([
-    ready("http://127.0.0.1:8000/api/ready"),
+    ready("http://127.0.0.1:" + apiPort + "/api/ready"),
     ready("http://127.0.0.1:8765/"),
-    ready("http://127.0.0.1:5173/"),
+    ready("http://127.0.0.1:" + frontendPort + "/"),
     ready("http://127.0.0.1:8766/docs"),
   ]);
   const test = spawn(

@@ -41,8 +41,10 @@ import {
 } from "./api";
 import { Badge, Button, Empty, Field, Pager } from "./ui";
 import AgentPanel from "./AgentPanel";
+import { useContent, ContentAdmin, ContentBlock } from "./Content";
 
 type Tab =
+  | "Content"
   | "Overview"
   | "Websites"
   | "Jobs"
@@ -59,6 +61,8 @@ const terminal = (status: string) =>
   ["completed", "cancelled", "failed"].includes(status);
 
 export default function App() {
+  const content = useContent();
+  const copy = content.sections;
   const [token, setToken] = useState(
     sessionStorage.getItem("adbot-token") || "",
   );
@@ -133,11 +137,13 @@ export default function App() {
             <Radar />
             AdBot<span>MONITOR</span>
           </div>
-          <h1>Your web, in focus.</h1>
+          <h1>{copy.login?.title ?? "Your web, in focus."}</h1>
           <p>
-            One workspace for authorized website automation, reliable crawls,
-            and clear results.
+            {copy.login?.description ?? "One workspace for authorized website automation, reliable crawls, and clear results."}
           </p>
+          {content.isPending && <p role="status">Loading website content...</p>}
+          {content.error && <p role="alert">Website content is temporarily unavailable. <button onClick={() => void content.refetch()}>Retry</button></p>}
+          {Object.values(copy).filter(s => !["login","seo","Overview","AI Agent","Websites","Jobs","Workflows","Schedules"].includes(s.key)).map(s => <ContentBlock key={s.key} data={s} />)}
           <form onSubmit={login}>
             <Field label="Workspace API key">
               <input
@@ -191,6 +197,7 @@ export default function App() {
               ["Jobs", Activity],
               ["Workflows", Route],
               ["Schedules", CalendarClock],
+              ["Content", LayoutDashboard],
             ] as const
           ).map(([name, Icon]) => (
             <button
@@ -202,7 +209,7 @@ export default function App() {
               }}
             >
               <Icon size={18} />
-              {name}
+              {copy[name]?.title ?? name}
               {name === "Websites" && (
                 <span>{overview.data?.websites || 0}</span>
               )}
@@ -237,11 +244,12 @@ export default function App() {
             <div>
               <div className="eyebrow">WEBSITE OPERATIONS</div>
               <h1>
-                {tab === "Overview" ? "A clearer view of your web." : tab}
+                {copy[tab]?.title ?? (tab === "Overview" ? "A clearer view of your web." : tab)}
               </h1>
               <p>
-                {
+                {copy[tab]?.description ??
                   {
+                    Content: "Manage website content and publications.",
                     Overview: "Monitor every run. Understand every result.",
                     "AI Agent":
                       "Set an objective. Let the browser observe, act, and verify.",
@@ -286,6 +294,7 @@ export default function App() {
               </button>
             </div>
           )}
+          {tab === "Content" && <ContentAdmin token={token} />}
           {tab === "AI Agent" && (
             <AgentPanel token={token} sites={items} run={run} busy={busy} />
           )}

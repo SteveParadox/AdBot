@@ -8,6 +8,7 @@ os.environ["ADBOT_DATABASE_URL"] = os.environ.get("ADBOT_TEST_DATABASE_URL") or 
 os.environ["ADBOT_REDIS_URL"] = os.environ.get("ADBOT_TEST_REDIS_URL", "")
 os.environ["ADBOT_ENVIRONMENT"] = "development"
 os.environ["ADBOT_AI_PROVIDER"] = "disabled"
+os.environ["ADBOT_AI_FALLBACK_PROVIDER"] = "disabled"
 os.environ["ADBOT_BROWSER_SESSION_PERSISTENCE"] = "false"
 os.environ["ADBOT_AUTHORIZED_DOMAINS"] = ""
 os.environ["ADBOT_FIXTURE_MODE"] = "true"

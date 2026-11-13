@@ -167,6 +167,16 @@ class AgentMemory(Base):
     expires_at: Mapped[float] = mapped_column(Float, index=True)
 
 
+class ContentSection(Base):
+    __tablename__ = "content_sections"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    draft: Mapped[dict] = mapped_column(JSON)
+    published: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time, onupdate=time.time)
+
+
 engine = create_engine(
     settings().database_url,
     pool_pre_ping=True,

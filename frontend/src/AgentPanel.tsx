@@ -63,6 +63,8 @@ type Step = {
 type Config = {
   provider: string;
   model: string;
+  fallback_provider: string;
+  fallback_model: string | null;
   configured: boolean;
   max_steps: number;
   max_tokens: number;
@@ -273,6 +275,12 @@ export default function AgentPanel({
             Provider: <strong>{config.data?.provider || "Loading"}</strong> ·
             Model: <strong>{config.data?.model || "Not configured"}</strong>
           </p>
+          {config.data?.fallback_model && (
+            <p>
+              Fallback: <strong>{config.data.fallback_provider}</strong> ·
+              Model: <strong>{config.data.fallback_model}</strong>
+            </p>
+          )}
           <p className="hint">
             Configure ADBOT_AI_PROVIDER, ADBOT_AI_MODEL and the provider key in
             the server .env, then restart the API and worker. Groq uses

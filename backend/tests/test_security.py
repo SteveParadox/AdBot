@@ -46,6 +46,7 @@ async def test_proxy_denies_non_allowlisted_destinations():
 
 def test_retry_after_and_timezone_schedule():
     assert retry_delay("120", 1) == 120
-    assert retry_delay(None, 3) == 8
+    # The existing retry implementation applies bounded jitter to the exponential delay.
+    assert 6.4 <= retry_delay(None, 3) <= 9.6
     base = datetime(2026, 10, 17, 6, 0, tzinfo=timezone.utc).timestamp()
     assert datetime.fromtimestamp(next_occurrence("0 8 * * *", "Africa/Lagos", base), timezone.utc).hour == 7

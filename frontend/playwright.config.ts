@@ -4,6 +4,6 @@ export default defineConfig({
   workers: 1,
   timeout: 60000,
   retries: 0,
-  use: { baseURL: "http://127.0.0.1:5173", screenshot: "only-on-failure" },
+  use: { baseURL: process.env.ADBOT_E2E_BASE_URL || "http://127.0.0.1:5173", screenshot: "only-on-failure" },
   reporter: "list",
 });

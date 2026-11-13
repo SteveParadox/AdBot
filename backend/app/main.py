@@ -9,6 +9,9 @@ from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from .privacy import PrivacyMiddleware, install_redaction
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -21,9 +24,11 @@ from .security import Policy
 from .api_support import Limit, Offset, Owner, collection, output, owned, workflow_for
 from .api_support import rate_windows as rate_windows
 from .agent.api import router as agent_router
+from .content import router as content_router
 
 logger = logging.getLogger("adbot.api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+install_redaction()
 
 
 @asynccontextmanager
@@ -39,13 +44,25 @@ async def lifespan(app):
         await app.state.redis.aclose()
 
 
-app = FastAPI(title="AdBot — Authorized Website Automation", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="AdBot — Authorized Website Automation", version="1.0.0", lifespan=lifespan,
+              docs_url=None if settings().environment == "production" else "/docs",
+              redoc_url=None if settings().environment == "production" else "/redoc",
+              openapi_url=None if settings().environment == "production" else "/openapi.json")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().cors_origins.split(","),
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"],
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=[h.strip() for h in settings().allowed_hosts.split(",")])
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    return JSONResponse({"detail": [{"loc": e["loc"], "type": e["type"], "msg": "Invalid value"} for e in exc.errors()]}, status_code=422)
+
+
+app.include_router(content_router)
 app.include_router(agent_router)
 
 
@@ -70,7 +87,7 @@ async def headers(request, call_next):
             {
                 "event": "request",
                 "method": request.method,
-                "path": request.url.path,
+                "route": getattr(request.scope.get("route"), "path", "unmatched"),
                 "status": response.status_code,
                 "duration_ms": round((time.monotonic() - started) * 1000),
             }
@@ -92,7 +109,7 @@ async def ready(request: Request):
         if settings().redis_url:
             await request.app.state.redis.ping()
     except Exception:
-        raise HTTPException(503, "Database migrations or dependencies unavailable") from None
+        raise HTTPException(503, "Service temporarily unavailable") from None
     return {"status": "ready"}
 
 
@@ -533,3 +550,6 @@ def website_analytics(owner: Owner):
             }
             for site in session.scalars(select(Website).where(Website.owner == owner))
         ]
+
+# Outermost: cover body-size, CORS, host-validation and application errors alike.
+app.add_middleware(PrivacyMiddleware)

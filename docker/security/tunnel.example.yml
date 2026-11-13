@@ -1,0 +1,7 @@
+# Copy outside the repository and substitute real verified values; never commit credentials.
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /run/secrets/tunnel.json
+ingress:
+  - hostname: REPLACE_WITH_PUBLIC_HOSTNAME
+    service: http://frontend:8080
+  - service: http_status:404

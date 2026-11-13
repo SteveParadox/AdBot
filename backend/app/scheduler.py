@@ -5,6 +5,9 @@ import signal
 import time
 
 from .jobs import cleanup, tick
+from .privacy import install_redaction
+
+install_redaction()
 
 
 async def main():

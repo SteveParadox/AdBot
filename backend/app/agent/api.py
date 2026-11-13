@@ -47,6 +47,8 @@ def configuration(owner: Owner):
     return {
         "provider": cfg.ai_provider,
         "model": cfg.ai_model,
+        "fallback_provider": cfg.ai_fallback_provider,
+        "fallback_model": cfg.ai_fallback_model if cfg.ai_fallback_provider != "disabled" else None,
         "configured": cfg.ai_provider != "disabled",
         "max_steps": cfg.agent_max_steps,
         "max_tokens": cfg.agent_max_tokens,

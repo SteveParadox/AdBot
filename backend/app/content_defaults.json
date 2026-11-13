@@ -1,0 +1,34 @@
+{
+  "login": {
+    "title": "Your web, in focus.",
+    "description": "One workspace for authorized website automation, reliable crawls, and clear results."
+  },
+  "Overview": {
+    "title": "A clearer view of your web.",
+    "description": "Monitor every run. Understand every result."
+  },
+  "AI Agent": {
+    "title": "AI Agent",
+    "description": "Set an objective. Let the browser observe, act, and verify."
+  },
+  "Websites": {
+    "title": "Websites",
+    "description": "Configure authorized targets and keep your crawls in bounds."
+  },
+  "Jobs": {
+    "title": "Jobs",
+    "description": "Launch, inspect, and control your browser sessions."
+  },
+  "Workflows": {
+    "title": "Workflows",
+    "description": "Build repeatable, permitted browser actions."
+  },
+  "Schedules": {
+    "title": "Schedules",
+    "description": "Put routine checks on a reliable schedule."
+  },
+  "seo": {
+    "title": "AdBot \u00b7 Website monitoring",
+    "description": "Authorized website automation and monitoring workspace"
+  }
+}

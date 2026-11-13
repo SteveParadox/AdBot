@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 
@@ -8,7 +9,7 @@ from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from app.agent.contracts import Decision
-from app.agent.model import ModelClient
+from app.agent.model import ModelBudgetExceeded, ModelClient
 from app.agent.model import ModelError
 import httpx
 from app.agent.memory import decrypt_session, encrypt_session
@@ -26,6 +27,7 @@ def agent_config(monkeypatch):
     monkeypatch.setattr(cfg, "ai_provider", "local")
     monkeypatch.setattr(cfg, "ai_model", "fixture-model-not-live-llm")
     monkeypatch.setattr(cfg, "ai_base_url", "http://127.0.0.1:8766/v1")
+    monkeypatch.setattr(cfg, "ai_fallback_provider", "disabled")
     monkeypatch.setattr(cfg, "agent_max_steps", 15)
     monkeypatch.setattr(cfg, "ai_retries", 0)
     return cfg
@@ -313,6 +315,281 @@ async def test_model_malformed_json_is_rejected_and_accounted(agent_config, monk
     assert len(charges) == 2 and charges[-1] == (50, 20, False)
 
 
+async def test_model_falls_back_to_local_after_groq_network_failure(agent_config, monkeypatch):
+    from pydantic import BaseModel, SecretStr
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_provider = "groq"
+    agent_config.ai_model = "primary-fixture"
+    agent_config.groq_api_key = SecretStr("test-key")
+    agent_config.ai_fallback_provider = "local"
+    agent_config.ai_fallback_model = "dolphin3:8b"
+    agent_config.ai_fallback_base_url = "http://127.0.0.1:11434/v1"
+    agent_config.ai_retries = 0
+    original = httpx.AsyncClient
+    requests = []
+
+    async def response(request):
+        requests.append(request)
+        if "groq.test" in request.url.host:
+            raise httpx.ConnectError("provider unavailable", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    agent_config.groq_base_url = "https://groq.test/v1"
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request("decide", {"objective": "test"}, Reply, lambda *args: (1, 1))
+    assert result.status == "ok"
+    assert [request.url.host for request in requests] == ["groq.test", "127.0.0.1"]
+    assert b'"model":"dolphin3:8b"' in requests[1].content
+
+
+async def test_model_immediately_falls_back_after_any_primary_http_error(agent_config, monkeypatch):
+    from pydantic import BaseModel, SecretStr
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_provider = "groq"
+    agent_config.ai_model = "primary-fixture"
+    agent_config.groq_api_key = SecretStr("test-key")
+    agent_config.groq_base_url = "https://groq.test/v1"
+    agent_config.ai_fallback_provider = "local"
+    agent_config.ai_fallback_model = "dolphin3:8b"
+    agent_config.ai_fallback_base_url = "http://127.0.0.1:11434/v1"
+    agent_config.ai_retries = 2
+    original = httpx.AsyncClient
+    requests = []
+
+    async def response(request):
+        requests.append(request)
+        if request.url.host == "groq.test":
+            return httpx.Response(400, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request("decide", {"objective": "test"}, Reply, lambda *args: (1, 1))
+    assert result.status == "ok"
+    assert [request.url.host for request in requests] == ["groq.test", "127.0.0.1"]
+
+
+async def test_fallback_retries_invalid_schema_without_spending_an_agent_step(agent_config, monkeypatch):
+    from pydantic import BaseModel, SecretStr
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_provider = "groq"
+    agent_config.ai_model = "primary-fixture"
+    agent_config.groq_api_key = SecretStr("test-key")
+    agent_config.groq_base_url = "https://groq.test/v1"
+    agent_config.ai_fallback_provider = "local"
+    agent_config.ai_fallback_model = "dolphin3:8b"
+    agent_config.ai_fallback_base_url = "http://127.0.0.1:11434/v1"
+    agent_config.ai_retries = 1
+    original = httpx.AsyncClient
+    requests = []
+
+    async def response(request):
+        requests.append(request)
+        if request.url.host == "groq.test":
+            return httpx.Response(429, request=request)
+        if len(requests) == 2:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "not valid JSON"}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request("decide", {"objective": "test"}, Reply, lambda *args: (1, 1))
+    assert result.status == "ok"
+    assert [request.url.host for request in requests] == ["groq.test", "127.0.0.1", "127.0.0.1"]
+
+
+async def test_model_compacts_oversized_observation_before_request(agent_config, monkeypatch):
+    from pydantic import BaseModel
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_max_request_chars = 8000
+    original = httpx.AsyncClient
+    requests = []
+
+    async def response(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    observation = {
+        "url": "https://example.test/",
+        "text": "a" * 100_000,
+        "viewport_text": "b" * 100_000,
+        "accessibility": "c" * 100_000,
+        "headings": ["d" * 1000] * 100,
+        "elements": [
+            {"element_id": f"e{i}", "name": "e" * 1000, "href": "https://example.test/" + "f" * 1000}
+            for i in range(100)
+        ],
+    }
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request(
+        "decide", {"objective": "test", "current_page": observation}, Reply, lambda *args: (1, 1)
+    )
+    content = json.loads(requests[0].content)["messages"][1]["content"]
+    assert result.status == "ok"
+    assert len(content) < agent_config.ai_max_request_chars
+    assert '"url":"https://example.test/"' in content
+
+
+async def test_model_request_timeout_is_capped_by_remaining_session(agent_config, monkeypatch):
+    from pydantic import BaseModel
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_timeout_seconds = 90
+    original = httpx.AsyncClient
+    observed = []
+
+    async def response(request):
+        observed.append(request.extensions["timeout"]["read"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request(
+        "decide", {"objective": "test"}, Reply, lambda *args: (1, 1), timeout_cap_seconds=7
+    )
+    assert result.status == "ok"
+    assert observed == [7]
+
+
+async def test_model_falls_back_after_413_without_spending_rejected_reservation(agent_config, monkeypatch):
+    from pydantic import BaseModel, SecretStr
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_provider = "groq"
+    agent_config.ai_model = "primary-fixture"
+    agent_config.groq_api_key = SecretStr("test-key")
+    agent_config.ai_fallback_provider = "local"
+    agent_config.ai_fallback_model = "dolphin3:8b"
+    agent_config.ai_fallback_base_url = "http://127.0.0.1:11434/v1"
+    agent_config.ai_retries = 0
+    original = httpx.AsyncClient
+    requests = []
+    balance = [0, 0]
+
+    async def response(request):
+        requests.append(request)
+        if request.url.host == "groq.test":
+            return httpx.Response(413, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    def account(prompt, completion, latency, reserve, reservation=None):
+        if reserve:
+            balance[0] += prompt
+            balance[1] += completion
+            return (prompt, completion)
+        balance[0] += prompt - reservation[0]
+        balance[1] += completion - reservation[1]
+
+    agent_config.groq_base_url = "https://groq.test/v1"
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request("decide", {"objective": "test"}, Reply, account)
+    assert result.status == "ok"
+    assert [request.url.host for request in requests] == ["groq.test", "127.0.0.1"]
+    assert balance == [12, 3]
+
+
+async def test_model_falls_back_when_primary_task_budget_is_reserved(agent_config, monkeypatch):
+    from pydantic import BaseModel, SecretStr
+
+    class Reply(BaseModel):
+        status: str
+
+    agent_config.ai_provider = "groq"
+    agent_config.ai_model = "primary-fixture"
+    agent_config.groq_api_key = SecretStr("test-key")
+    agent_config.ai_fallback_provider = "local"
+    agent_config.ai_fallback_model = "dolphin3:8b"
+    agent_config.ai_fallback_base_url = "http://127.0.0.1:11434/v1"
+    requests = []
+    original = httpx.AsyncClient
+
+    async def response(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"status":"ok"}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
+            request=request,
+        )
+
+    def account(prompt, completion, latency, reserve, reservation=None):
+        if reserve and reservation["provider_index"] == 0:
+            raise ModelBudgetExceeded("primary token reserve exhausted")
+        if reserve:
+            return (prompt, completion)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(response), **kw))
+    result = await ModelClient().request("decide", {"objective": "test"}, Reply, account)
+    assert result.status == "ok"
+    assert len(requests) == 1
+    assert requests[0].url.host == "127.0.0.1"
+    assert b'"model":"dolphin3:8b"' in requests[0].content
+
+
 def test_token_budget_prevents_request(client, target, agent_config):
     from app.agent.runner import AgentRunner
 
@@ -321,6 +598,21 @@ def test_token_budget_prevents_request(client, target, agent_config):
     runner.account(runner.options["max_tokens"] - 100, 100, 0, True)
     with pytest.raises(RuntimeError, match="token budget"):
         runner.account(1, 1, 0, True)
+
+
+def test_fallback_budget_is_reserved_from_primary(client, target, agent_config):
+    from app.agent.runner import AgentRunner
+
+    agent_config.ai_fallback_provider = "local"
+    new_task(client, target)
+    runner = AgentRunner(*claim())
+    fallback_reserve = agent_config.agent_fallback_tokens
+    primary_budget = runner.options["max_tokens"] - fallback_reserve
+
+    runner.account(primary_budget - 100, 100, 0, True, {"provider_index": 0})
+    with pytest.raises(RuntimeError, match="token budget"):
+        runner.account(1, 1, 0, True, {"provider_index": 0})
+    runner.account(1, 1, 0, True, {"provider_index": 1})
 
 
 @pytest.mark.browser

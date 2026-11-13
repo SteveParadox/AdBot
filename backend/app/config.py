@@ -8,9 +8,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ADBOT_", env_file="../.env", extra="ignore")
-    environment: str = "development"
+    model_config = SettingsConfigDict(env_prefix="ADBOT_", env_file="../.env", extra="ignore", hide_input_in_errors=True)
+    environment: Literal["development", "production"] = "development"
+    trusted_proxy_cidrs: str = ""
+    allowed_hosts: str = "localhost,127.0.0.1,testserver"
+    enforce_https: bool = False
+    hsts_enabled: bool = False
+    public_rate_per_minute: int = Field(600, ge=1)
+
     api_keys: str = ""
+    content_admin_keys: str = ""
     database_url: str = "sqlite:///./adbot.db"
     redis_url: str = ""
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
@@ -29,8 +36,15 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr = SecretStr("")
     ai_model: str = ""
     ai_timeout_seconds: int = Field(30, ge=1, le=120)
+    ai_fallback_provider: Literal["disabled", "local"] = "disabled"
+    ai_fallback_base_url: str = "http://127.0.0.1:11434/v1"
+    ai_fallback_api_key: SecretStr = SecretStr("")
+    ai_fallback_model: str = ""
+    ai_fallback_timeout_seconds: int = Field(60, ge=1, le=600)
+    agent_fallback_tokens: int = Field(10000, ge=0, le=250000)
     ai_retries: int = Field(2, ge=0, le=4)
-    ai_max_output_tokens: int = Field(1800, ge=256, le=8000)
+    ai_max_output_tokens: int = Field(800, ge=256, le=8000)
+    ai_max_request_chars: int = Field(18000, ge=4000, le=100000)
     ai_json_mode: bool = True
     agent_max_steps: int = Field(30, ge=1, le=100)
     agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
@@ -43,13 +57,24 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def secure(self):
+        from ipaddress import ip_network
+        for value in filter(None, (v.strip() for v in self.trusted_proxy_cidrs.split(","))):
+            if ip_network(value).prefixlen == 0:
+                raise ValueError("Trust explicit proxy networks, never all addresses")
+        hosts = [h.strip() for h in self.allowed_hosts.split(",")]
+        if not all(hosts) or (self.environment == "production" and "*" in hosts):
+            raise ValueError("Configure explicit allowed hosts")
+        if self.hsts_enabled and not self.enforce_https:
+            raise ValueError("HSTS requires verified HTTPS enforcement")
+        if "*" in self.cors_origins.split(","):
+            raise ValueError("CORS origins must be explicit")
         keys = self.api_keys.split(",")
         if not keys or any(len(k.strip()) < 32 for k in keys):
             raise ValueError("Set ADBOT_API_KEYS to comma-separated API keys of at least 32 characters")
         if self.environment == "production":
             if self.fixture_mode or not self.redis_url or not self.database_url.startswith("postgresql"):
                 raise ValueError("Production requires PostgreSQL, Redis and fixture mode disabled")
-            if not self.authorized_domains:
+            if not any(d.strip() for d in self.authorized_domains.split(",")):
                 raise ValueError("Production requires ADBOT_AUTHORIZED_DOMAINS")
         if self.ai_provider != "disabled":
             if not self.ai_model:
@@ -69,6 +94,22 @@ class Settings(BaseSettings):
             key = self.groq_api_key if self.ai_provider == "groq" else self.ai_api_key
             if self.ai_provider != "local" and not key.get_secret_value():
                 raise ValueError("Configure the selected provider API key")
+        if self.ai_fallback_provider != "disabled":
+            if self.ai_provider != "groq":
+                raise ValueError("AI fallback is supported only with Groq as the primary provider")
+            if not self.ai_fallback_model:
+                raise ValueError("Set ADBOT_AI_FALLBACK_MODEL when enabling the local fallback")
+            parsed = urlsplit(self.ai_fallback_base_url)
+            if (
+                parsed.scheme not in {"https", "http"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+            ):
+                raise ValueError("Invalid local AI fallback endpoint")
+            if self.agent_fallback_tokens < self.ai_max_output_tokens:
+                raise ValueError("AI fallback token reserve must cover at least one maximum-length response")
         if self.browser_session_persistence:
             from cryptography.fernet import Fernet
 

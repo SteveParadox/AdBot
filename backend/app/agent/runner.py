@@ -1,5 +1,7 @@
+import time
 import asyncio
 import json
+import random
 
 from playwright.async_api import Error as BrowserError
 
@@ -12,7 +14,7 @@ from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, save_memory
-from .model import ModelClient, ModelError
+from .model import ModelBudgetExceeded, ModelClient, ModelError
 
 
 class AgentRunner(Runner):
@@ -23,6 +25,7 @@ class AgentRunner(Runner):
             job = owned_job(session, self.id, self.token)
             task = session.get(AgentTask, self.id)
             self.options = task.options
+            self.deadline = job.started_at + self.cfg["max_duration_seconds"]
             self.objective, self.mode = task.objective, task.mode
             self.memory = task.memory or {
                 "visited_urls": [],
@@ -41,9 +44,12 @@ class AgentRunner(Runner):
             )
 
     def context_options(self):
+        headers = {"X-AdBot-Automation": "true", "X-AdBot-Session": self.id}
+        if random.random() < 0.3:
+            headers["X-Request-ID"] = f"req-{random.randint(100000, 999999)}"
         return {
             "accept_downloads": False,
-            "extra_http_headers": {"X-AdBot-Automation": "true", "X-AdBot-Session": self.id},
+            "extra_http_headers": headers,
             **({"storage_state": self.restored_session} if self.restored_session else {}),
         }
 
@@ -59,8 +65,12 @@ class AgentRunner(Runner):
             owned_job(session, self.id, self.token)
             task = session.get(AgentTask, self.id)
             if reserve:
-                if task.prompt_tokens + task.completion_tokens + prompt + completion > self.options["max_tokens"]:
-                    raise RuntimeError("Model token budget exhausted before request")
+                provider_index = (reservation or {}).get("provider_index", 0)
+                task_budget = self.options["max_tokens"]
+                if provider_index == 0 and settings().ai_fallback_provider != "disabled":
+                    task_budget = max(0, task_budget - settings().agent_fallback_tokens)
+                if task.prompt_tokens + task.completion_tokens + prompt + completion > task_budget:
+                    raise ModelBudgetExceeded("Model token budget exhausted before request")
                 task.model_calls += 1
                 task.prompt_tokens += prompt
                 task.completion_tokens += completion
@@ -75,7 +85,10 @@ class AgentRunner(Runner):
             if observation and self.options["visual_reasoning"]
             else None
         )
-        return await self.model.request(kind, payload, schema, self.account, image)
+        remaining = max(1, int(self.deadline - time.time()) - 5)
+        return await self.model.request(
+            kind, payload, schema, self.account, image, timeout_cap_seconds=remaining
+        )
 
     async def checkpoint(self, controller):
         self.memory["tabs"] = [
@@ -174,6 +187,7 @@ class AgentRunner(Runner):
             "evidence": list(evidence.values()),
             "verification": verification.model_dump(),
             "model": settings().ai_model,
+            "models_used": sorted(self.model.models_used),
         }
         with transaction() as session:
             job = owned_job(session, self.id, self.token)

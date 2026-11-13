@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import random
 import time
 from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlsplit
@@ -15,8 +16,9 @@ from .db import Frontier, PageVisit, emit, transaction, uid
 from .egress import egress_proxy
 from .jobs import owned_job
 from .security import Policy, PolicyError
+from . import polymorph
 
-USER_AGENT = "AdBotMonitor/1.0 (+authorized website monitoring)"
+USER_AGENT = polymorph.get_random_user_agent()
 
 
 class BrowserCrashed(RuntimeError):
@@ -30,7 +32,7 @@ def retry_delay(value, attempt):
         try:
             seconds = parsedate_to_datetime(value).timestamp() - time.time()
         except (TypeError, ValueError, OverflowError):
-            seconds = 2**attempt
+            seconds = polymorph.calculate_retry_delay(attempt)
     # Never retry sooner than Retry-After. A delay exceeding the job budget
     # causes the outer session deadline to terminate the job instead.
     return max(0.1, seconds)
@@ -135,7 +137,7 @@ class Runner:
                             raise
                         delay = 2**attempt
                         self.log("retry_scheduled", "Navigation timed out; retry scheduled", seconds=delay)
-                        await asyncio.sleep(delay)
+                        await asyncio.sleep(delay * random.uniform(0.9, 1.1))
             else:
                 response = self.last_response
             self.policy.check(page.url)
@@ -144,9 +146,9 @@ class Runner:
             if self.cfg["wait_selector"]:
                 await page.locator(self.cfg["wait_selector"]).first.wait_for(timeout=self.cfg["navigation_timeout_ms"])
             if self.cfg["scroll"]:
-                for _ in range(5):
-                    await page.mouse.wheel(0, 600)
-                    await asyncio.sleep(0.1)
+                for _ in range(random.randint(3, 6)):
+                    await page.mouse.wheel(0, polymorph.get_random_scroll_amount())
+                    await asyncio.sleep(polymorph.get_random_wait_time(0.05, 0.15))
             title = (await page.title())[:2000]
             content_hash = hashlib.sha256((await page.content()).encode()).hexdigest()
             if self.cfg["screenshots"]:
@@ -255,7 +257,7 @@ class Runner:
                     owned_job(session, self.id, self.token)
                     session.get(Frontier, frontier_id).crawl_status = "blocked"
                     emit(session, self.id, "policy_block", "Page denied by navigation or robots policy", url=url)
-            await asyncio.sleep(max(self.cfg["delay_seconds"], self.crawl_delay))
+            await asyncio.sleep(max(self.cfg["delay_seconds"], self.crawl_delay) * random.uniform(0.8, 1.3))
 
     async def workflow(self, page):
         # Rebuild read-only page state on resume; CLICK workflows never auto-recover.
@@ -340,7 +342,7 @@ class Runner:
                     job.action_index = index + 1
                     job.execution_state = {"history": self.history}
                     emit(session, self.id, "action_completed", f"{action} completed", index=index, **details)
-            await asyncio.sleep(self.cfg["delay_seconds"])
+            await asyncio.sleep(self.cfg["delay_seconds"] * random.uniform(0.7, 1.4))
 
     def context_options(self):
         return {
@@ -374,6 +376,7 @@ class Runner:
                     "--disable-background-networking",
                     "--disable-features=WebRtcHideLocalIpsWithMdns",
                     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                    f"--window-size={polymorph.get_random_viewport()['width']},{polymorph.get_random_viewport()['height']}",
                 ]
             if self.cfg["browser"] == "firefox":
                 options["firefox_user_prefs"] = {
@@ -383,9 +386,10 @@ class Runner:
             browser = await engine.launch(**options)
             try:
                 mobile = self.cfg["viewport"] == "mobile"
+                vp = polymorph.get_random_viewport() if not mobile else {"width": 390, "height": 844}
                 context = await browser.new_context(
-                    viewport={"width": 390 if mobile else 1440, "height": 844 if mobile else 900},
-                    user_agent=USER_AGENT,
+                    viewport={"width": vp["width"] if not mobile else 390, "height": vp["height"] if not mobile else 844},
+                    user_agent=polymorph.get_random_user_agent(),
                     service_workers="block",
                     **self.context_options(),
                 )

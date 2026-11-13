@@ -11,6 +11,7 @@ from sqlalchemy import func, inspect, select
 
 from .config import settings
 from .db import Website, Workflow
+from .privacy import rate_hit
 
 rate_windows = defaultdict(deque)
 
@@ -23,8 +24,10 @@ async def authenticate(request: Request, authorization: Annotated[str | None, He
     redis = getattr(request.app.state, "redis", None)
     if redis:
         key = f"adbot:rate:{owner}:{int(time.time() // 60)}"
-        hits = await redis.incr(key)
-        await redis.expire(key, 120)
+        try:
+            hits = await rate_hit(redis, key)
+        except Exception:
+            raise HTTPException(503, "Service temporarily unavailable") from None
         if hits > settings().rate_per_minute:
             raise HTTPException(429, "Rate limit exceeded", headers={"Retry-After": "60"})
     else:
