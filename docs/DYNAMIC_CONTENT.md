@@ -51,7 +51,7 @@ The browser runner uses an isolated temporary database; it does not modify produ
 This remains a client-rendered Vite application. Initial HTML retains the original SEO fallback;
 dynamic metadata requires JavaScript. SSR metadata/social-crawler verification is not implemented.
 The editor displays up to 200 sections; the API supports additional pages. No asset upload service,
-revision history, simultaneous-editor conflict protection or free-form navigation routing is added.
+revision history or free-form navigation routing is added. Revision conflict protection is described below.
 Production readiness requires deployment verification with PostgreSQL/Redis, the actual reverse
 proxy and image hosting/CSP, plus resolution of any existing unrelated regression failures.
 
@@ -72,3 +72,32 @@ proxy and image hosting/CSP, plus resolution of any existing unrelated regressio
   to permit broader test collection, preserving the workspace's pre-existing behavioral changes.
 - Focused retry/security rerun after adjusting the jitter assertion: **1 passed**. The full broad
   suite was not rerun after this test-only change; the previous 38 passes remain the available evidence.
+
+
+## Content conflict protection
+Apply migration f19c00000001 before deploying this change. Existing section data/published snapshots
+are preserved; every section receives an opaque revision token. GET /api/admin/content and authenticated
+GET /api/admin/content/{key} return it. Creation sends revision=null/omits it; an existing key cannot
+be overwritten that way. Updates require revision in the JSON body; deletes require If-Match with the
+loaded token. Missing update/delete preconditions return 428; stale writes return 409. Missing delete
+resources return 404. Tokens change on every write and are unique after deletion/recreation, preventing
+old editors from overwriting a recreated section. Revisions are not exposed by public snapshots.
+
+The compare-and-swap predicate is executed inside the database write, so two writers using the same
+revision cannot both succeed. On conflict the dashboard preserves the local draft, displays the latest
+server values and disables save/delete until explicit reload or manual rebase. Keep my draft for manual
+merge adopts the displayed revision; review all fields before saving. Another intervening write still
+causes 409. Existing API clients must be upgraded to supply revisions; no force-overwrite escape hatch
+is provided. Editors must refresh after rolling back schema/code. This is conflict protection, not a
+revision-history/restore feature. Downgrade drops revision tokens only, preserving content.
+
+### Conflict-protection verification
+- Backend content/privacy regression selection: **23 passed** (includes simultaneous writers, stale
+  draft/publish/archive/delete, missing preconditions, deleted/recreated keys and migration replay).
+- Additional pre-existing draft/publication migration upgrade/replay/downgrade integrity check: **1 passed**.
+- Browser suite: **6 passed** (27.7s), including two-editor conflict, preserved local draft, disabled stale
+  save, latest-version comparison and explicit merge/save. An initial browser failure exposed missing
+  HTTP status propagation in the shared client; ApiError now preserves status and has a unit regression.
+- Frontend unit tests: **6 passed**. TypeScript/Vite build, changed-code Ruff and whitespace checks passed.
+- These are targeted local checks, not a new full backend run or production deployment. Existing
+  external PostgreSQL/proxy/TLS staging requirements remain. No commit or push was performed.

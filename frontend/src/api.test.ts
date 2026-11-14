@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEvents } from "./api";
+import { api, parseEvents } from "./api";
 
 describe("SSE reconnect input", () => {
   it("buffers incomplete events across network chunks", () => {
@@ -16,4 +16,12 @@ describe("SSE reconnect input", () => {
   it("handles CRLF line endings", () => {
     expect(parseEvents('id: 1\r\ndata: {"id":1}\r\n\r\n').events[0].id).toBe(1);
   });
+});
+
+
+it("preserves conflict status for the editor without losing the server message",async()=>{
+  const original=globalThis.fetch;
+  globalThis.fetch=async()=>new Response(JSON.stringify({detail:"Section changed"}),{status:409,headers:{"Content-Type":"application/json"}});
+  try { await expect(api("/admin/content/test","test-key","POST",{})).rejects.toMatchObject({name:"ApiError",status:409,message:"Section changed"}); }
+  finally {globalThis.fetch=original;}
 });

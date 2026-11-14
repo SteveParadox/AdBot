@@ -1,13 +1,15 @@
 """Published snapshots are separate from drafts; public reads never serialize drafts."""
 import hmac
+import time
+import uuid
 from contextlib import contextmanager
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select, update, delete
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 
 from .api_support import Owner, Limit, Offset, collection, output
 from .config import settings
@@ -21,6 +23,8 @@ def content_session(write=False):
     try:
         with (transaction() if write else Session()) as session:
             yield session
+    except IntegrityError:
+        raise HTTPException(409, "Section changed; reload before saving") from None
     except SQLAlchemyError:
         raise HTTPException(503, "Website content is temporarily unavailable") from None
 
@@ -51,6 +55,7 @@ class ContentData(BaseModel):
 
 
 class ContentInput(BaseModel):
+    revision: str | None = Field(None, pattern=r"^[0-9a-f-]{36}$")
     model_config = ConfigDict(extra="forbid")
     status: Literal["draft", "published", "archived"] = "draft"
     position: int = Field(0, ge=0, le=10000)
@@ -82,29 +87,51 @@ def list_content(admin: Admin, offset: Offset = 0, limit: Limit = 100):
         return collection(session, select(ContentSection).order_by(ContentSection.position, ContentSection.key), offset, limit)
 
 
+@router.get("/admin/content/{key}")
+def get_content(key: str, admin: Admin):
+    with content_session() as session:
+        item=session.get(ContentSection,key)
+        if item is None:
+            raise HTTPException(404,"Section not found")
+        return output(item)
+
+
 @router.post("/admin/content/{key}")
 def save_content(key: str, data: ContentInput, admin: Admin):
     import re
     if not re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", key):
         raise HTTPException(422, "Invalid section key")
+    if data.revision is None:
+        with content_session() as session:
+            if session.get(ContentSection,key) is not None:
+                raise HTTPException(428, "Load the current section and provide its revision")
     with content_session(write=True) as session:
-        item = session.get(ContentSection, key)
-        if item is None:
-            item = ContentSection(key=key)
+        if data.revision is None:
+            item = ContentSection(key=key, draft=data.draft.model_dump(), status=data.status, position=data.position)
+            if data.status=='published':
+                item.published=data.draft.model_dump()
             session.add(item)
-        item.draft = data.draft.model_dump()
-        item.position = data.position
-        item.status = data.status
-        if data.status == "published":
-            item.published = item.draft.copy()
-        session.flush()
-        return output(item)
+            session.flush()
+            return output(item)
+        values = dict(draft=data.draft.model_dump(),status=data.status,position=data.position,
+                      revision=str(uuid.uuid4()),updated_at=time.time())
+        if data.status=='published':
+            values['published']=data.draft.model_dump()
+        result=session.execute(update(ContentSection).where(ContentSection.key==key,ContentSection.revision==data.revision).values(**values))
+        if result.rowcount!=1:
+            raise HTTPException(409, "Section changed; your draft was not saved. Reload and merge before saving")
+        session.expire_all()
+        return output(session.get(ContentSection,key))
 
 
 @router.delete("/admin/content/{key}", status_code=204)
-def delete_content(key: str, admin: Admin):
+def delete_content(key: str, admin: Admin, if_match: Annotated[str | None, Header()] = None):
     with content_session(write=True) as session:
-        item = session.get(ContentSection, key)
-        if not item:
-            raise HTTPException(404, "Section not found")
-        session.delete(item)
+        if if_match is None:
+            raise HTTPException(428, "Provide the loaded revision in If-Match")
+        revision=if_match.strip('"')
+        result=session.execute(delete(ContentSection).where(ContentSection.key==key,ContentSection.revision==revision))
+        if result.rowcount!=1:
+            if session.get(ContentSection,key) is None:
+                raise HTTPException(404,"Section not found")
+            raise HTTPException(409, "Section changed; reload before deleting")

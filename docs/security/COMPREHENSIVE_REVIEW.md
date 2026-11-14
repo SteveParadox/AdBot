@@ -36,8 +36,7 @@ rate limiting, production doc suppression and earlier security controls remain i
 - Nginx image pull exceeded a bounded 45-second deadline. No Nginx parser/runtime, live HTTPS/origin,
   Cloudflare identity/header behavior or host firewall success is claimed by these source changes.
 
-Residual limitations requiring operational/product decisions: CMS writes remain last-write-wins between
-authorized simultaneous editors (no revision history/conflict UI); metadata is client-rendered; application
+Residual limitations requiring operational/product decisions: CMS revision conflicts now have atomic protection and an explicit merge UI (see DYNAMIC_CONTENT.md); revision history is still absent; metadata is client-rendered; application
 routing cannot prevent arbitrary sockets from a compromised process; proxy providers must guarantee fixed
 exit allocations; SOCKS/remote DNS are unsupported; real Redis multi-process behavior and deployed TLS,
 CSP, origin rejection and Tunnel subnet/trust setup require staging verification. Mutable image tags in

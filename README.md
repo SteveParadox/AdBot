@@ -165,7 +165,7 @@ there is no upload library. Text is escaped; unsafe preview/public URLs are reje
 
 Public content refreshes every 30 seconds, with immediate editor-browser invalidation after writes.
 Errors retain cached content or original copy and offer retry. Title/description/canonical/Open Graph
-metadata is client-rendered, not SSR. Simultaneous content-editor writes remain last-write-wins.
+metadata is client-rendered, not SSR. Content saves and deletes require the loaded revision; stale edits are rejected and the editor preserves your draft for comparison/merge.
 See [dynamic content](docs/DYNAMIC_CONTENT.md).
 
 ## 5. User-Agent administration
@@ -410,7 +410,6 @@ restrictions. No blanket firewall script is deployed by this repository.
 
 Still requiring deployment verification: real PostgreSQL/Redis multi-process behavior, Nginx runtime and
 CSP/TLS, Cloudflare/DNS/direct-origin rejection, proxy exit allocation, host egress ACLs, load/capacity,
-selected browser engines and backup restoration. SOCKS/remote DNS are unsupported, content edits are
-last-write-wins, metadata is client-rendered and rotation counters are process-local. Arbitrary OS sockets
+selected browser engines and backup restoration. SOCKS/remote DNS are unsupported, metadata is client-rendered and rotation counters are process-local. Arbitrary OS sockets
 under compromise are not intercepted. No anonymity guarantee is made. Truthful lawful business
 information, legitimate ownership records and dependency attribution must remain intact.

@@ -62,7 +62,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().cors_origins.split(","),
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID", "If-Match"],
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=[h.strip() for h in settings().allowed_hosts.split(",")])
 
@@ -119,6 +119,7 @@ async def ready(request: Request):
         with Session() as session:
             session.execute(text("SELECT 1 FROM websites LIMIT 1"))
             session.execute(text("SELECT revision FROM user_agent_config LIMIT 1"))
+            session.execute(text("SELECT revision FROM content_sections LIMIT 1"))
         if settings().redis_url:
             await request.app.state.redis.ping()
     except Exception:

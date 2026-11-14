@@ -1,3 +1,4 @@
+export class ApiError extends Error { constructor(message: string, public status: number) { super(message); this.name="ApiError"; } }
 export type Collection<T> = { items: T[]; total: number };
 export type Config = {
   max_pages: number;
@@ -134,10 +135,10 @@ export async function api<T>(
     const body = await response
       .json()
       .catch(() => ({ detail: "Request failed" }));
-    throw new Error(
+    throw new ApiError(
       typeof body.detail === "string"
         ? body.detail
-        : JSON.stringify(body.detail),
+        : JSON.stringify(body.detail), response.status,
     );
   }
   return response.status === 204 ? (undefined as T) : response.json();
