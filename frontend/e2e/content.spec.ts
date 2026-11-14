@@ -11,6 +11,12 @@ test("administrator publishes content and public login refreshes", async ({page,
   await page.getByRole("combobox",{name:"Status",exact:true}).selectOption("draft");
   await page.getByRole("button",{name:"Save",exact:true}).click();
   await expect(page.getByRole("status")).toHaveText("Saved");
+  await page.getByRole("button",{name:"New section",exact:true}).click();
+  await expect(page.getByLabel("Section key")).toHaveValue("");
+  await expect(page.getByLabel("title",{exact:true})).toHaveValue("");
+  await page.getByRole("combobox",{name:"Select section",exact:true}).selectOption("announcement");
+  await expect(page.getByLabel("title",{exact:true})).toHaveValue("Published announcement");
+
   let response = await request.get("/api/content");
   expect(await response.text()).not.toContain("Published announcement");
   await page.getByRole("combobox",{name:"Status",exact:true}).selectOption("published");

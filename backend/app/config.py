@@ -14,6 +14,17 @@ class Settings(BaseSettings):
     allowed_hosts: str = "localhost,127.0.0.1,testserver"
     enforce_https: bool = False
     hsts_enabled: bool = False
+    user_agent_default: str = "Adbot/1.0.0"
+    user_agent_max_length: int = Field(512, ge=32, le=2048)
+    user_agent_allow_request_overrides: bool = False
+    user_agent_rotatable_services: str = ""
+    user_agent_fixed_identities: dict[str, str] = Field(default_factory=dict)
+    outbound_proxy_enabled: bool = False
+    outbound_proxy_config_path: Path = Path('/run/secrets/outbound-proxies.json')
+    outbound_connect_timeout_seconds: float = Field(5, gt=0, le=60)
+    outbound_request_timeout_seconds: float = Field(15, gt=0, le=120)
+    outbound_max_retries: int = Field(2, ge=0, le=4)
+    outbound_health_interval_seconds: int = Field(60, ge=10, le=3600)
     public_rate_per_minute: int = Field(600, ge=1)
 
     api_keys: str = ""
@@ -68,6 +79,12 @@ class Settings(BaseSettings):
             raise ValueError("HSTS requires verified HTTPS enforcement")
         if "*" in self.cors_origins.split(","):
             raise ValueError("CORS origins must be explicit")
+        ua_values = [self.user_agent_default, *self.user_agent_fixed_identities.values()]
+        if any(not v or len(v)>self.user_agent_max_length or v != v.strip() or any(ord(c)<32 or ord(c)>126 for c in v) for v in ua_values):
+            raise ValueError("Invalid operator User-Agent identity")
+        ua_services = {'browser','ai','ai_local','proxy_health'}
+        if set(self.user_agent_fixed_identities)-ua_services or any(v.strip() not in ua_services for v in self.user_agent_rotatable_services.split(',') if v.strip()):
+            raise ValueError("Unknown User-Agent service")
         keys = self.api_keys.split(",")
         if not keys or any(len(k.strip()) < 32 for k in keys):
             raise ValueError("Set ADBOT_API_KEYS to comma-separated API keys of at least 32 characters")

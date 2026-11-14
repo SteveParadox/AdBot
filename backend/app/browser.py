@@ -18,7 +18,9 @@ from .jobs import owned_job
 from .security import Policy, PolicyError
 from . import polymorph
 
-USER_AGENT = polymorph.get_random_user_agent()
+from .user_agents import resolve
+
+USER_AGENT = "Adbot/1.0.0"  # Legacy import compatibility; live requests use the session identity.
 
 
 class BrowserCrashed(RuntimeError):
@@ -41,6 +43,7 @@ def retry_delay(value, attempt):
 class Runner:
     def __init__(self, job_id, token):
         self.id, self.token = job_id, token
+        self.user_agent = settings().user_agent_default
         with transaction() as session:
             job = owned_job(session, job_id, token)
             self.snapshot = job.snapshot
@@ -67,7 +70,7 @@ class Runner:
                 async with httpx.AsyncClient(proxy=self.proxy, trust_env=False, timeout=15) as client:
                     for _ in range(6):
                         self.policy.check(target, navigation=False)
-                        async with client.stream("GET", target, headers={"User-Agent": USER_AGENT}) as response:
+                        async with client.stream("GET", target, headers={"User-Agent": self.user_agent}) as response:
                             if response.is_redirect:
                                 target = urljoin(target, response.headers.get("location", ""))
                                 continue
@@ -89,9 +92,9 @@ class Runner:
                     else:
                         raise PolicyError("robots.txt redirect limit exceeded")
             robot = self.robots[origin]
-            if not robot.can_fetch(USER_AGENT, url):
+            if not robot.can_fetch(self.user_agent, url):
                 raise PolicyError("robots.txt disallows this URL")
-            delay = robot.crawl_delay(USER_AGENT) or robot.crawl_delay("*") or 0
+            delay = robot.crawl_delay(self.user_agent) or robot.crawl_delay("*") or 0
             self.crawl_delay = max(self.crawl_delay, delay)
         return url
 
@@ -365,7 +368,10 @@ class Runner:
 
     async def run(self):
         self.crawl_delay = 0
-        async with egress_proxy(self.policy, self.proxy_method_allowed) as proxy, async_playwright() as playwright:
+        async with egress_proxy(self.policy, self.proxy_method_allowed, session=self.id) as proxy, async_playwright() as playwright:
+            from .outbound import manager
+            endpoint = manager().bind("browser",self.id)
+            self.user_agent = resolve("browser",proxy_endpoint=endpoint)
             self.proxy = proxy
             engine = getattr(playwright, self.cfg["browser"])
             options = {"headless": self.cfg["headless"], "proxy": {"server": proxy}}
@@ -389,7 +395,7 @@ class Runner:
                 vp = polymorph.get_random_viewport() if not mobile else {"width": 390, "height": 844}
                 context = await browser.new_context(
                     viewport={"width": vp["width"] if not mobile else 390, "height": vp["height"] if not mobile else 844},
-                    user_agent=polymorph.get_random_user_agent(),
+                    user_agent=self.user_agent,
                     service_workers="block",
                     **self.context_options(),
                 )

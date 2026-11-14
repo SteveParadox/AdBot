@@ -17,3 +17,10 @@ describe("published content rendering", () => {
     expect(html).not.toContain("<a ");
   });
 });
+
+// Draft previews must be safe before the server has validated/saved the form.
+it("does not render unsafe draft URLs", () => {
+  const html = renderToStaticMarkup(<ContentBlock data={{title:"Draft",link:"javascript:alert(1)",image:"//unapproved.test/x"}} />);
+  expect(html).not.toContain("href=");
+  expect(html).not.toContain("<img");
+});

@@ -4,9 +4,41 @@ services:
   cloudflared:
     image: ${ADBOT_CLOUDFLARED_IMAGE:?Set a reviewed cloudflared image pinned by digest}
     restart: unless-stopped
-    command: tunnel --config /etc/cloudflared/config.yml run
+    command: tunnel --config /etc/cloudflared/config.yml --metrics 0.0.0.0:2000 run
     volumes:
       - ${ADBOT_TUNNEL_CONFIG_PATH:?Set absolute config path}:/etc/cloudflared/config.yml:ro
       - ${ADBOT_TUNNEL_CREDENTIALS_PATH:?Set absolute credential path}:/run/secrets/tunnel.json:ro
+    networks:
+      tunnel_ingress:
+        ipv4_address: 172.30.50.2
     depends_on:
       - frontend
+  api:
+    environment:
+      ADBOT_TRUSTED_PROXY_CIDRS: 172.30.51.3/32
+      ADBOT_ENFORCE_HTTPS: "true"
+    networks:
+      default: {}
+      tunnel_backend:
+        ipv4_address: 172.30.51.4
+        aliases: [tunnel-api]
+  frontend:
+    volumes:
+      - ./docker/security/tunnel-ingress.conf:/etc/nginx/conf.d/tunnel.conf:ro
+    networks:
+      default: {}
+      tunnel_ingress:
+        ipv4_address: 172.30.50.3
+      tunnel_backend:
+        ipv4_address: 172.30.51.3
+networks:
+  tunnel_ingress:
+    ipam:
+      config:
+        - subnet: 172.30.50.0/29
+
+  tunnel_backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.51.0/29

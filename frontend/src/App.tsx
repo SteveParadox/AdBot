@@ -209,7 +209,7 @@ export default function App() {
               }}
             >
               <Icon size={18} />
-              {copy[name]?.title ?? name}
+              {copy[name]?.navigation_label || name}
               {name === "Websites" && (
                 <span>{overview.data?.websites || 0}</span>
               )}

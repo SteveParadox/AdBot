@@ -5,7 +5,6 @@ from urllib.parse import urlsplit, urljoin
 import httpx
 
 from ..config import settings
-from ..browser import USER_AGENT
 from ..db import uid
 from ..security import PolicyError
 from .observe import Observer
@@ -241,7 +240,7 @@ class Controller:
                 proxy=self.runner.proxy,
                 trust_env=False,
                 timeout=20,
-                headers={"User-Agent": USER_AGENT, "X-AdBot-Automation": "true", "X-AdBot-Session": self.runner.id},
+                headers={"User-Agent": self.runner.user_agent, "X-AdBot-Automation": "true", "X-AdBot-Session": self.runner.id},
             ) as client:
                 for _ in range(6):
                     await self.runner.permitted(url)

@@ -9,6 +9,7 @@ from sqlalchemy import update, select
 from .browser import BrowserCrashed, Runner
 from .config import settings
 from .privacy import install_redaction
+from .outbound import manager
 from .db import AgentStep, AgentTask, Frontier, Job, Lease, emit, transaction
 from .jobs import claim, heartbeat, owned_job, recover_expired
 
@@ -135,6 +136,7 @@ async def execute(job_id, token):
 
 
 async def main():
+    routing = manager()
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -149,6 +151,7 @@ async def main():
 
         redis = Redis.from_url(settings().redis_url)
         await redis.ping()
+    routing.start()
     try:
         while not stop.is_set():
             recover_expired()
@@ -169,6 +172,7 @@ async def main():
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await routing.close()
         if redis:
             await redis.aclose()
 

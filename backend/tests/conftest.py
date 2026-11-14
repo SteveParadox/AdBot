@@ -29,6 +29,8 @@ OTHER_AUTH = {"Authorization": "Bearer " + OTHER_KEY}
 
 @pytest.fixture(autouse=True)
 def database():
+    from app.user_agents import invalidate
+    invalidate()
     Base.metadata.create_all(engine)
     yield
     Base.metadata.drop_all(engine)

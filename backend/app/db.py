@@ -2,7 +2,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import CheckConstraint, JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
@@ -175,6 +175,23 @@ class ContentSection(Base):
     draft: Mapped[dict] = mapped_column(JSON)
     published: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[float] = mapped_column(Float, default=time.time, onupdate=time.time)
+
+
+class UserAgentConfig(Base):
+    __tablename__ = "user_agent_config"
+    __table_args__ = (CheckConstraint("id = 1"), CheckConstraint("revision >= 0"))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class UserAgentAudit(Base):
+    __tablename__ = "user_agent_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    administrator: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer)
+    timestamp: Mapped[float] = mapped_column(Float, default=time.time)
 
 
 engine = create_engine(

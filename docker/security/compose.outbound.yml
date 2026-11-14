@@ -1,0 +1,16 @@
+# Copy the example routing file OUTSIDE the checkout, fill approved endpoints, restrict its ACL.
+# docker compose -f docker-compose.yml -f docker/security/compose.outbound.yml up -d
+services:
+  api:
+    environment:
+      ADBOT_OUTBOUND_PROXY_ENABLED: "true"
+      ADBOT_OUTBOUND_PROXY_CONFIG_PATH: /run/secrets/outbound-proxies.json
+    secrets: [outbound_proxies]
+  worker:
+    environment:
+      ADBOT_OUTBOUND_PROXY_ENABLED: "true"
+      ADBOT_OUTBOUND_PROXY_CONFIG_PATH: /run/secrets/outbound-proxies.json
+    secrets: [outbound_proxies]
+secrets:
+  outbound_proxies:
+    file: ${ADBOT_OUTBOUND_PROXY_CONFIG_FILE:?Set absolute private routing file path}

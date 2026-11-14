@@ -1,148 +1,338 @@
 # AdBot Monitor
 
-An authorized website automation workspace with a React dashboard, FastAPI API,
-isolated Playwright browsers, a durable SQL crawl frontier, schedules, and live
-execution events. This repository implements the attached browser-monitoring
-specification. Its name does not imply ad interaction: it does not click ads or
-generate artificial engagement.
+AdBot is a workspace for **authorized website monitoring and browser automation**: crawls, workflows,
+schedules, AI-assisted research, screenshots and live execution events. Administrators also manage public
+content, outbound proxy routing and User-Agent identities. It does not generate artificial advertising
+engagement or authorize bypassing destination access controls, quotas or service policies.
 
-**Goal-driven AI browsing is now available.** Open the **AI Agent** workspace to
-submit a natural-language objective, inspect live decisions/captures and retrieve
-cited results. Configure Groq, another compatible provider or a local model using
-the [agent setup guide](docs/AGENT_GUIDE.md). Existing crawls work with AI disabled.
+## Architecture
 
-## Start locally on Windows
+| Component | Responsibility |
+|---|---|
+| React/TypeScript/Vite dashboard | Workspace operations and administrator forms |
+| FastAPI/Pydantic API | Authentication, ownership, validation, jobs and administration |
+| SQLAlchemy/Alembic | Durable SQL data and versioned migrations |
+| Playwright worker | Isolated browser execution, downloads, captures and results |
+| Scheduler | Enqueues due recurring/one-off jobs; does not execute them itself |
+| PostgreSQL/Redis | Required production database, queue coordination, distributed limits/diagnostics |
+| Local egress guard | Validates destination/domain/DNS and pins destination IPs |
+| Optional approved upstream proxies | Explicit service routing, health, circuits and permitted failover |
+| Unprivileged Nginx | Production static frontend and sanitized API forwarding |
+| Optional Cloudflare Tunnel | Authenticated inbound connector, separate from outbound routing |
 
-Install Python 3.12+ and Node.js 22.12+ (or Node 24). Run from the repository root
-in **Command Prompt**:
+The API persists work; workers claim leases, operate browsers, and persist events/results; the dashboard
+retrieves those records and streams job progress. SQLite is supported for local development. AI is optional.
+
+## 1. Local installation
+
+Install Python 3.12+, Node.js 22.12+ or a compatible newer release, npm and Git. Install Playwright browser
+binaries and required OS libraries. Docker is optional locally; Docker Desktop must use Linux containers.
+
+### Windows Command Prompt
 
 ```bat
+git clone https://github.com/SteveParadox/AdBot.git
+cd AdBot
 python -m venv .venv
-.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
-.venv\Scripts\python -m playwright install chromium firefox webkit
-python scripts\init_env.py
-cd backend
-..\.venv\Scripts\python -m alembic upgrade head
-..\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
+.venv\Scripts\python.exe -m playwright install chromium firefox webkit
+.venv\Scripts\python.exe scripts\init_env.py
+cd frontend
+npm ci
+cd ..\backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --no-server-header --no-access-log
 ```
 
-Keep that terminal open. In a second terminal from the repository root:
+Keep the API terminal open. In three separate terminals, initially at the repository root:
 
 ```bat
 cd backend
-..\.venv\Scripts\python -m app.worker
+..\.venv\Scripts\python.exe -m app.worker
 ```
-
-In a third terminal:
 
 ```bat
 cd backend
-..\.venv\Scripts\python -m app.scheduler
+..\.venv\Scripts\python.exe -m app.scheduler
 ```
-
-In a fourth terminal:
 
 ```bat
 cd frontend
-npm ci
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173** and enter `ADBOT_API_KEYS` from the generated
-root `.env`. Do not enter the variable name; paste its generated value. Each
-process reads the same `.env` when started from `backend/`. SQLite stores data in
-`backend/adbot.db`, and captures go in `backend/data/screenshots/`.
+PowerShell can use explicit Python executable paths without activating the virtual environment. Use
+`npm.cmd` if your shell blocks `npm.ps1`; no execution-policy change is necessary.
 
-**PowerShell:** the same commands work without activating the virtual environment;
-prefix Python paths with `&` if your shell requires it. No execution-policy change
-is necessary. For example:
-
-```powershell
-cd backend
-& ..\.venv\Scripts\python.exe -m app.worker
-```
-
-If port 8000 is reserved on Windows, use `--port 8001` and change the Vite proxy
-destination in `frontend/vite.config.ts` to the same port.
-
-## Linux / macOS
+### Linux/macOS
 
 ```sh
+git clone https://github.com/SteveParadox/AdBot.git
+cd AdBot
 python3 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements-dev.txt
 .venv/bin/python -m playwright install --with-deps chromium firefox webkit
 .venv/bin/python scripts/init_env.py
+(cd frontend && npm ci)
 cd backend
 ../.venv/bin/python -m alembic upgrade head
-../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --no-server-header --no-access-log
 ```
 
-In separate terminals, from `backend/`, run
-`../.venv/bin/python -m app.worker` and
-`../.venv/bin/python -m app.scheduler`. From `frontend/`, run `npm ci` then
-`npm run dev`. On Linux, browser OS dependencies require package-install privileges.
-On macOS, omit `--with-deps` if platform dependency installation is unavailable.
+On macOS omit `--with-deps` if unavailable. Linux browser library installation can require package-manager
+permissions. Start worker/scheduler separately from backend using the virtualenv Python, and run
+`npm run dev` from frontend. Backend commands must run from **backend/** because settings read `../.env`.
 
-## First job
+### Private configuration and login
 
-1. Connect using your workspace API key.
-2. Open **Websites → Add website**. Enter a starting URL, explicit allowed
-   hostnames, page/depth limits, and a delay. Confirm your authorization.
-3. Include resource hosts in the allowlist if the target needs a CDN. Wildcards
-   must be explicit, for example `*.example.com`; `example.com` alone includes
-   only that exact hostname.
-4. Keep robots compliance enabled for crawling. Enable screenshots or scrolling
-   in the browser options if needed.
-5. Open **Jobs**, choose the website, and start a crawl. Inspect its progress,
-   page results, HTTP statuses, events, and captures.
-6. Build a workflow for ordered read-only checks, or create a schedule with your
-   timezone. Pause/resume takes effect between actions or page visits. Session
-   deadlines continue running while paused.
+`init_env.py` generates a private root `.env` with API/database/session keys and refuses to overwrite an
+existing file. Existing installations must merge new settings from `.env.example` while preserving secrets.
+Never commit real environment files, proxy credentials, private keys, tunnel tokens or backups.
 
-Targets require authorization. Production additionally requires an operator
-allowlist. HTTP/HTTPS are the only supported protocols. Standard ports, public IPs,
-domain boundaries and redirects are checked. All subresources must also belong to
-the target allowlist. Forms, non-GET/HEAD requests, downloads, popups, sockets and
-unapproved clicks are blocked.
+Local development defaults:
 
-## Docker
+```dotenv
+ADBOT_ENVIRONMENT=development
+ADBOT_DATABASE_URL=sqlite:///./adbot.db
+ADBOT_REDIS_URL=
+ADBOT_AI_PROVIDER=disabled
+ADBOT_FIXTURE_MODE=false
+ADBOT_ALLOWED_HOSTS=localhost,127.0.0.1
+ADBOT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+```
+
+Open **http://127.0.0.1:5173**. Enter the generated `ADBOT_API_KEYS` value, not its variable name. Multiple
+keys are comma-separated, each at least 32 characters. Keys identify separate workspace owners. The browser
+keeps its key in sessionStorage and sends bearer authentication; there is no cookie/password login flow.
+
+For administration, add an authorized API key to `ADBOT_CONTENT_ADMIN_KEYS` and restart the API. Locally
+the same key can have both roles; production should provision separate ordinary/admin credentials.
+Global administration does not grant access to other keys' private jobs. This is not organization RBAC.
+SQLite data is `backend/adbot.db`; artifacts are under `backend/data/screenshots/` by default.
+
+Vite proxies `/api` to port 8000. If the API uses another port, set `ADBOT_API_PROXY_TARGET` in Vite's
+process environment before startup. Environment secrets are server-side, not public frontend settings.
+
+## 2. First end-to-end job
+
+1. Connect with a workspace key. Open **Websites** and add a target you are authorized to automate.
+2. Set starting URL, explicit allowed hosts, limits and delays. Include approved CDN/resource hosts.
+   `example.com` permits the exact host; `*.example.com` explicitly permits its subdomains.
+3. Confirm authorization, keep robots compliance enabled and enable captures/scrolling if needed.
+4. Open **Jobs**, select the website and launch a crawl. A running worker must claim the persisted job.
+5. Inspect status/events, page visits, HTTP results and screenshots. Queued work does not imply execution.
+6. Build a permitted **Workflow** or create a **Schedule** with the correct timezone. Run the scheduler
+   separately. Pause/resume occurs at safe boundaries; elapsed session deadlines continue while paused.
+7. Inspect partial results before retrying operations with side effects.
+
+Production additionally requires `ADBOT_AUTHORIZED_DOMAINS`, an operator-controlled target boundary.
+Unapproved domains, private/mixed DNS results, protocols and ports are rejected. Ordinary crawls are
+read-only; AI permissions/reviews are separate and do not grant unrestricted forms/downloads/sockets.
+
+For a controlled fixture set `ADBOT_FIXTURE_MODE=true`, restart API/worker, then start
+`python -m uvicorn app.fixture:app --host 127.0.0.1 --port 8765` using the virtualenv from backend.
+Register `http://127.0.0.1:8765/` with allowed domain `127.0.0.1`. Only that configured fixture exemption
+is allowed; arbitrary private networks remain blocked. Fixture mode is forbidden in production.
+
+## 3. Optional AI setup
+
+Crawls work with AI disabled. For goal-driven browsing configure an approved provider/model on the server:
+
+- `groq`: uses `ADBOT_GROQ_BASE_URL`, `ADBOT_GROQ_API_KEY`, `ADBOT_AI_MODEL`.
+- `openai_compatible` or `local`: uses `ADBOT_AI_BASE_URL`, `ADBOT_AI_API_KEY`, `ADBOT_AI_MODEL`.
+- Remote providers require HTTPS. Obtain valid model identifiers and scoped credentials from your provider.
+- Groq can explicitly fall back to a local model using the `ADBOT_AI_FALLBACK_*` settings. With outbound
+  protection enabled, approve its `ai_local` direct policy; remote proxies cannot treat loopback as local.
+- Configure step/token/time/concurrency budgets. Provider requests may incur charges. Visual reasoning and
+  encrypted browser-session persistence require separate opt-ins; preserve the session encryption key.
+
+Restart API and worker for environment/provider changes. Use **AI Agent** to submit an objective, review
+permissions/actions, observe captures and inspect verified/cited results. See [agent guide](docs/AGENT_GUIDE.md),
+[interaction engine](docs/INTERACTION_ENGINE.md) and [agent limitations](docs/AGENT_VERIFICATION.md).
+
+## 4. Content administration
+
+Connect as an administrator and open **Content**. Select a section or choose **New section**, edit text
+and safe image/link URLs, inspect the preview and save:
+
+- **draft:** preserves the previous public publication while saving edits.
+- **published:** replaces the public snapshot atomically.
+- **archived:** hides the section. Delete removes it; order controls custom section placement.
+
+Reserved keys control login, page headings/descriptions and `seo`; custom promotional sections appear on
+the login page. `navigation_label` is independent of the page headline. Images use local/HTTPS URLs;
+there is no upload library. Text is escaped; unsafe preview/public URLs are rejected.
+
+Public content refreshes every 30 seconds, with immediate editor-browser invalidation after writes.
+Errors retain cached content or original copy and offer retry. Title/description/canonical/Open Graph
+metadata is client-rendered, not SSR. Simultaneous content-editor writes remain last-write-wins.
+See [dynamic content](docs/DYNAMIC_CONTENT.md).
+
+## 5. User-Agent administration
+
+Under **Content > User-Agent management**, edit the global string, create/edit/duplicate profiles, assign
+service overrides, enable/disable saved overrides, preview and save. Referenced profiles cannot be deleted
+until unassigned; the application-default profile is protected. A stale configuration returns 409: reload,
+merge changes and save. Configuration and revision-only audit records commit together.
+
+Custom strings are not limited to a browser whitelist. Values must be nonempty printable ASCII, without
+leading/trailing whitespace or controls, within the operator's maximum length; no silent rewriting occurs.
+Operator-required service identity takes precedence. Otherwise: authorized internal request override,
+service custom value, enabled profile, global value, application default. Disabled settings fall back safely.
+
+```dotenv
+ADBOT_USER_AGENT_DEFAULT=Adbot/1.0.0
+ADBOT_USER_AGENT_MAX_LENGTH=512
+ADBOT_USER_AGENT_ALLOW_REQUEST_OVERRIDES=false
+ADBOT_USER_AGENT_ROTATABLE_SERVICES=
+ADBOT_USER_AGENT_FIXED_IDENTITIES={}
+```
+
+Saved runtime changes reach new worker requests within five seconds. Active browser contexts retain one
+identity for browsing, robots rules and downloads; model retries/failover preserve their selected header.
+Automatic browser-only round-robin/random/scheduled/endpoint-coordinated pools require explicit operator
+permission and compatible proxy policy. Coordination happens only when a NEW context chooses its route,
+not during retries or a stable authenticated session. A UA string does not change the browser engine or
+TLS fingerprint; automation markers remain present. Do not put credentials in these outbound headers.
+
+Details: [management/file inventory](docs/network/USER_AGENT_MANAGEMENT.md), [profiles](docs/network/USER_AGENT_PROFILES.md),
+[proxy coordination](docs/network/USER_AGENT_PROXY_INTEGRATION.md), [validation](docs/security/USER_AGENT_VALIDATION.md).
+
+## 6. Outbound proxy routing
+
+Protection and rotation are off by default. Enabling them requires approved operator-owned configuration.
+Required proxy services **never silently fall back direct**. Stable services use one endpoint without
+cross-IP failover; the provider must also guarantee a fixed exit allocation, not hidden upstream rotation.
+
+1. Copy `docker/security/outbound-proxies.example.json` outside this repository.
+2. Replace placeholders with approved HTTP(S) endpoints, credentials and an HTTPS health URL you own or
+   may probe. Restrict file ACLs while allowing the actual API/worker container user to read it.
+3. Assign existing browser/ai/ai_local service policies, including explicit local-model direct approval.
+4. For native processes set the private path and validate without network calls:
+
+```dotenv
+ADBOT_OUTBOUND_PROXY_ENABLED=true
+ADBOT_OUTBOUND_PROXY_CONFIG_PATH=/absolute/private/outbound-proxies.json
+```
+
+```sh
+# From backend using the virtualenv Python:
+../.venv/bin/python -m app.outbound --check
+```
+
+5. Restart API/workers and inspect **Content > Network routing**. Verify actual exit addresses with
+   controlled target/provider records. Redis aggregates expiring per-process heartbeats; without Redis
+   the dashboard explicitly reports only the API process.
+
+HTTP/HTTPS CONNECT is supported, with verified TLS and separate proxy authentication. HTTPS is preferred
+for authenticated proxy transport. SOCKS/remote DNS are not implemented: local DNS validates and pins
+public destination IPs. Selection supports round-robin/random/sticky/health/scheduled strategies under
+explicit service permissions. Circuits, backoff and bounded connect failover do not replay target
+mutations or rotate because of a target denial/429. Host firewalls are still needed to constrain arbitrary
+sockets under process compromise; application routing is not a network-layer anonymity guarantee.
+
+For Docker set private host `ADBOT_OUTBOUND_PROXY_CONFIG_FILE` and use the overlay on all operations:
+
+```sh
+docker compose -f docker-compose.yml -f docker/security/compose.outbound.yml config --quiet
+docker compose -f docker-compose.yml -f docker/security/compose.outbound.yml up -d --build
+```
+
+Read [proxy architecture](docs/security/OUTBOUND_PROXY_ARCHITECTURE.md), [rotation](docs/security/IP_ROTATION_CONFIGURATION.md)
+and [external network requirements](docs/security/EXTERNAL_NETWORK_REQUIREMENTS.md).
+
+## 7. Docker deployment
+
+Generate `.env` only if absent; merge example additions otherwise. Set nonempty
+`ADBOT_AUTHORIZED_DOMAINS` to actual approved target hosts before starting. Compose always selects
+**production mode**, PostgreSQL/Redis and fixture mode off, regardless of local development settings.
+Set actual public allowed hostnames/CORS origins for the eventual ingress; retain localhost as needed
+for local evaluation. Docker Desktop must run Linux containers.
 
 ```sh
 python scripts/init_env.py
-docker compose up -d --build --wait
-docker compose logs -f worker scheduler
+# Edit private .env before proceeding; skip generation when it already exists.
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail 100 api worker scheduler
 ```
 
-Open **http://127.0.0.1:8080**. Compose runs PostgreSQL, Redis, migrations, API,
-worker, scheduler and Nginx frontend. Database and artifact volumes persist across
-restarts. Only the frontend is published, bound to loopback. Docker Desktop with
-Linux containers works on Windows. `docker compose down` stops the stack while
-preserving volumes.
+Open **http://127.0.0.1:5173**: host 5173 maps to Nginx's internal 8080. Only the frontend is host-published,
+bound to loopback. API/database/Redis remain internal; migrations run before application startup. SQL,
+Redis and artifacts use persistent named volumes. Browser images are large; load-test worker memory,
+shared memory and concurrency against your pages before raising limits.
 
-Before production set `ADBOT_ENVIRONMENT=production` and
-`ADBOT_AUTHORIZED_DOMAINS` to your approved domains in `.env`, configure TLS and
-external egress controls, and follow [operations guidance](docs/OPERATIONS.md).
-Compose supplies PostgreSQL and Redis URLs regardless of local SQLite settings.
-The browser image is large; reserve capacity for browser processes and shared
-memory. Compose caps the worker at 2 GiB and 2 CPUs; validate limits with your own
-pages before increasing concurrency.
+The base stack is an HTTP loopback origin, not a complete public TLS deployment. Add a verified TLS edge
+or Tunnel before public use. Production docs/OpenAPI are disabled; Nginx serves built assets, blocks
+sensitive/map paths and caches only successful versioned assets. Do not host public Vite dev servers.
 
-## Tests
+## 8. Cloudflare Tunnel and origin protection
 
-From `backend/`:
+Follow [Tunnel deployment/recovery](docs/security/CLOUDFLARE_TUNNEL.md) and
+[Cloudflare setup](docs/security/CLOUDFLARE_SETUP.md) before enabling the optional overlay.
+Required private operator values:
+
+- `ADBOT_CLOUDFLARED_IMAGE`: reviewed image pinned by digest.
+- `ADBOT_TUNNEL_CONFIG_PATH`: absolute host path to the populated private YAML.
+- `ADBOT_TUNNEL_CREDENTIALS_PATH`: absolute host path to named-tunnel credential JSON.
+
+Route the actual hostname to `http://frontend:8081` with a final 404 catch-all. Verify example subnet
+availability first; changing addresses requires updating every coupled trust/geo/static peer setting.
+The dedicated listener checks its connector socket peer and Cloudflare visitor HTTPS metadata. A separate
+internal network carries sanitized client identity to the exact trusted frontend/API hop.
 
 ```sh
-../.venv/bin/python -m pytest -q
-../.venv/bin/ruff check app tests
-../.venv/bin/python -m alembic check
+docker compose -f docker-compose.yml -f docker/security/compose.tunnel.yml config --quiet
+docker compose -f docker-compose.yml -f docker/security/compose.tunnel.yml up -d --build
 ```
 
-Windows substitutes `..\.venv\Scripts\python` and
-`..\.venv\Scripts\ruff`. Tests create isolated temporary databases and a
-loopback-only fixture. Real-browser tests require Chromium installed. Run just
-non-browser checks with `python -m pytest -q -m "not browser"`.
+Include both Tunnel and outbound overlay files when combining them, and keep the same flags for later
+operations. Tunnel enables API HTTPS enforcement: verify edge HTTPS and a recovery console before
+rollout. HSTS remains opt-in. Connector metrics port 2000 `/ready` is internal; do not publish it publicly.
+No public inbound origin web listener is needed, but closing actual firewall ports is an operator task.
 
-From `frontend/`:
+For direct Cloudflare origins use reviewed IPv4/IPv6 allowlists and authenticated TLS origin pulls.
+DNS, certificates, account credentials, firewall policy and provider exit IPs were not changed by source
+code. See [origin protection](docs/security/IP_ADDRESS_PROTECTION.md) and
+[external security checklist](docs/security/EXTERNAL_SECURITY_CHECKLIST.md).
+
+## 9. Security configuration
+
+| Setting/control | Purpose |
+|---|---|
+| `ADBOT_API_KEYS` | Private workspace bearer credentials |
+| `ADBOT_CONTENT_ADMIN_KEYS` | Valid keys authorized for global administration |
+| `ADBOT_AUTHORIZED_DOMAINS` | Production destination authorization, not incoming host validation |
+| `ADBOT_ALLOWED_HOSTS` | Allowed incoming Host values; configure the actual hostname |
+| `ADBOT_CORS_ORIGINS` | Exact permitted browser origins; not an authentication substitute |
+| `ADBOT_TRUSTED_PROXY_CIDRS` | Exact sanitizing proxy peers; empty trusts none; never all-address ranges |
+| `ADBOT_ENFORCE_HTTPS` | Reject ordinary insecure API traffic after trusted scheme normalization |
+| `ADBOT_HSTS_ENABLED` | Enable only after verified HTTPS; browsers retain it across rollback |
+| `ADBOT_PUBLIC_RATE_PER_MINUTE` | Early per-client rate limit, including invalid credentials |
+| `ADBOT_RATE_PER_MINUTE` | Additional authenticated-key limit |
+| `ADBOT_BUILD_SOURCEMAPS` | Default off; optional hidden maps stay denied by production Nginx |
+
+Retain `--no-proxy-headers` on custom Uvicorn launches: the app owns trust normalization. Without an
+accurate proxy-peer configuration, users behind it share an ingress quota. Never trust arbitrary XFF/CF
+headers, disable TLS verification or remove limits to hide a topology error. Logs mask known credentials
+and avoid raw paths/query/body logging, but operators must not log arbitrary sensitive payloads.
+Read the [audit](docs/security/SECURITY_AUDIT.md), [implementation review](docs/security/COMPREHENSIVE_REVIEW.md)
+and [domain/identity privacy guidance](docs/security/DOMAIN_AND_IDENTITY_PRIVACY.md).
+
+## 10. Testing and recorded verification
+
+From **backend/** using your platform's virtualenv Python:
+
+```sh
+../.venv/bin/python -m pytest -q -m 'not browser'
+../.venv/bin/python -m pytest tests/test_user_agents.py tests/test_outbound.py -q
+../.venv/bin/python -m pytest -q -m browser
+../.venv/bin/python -m ruff check app tests
+```
+
+Windows substitutes `..\.venv\Scripts\python.exe`. Browser-marked tests require installed Chromium.
+Tests use temporary databases; never point test database overrides at production. From **frontend/**:
 
 ```sh
 npm test
@@ -150,33 +340,77 @@ npm run build
 npm run test:e2e
 ```
 
-The end-to-end runner starts its own API, worker, scheduler, fixture and Vite
-server, uses a temporary database, and shuts them down. Ports **8000, 5173, 8765**
-must be free. It expects the root `.venv` and installed frontend dependencies.
-For an interactive manual fixture, set `ADBOT_FIXTURE_MODE=true` in a development
-`.env`, restart the API and worker, and run from `backend/`:
+The E2E runner starts isolated fixture/model/API/worker/scheduler/Vite services, uses a temporary database
+and cleans up its processes. Default ports 8000, 5173, 8765 and 8766 must be free. It refuses occupied
+ports rather than silently testing another application. PowerShell overrides for a running local stack:
 
-```sh
-../.venv/bin/python -m uvicorn app.fixture:app --host 127.0.0.1 --port 8765
+```powershell
+$env:ADBOT_E2E_API_PORT = '8100'
+$env:ADBOT_E2E_FRONTEND_PORT = '5180'
+$env:ADBOT_E2E_STARTUP_MS = '60000'
+npm.cmd run test:e2e
 ```
 
-Register `http://127.0.0.1:8765/` with allowed domain `127.0.0.1`.
-Only that exact loopback address/port is exempted; other internal addresses remain
-blocked. Fixture mode is forbidden in production.
+Fixture ports 8765/8766 remain fixed. Local simulated model fixtures are not live-provider certification.
+Recorded implementation checks include **86 non-browser backend tests**, **27 focused UA/proxy tests**,
+**5 browser journeys**, **5 frontend unit tests**, migration upgrade/downgrade/reapply, build and lint
+passing. Later small additions have focused results rather than a claim of another full-suite run.
+Exact commands, timing and limits: [UA evidence](docs/testing/USER_AGENT_TEST_RESULTS.md),
+[network evidence](docs/security/NETWORK_SECURITY_TESTS.md), [review evidence](docs/security/COMPREHENSIVE_REVIEW.md).
+Local results do not establish production readiness or absence of every vulnerability.
 
-## Project guide
+## 11. Operations, backups and recovery
 
-- [Configuration, deployment, security and troubleshooting](docs/OPERATIONS.md)
-- [API and workflow reference](docs/API.md)
-- [Architecture and durability](docs/ARCHITECTURE.md)
-- [Implementation verification report](docs/VERIFICATION.md)
-- [Agent architecture, provider setup and operation](docs/AGENT_GUIDE.md)
-- [Agent implementation audit](docs/AGENT_IMPLEMENTATION_MAP.md)
-- [Agent verification and limitations](docs/AGENT_VERIFICATION.md)
-- [Natural interaction actions, traces and analytics](docs/INTERACTION_ENGINE.md)
-- OpenAPI: http://127.0.0.1:8000/docs during local development.
+Before migrations back up SQL data, artifacts and required private configuration/encryption keys. Use
+PostgreSQL-consistent tooling in production. For SQLite stop writers or use its backup API; do not copy
+a live main file while ignoring its WAL state. Restore into an isolated environment and verify both job
+history and encrypted-session access. Protect backups with appropriate access, encryption and retention.
 
-The initial release is a runnable monitoring platform. Production certification
-requires validation of the actual PostgreSQL/Redis deployment, browser egress
-rules, backup restoration, capacity, and all selected browser engines. See the
-verification report for checks that were actually executed.
+Deploy reviewed images and matching migrations, then roll API/workers/scheduler forward together.
+`alembic current` and `alembic history` inspect state. Readiness checks the UA table as well as existing
+schema/dependencies. Export feature configuration and review destructive downgrade operations before
+rollback; prefer a known compatible release/configuration when possible.
+
+Compose shutdown preserves volumes by default; using its volume-removal option deletes stored data.
+Use the same overlay flags as startup. Pin/review production image digests and dependency updates.
+Keep console/VPN access during TLS, DNS, firewall and subnet changes; verify rollback before enforcing
+restrictions. No blanket firewall script is deployed by this repository.
+
+| Symptom | What to check |
+|---|---|
+| `.env already exists` | Expected protection: merge missing example settings, do not overwrite real secrets |
+| 401 | Correct generated key, current process environment, minimum length and bearer authentication |
+| Administrator 403 | Key must be valid in API_KEYS and listed in CONTENT_ADMIN_KEYS; restart API |
+| Invalid Host / 400 | Real incoming hostname must be allowed; do not replace trust with a global wildcard |
+| HTTPS required / 426 | Actual TLS/edge scheme, connector metadata and exact trusted peer; base HTTP is not Tunnel |
+| Readiness 503 | Database/Redis availability and completed migrations, including UA tables |
+| Jobs stay queued | Running worker, matching database, capacity and leases; scheduler alone cannot run jobs |
+| Schedule does not fire | Scheduler process, enabled state, timezone and next-run time |
+| Target rejected | Website/operator allowlists, public DNS policy, subresource hosts and supported ports |
+| AI unavailable | Provider/model/key, step/token/time budget and explicit proxy/local-fallback policy |
+| Proxy unavailable | CA/TLS, credentials, CONNECT IP/port support, approved health URL, cooldown and fixed-route policy |
+| UA save 409 | Reload revision, reconcile edits and save; do not blindly overwrite another admin |
+| UA save 422 | ASCII/control/length rules, profile references, permission and stable-route restrictions |
+| UA update not visible | New context required; cache can last five seconds; mandatory identity takes precedence |
+| Frontend API failure | Vite proxy target/port, API process, Host/CORS configuration or production Nginx routing |
+| Browser tests fail early | Port conflicts, browser binaries, resource limits and actual runner diagnostics |
+| Docker build/pull fails | Registry/DNS/proxy access, image availability and disk; no runtime-success claim until fixed |
+
+## Documentation and deployment limits
+
+- [API reference](docs/API.md), [durable architecture](docs/ARCHITECTURE.md)
+- [Agent setup](docs/AGENT_GUIDE.md), [interaction engine](docs/INTERACTION_ENGINE.md)
+- [Dynamic content](docs/DYNAMIC_CONTENT.md)
+- [UA architecture/file inventory](docs/network/USER_AGENT_MANAGEMENT.md), [profiles](docs/network/USER_AGENT_PROFILES.md)
+- [UA/proxy integration](docs/network/USER_AGENT_PROXY_INTEGRATION.md), [validation](docs/security/USER_AGENT_VALIDATION.md)
+- [Proxy architecture](docs/security/OUTBOUND_PROXY_ARCHITECTURE.md), [rotation](docs/security/IP_ROTATION_CONFIGURATION.md)
+- [Tunnel](docs/security/CLOUDFLARE_TUNNEL.md), [Cloudflare](docs/security/CLOUDFLARE_SETUP.md)
+- [External network requirements](docs/security/EXTERNAL_NETWORK_REQUIREMENTS.md)
+- [Full review](docs/security/COMPREHENSIVE_REVIEW.md), [security audit](docs/security/SECURITY_AUDIT.md)
+
+Still requiring deployment verification: real PostgreSQL/Redis multi-process behavior, Nginx runtime and
+CSP/TLS, Cloudflare/DNS/direct-origin rejection, proxy exit allocation, host egress ACLs, load/capacity,
+selected browser engines and backup restoration. SOCKS/remote DNS are unsupported, content edits are
+last-write-wins, metadata is client-rendered and rotation counters are process-local. Arbitrary OS sockets
+under compromise are not intercepted. No anonymity guarantee is made. Truthful lawful business
+information, legitimate ownership records and dependency attribution must remain intact.

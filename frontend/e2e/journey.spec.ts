@@ -11,6 +11,7 @@ test("register target, launch crawl, inspect real persisted pages and screenshot
   await expect(
     page.getByRole("heading", { name: "A clearer view of your web." }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Overview", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Add website" }).click();
   await page.getByRole("button", { name: "Add website" }).click();
   await page.getByLabel("Website name").fill("E2E fixture");

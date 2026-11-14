@@ -3,5 +3,5 @@ tunnel: REPLACE_WITH_TUNNEL_UUID
 credentials-file: /run/secrets/tunnel.json
 ingress:
   - hostname: REPLACE_WITH_PUBLIC_HOSTNAME
-    service: http://frontend:8080
+    service: http://frontend:8081
   - service: http_status:404

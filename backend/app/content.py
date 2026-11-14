@@ -27,6 +27,7 @@ def content_session(write=False):
 
 class ContentData(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    navigation_label: str = Field("", max_length=80)
     title: str = Field("", max_length=300)
     description: str = Field("", max_length=10000)
     image: str = Field("", max_length=2048)

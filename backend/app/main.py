@@ -25,6 +25,9 @@ from .api_support import Limit, Offset, Owner, collection, output, owned, workfl
 from .api_support import rate_windows as rate_windows
 from .agent.api import router as agent_router
 from .content import router as content_router
+from .outbound import manager
+from .network_api import router as network_router
+from .user_agents import router as user_agent_router
 
 logger = logging.getLogger("adbot.api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -34,14 +37,21 @@ install_redaction()
 @asynccontextmanager
 async def lifespan(app):
     app.state.redis = None
-    if settings().redis_url:
-        from redis.asyncio import Redis
+    routing = None
+    try:
+        if settings().redis_url:
+            from redis.asyncio import Redis
 
-        app.state.redis = Redis.from_url(settings().redis_url)
-        await app.state.redis.ping()
-    yield
-    if app.state.redis:
-        await app.state.redis.aclose()
+            app.state.redis = Redis.from_url(settings().redis_url)
+            await app.state.redis.ping()
+        routing = manager()
+        routing.start()
+        yield
+    finally:
+        if routing:
+            await routing.close()
+        if app.state.redis:
+            await app.state.redis.aclose()
 
 
 app = FastAPI(title="AdBot — Authorized Website Automation", version="1.0.0", lifespan=lifespan,
@@ -62,6 +72,8 @@ async def validation_error(request, exc):
     return JSONResponse({"detail": [{"loc": e["loc"], "type": e["type"], "msg": "Invalid value"} for e in exc.errors()]}, status_code=422)
 
 
+app.include_router(user_agent_router)
+app.include_router(network_router)
 app.include_router(content_router)
 app.include_router(agent_router)
 
@@ -106,6 +118,7 @@ async def ready(request: Request):
     try:
         with Session() as session:
             session.execute(text("SELECT 1 FROM websites LIMIT 1"))
+            session.execute(text("SELECT revision FROM user_agent_config LIMIT 1"))
         if settings().redis_url:
             await request.app.state.redis.ping()
     except Exception:

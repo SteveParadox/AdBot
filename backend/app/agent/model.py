@@ -10,6 +10,8 @@ from pathlib import Path
 
 import httpx
 
+from ..outbound import model_clients
+
 from ..config import settings
 
 
@@ -166,13 +168,13 @@ class ModelClient:
             configured = cfg.ai_fallback_timeout_seconds if provider_index else cfg.ai_timeout_seconds
             return min(configured, timeout_cap_seconds) if timeout_cap_seconds is not None else configured
 
-        async with httpx.AsyncClient(
+        async with model_clients(providers,
             timeout=min(max(cfg.ai_timeout_seconds, cfg.ai_fallback_timeout_seconds), timeout_cap_seconds)
             if timeout_cap_seconds is not None
             else max(cfg.ai_timeout_seconds, cfg.ai_fallback_timeout_seconds),
             follow_redirects=False,
             trust_env=False,
-        ) as client:
+        ) as clients:
             for provider_index, (base, key, model) in enumerate(providers):
                 unavailable = False
                 primary_with_fallback = provider_index == 0 and len(providers) > 1
@@ -195,7 +197,7 @@ class ModelClient:
                     settled = False
                     try:
                         headers = {"Authorization": "Bearer " + key.get_secret_value()} if key.get_secret_value() else {}
-                        async with client.stream(
+                        async with clients[provider_index].stream(
                             "POST",
                             base.rstrip("/") + "/chat/completions",
                             json={**body, "model": model},

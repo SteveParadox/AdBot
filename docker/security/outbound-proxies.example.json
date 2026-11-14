@@ -1,0 +1,11 @@
+{
+  "endpoints": [
+    {"id":"approved-a","url":"https://proxy-a.example.invalid:8443","username":"REPLACE_OUTSIDE_REPOSITORY","password":"REPLACE_OUTSIDE_REPOSITORY","health_url":"https://health.example.invalid/ready"},
+    {"id":"approved-b","url":"https://proxy-b.example.invalid:8443","username":"REPLACE_OUTSIDE_REPOSITORY","password":"REPLACE_OUTSIDE_REPOSITORY","health_url":"https://health.example.invalid/ready"}
+  ],
+  "services": {
+    "browser":{"mode":"required","endpoints":["approved-a"],"strategy":"sticky","stable":true},
+    "ai":{"mode":"required","endpoints":["approved-a"],"strategy":"sticky","stable":true},
+    "ai_local":{"mode":"direct","stable":true}
+  }
+}

@@ -11,6 +11,13 @@ from starlette.responses import JSONResponse
 from .config import settings
 
 
+_extra_secrets = set()
+
+
+def register_secrets(values):
+    _extra_secrets.update(v for v in values if v)
+
+
 class Redact(logging.Filter):
     def filter(self, record):
         message = record.getMessage()
@@ -19,7 +26,8 @@ class Redact(logging.Filter):
                    cfg.ai_api_key.get_secret_value(), cfg.groq_api_key.get_secret_value(),
                    cfg.ai_fallback_api_key.get_secret_value(), cfg.session_encryption_key.get_secret_value(),
                    cfg.database_url, cfg.redis_url]
-        for value in secrets:
+        secrets += list(_extra_secrets)
+        for value in sorted(secrets, key=len, reverse=True):
             if value and len(value) > 3:
                 message = message.replace(value, "[redacted]")
         message = re.sub(r"(?i)Bearer\s+[^\s\"']+", "Bearer [redacted]", message)

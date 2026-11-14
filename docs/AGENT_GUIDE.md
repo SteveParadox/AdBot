@@ -69,6 +69,41 @@ containers. Provider requests use direct HTTP connections, without inheriting
 shell proxy variables. Remote providers require HTTPS; only operator-configured
 local providers may use HTTP.
 
+To use a local Ollama model as an automatic fallback for any primary-model
+failure, keep Groq as the primary provider and add these settings:
+
+```dotenv
+ADBOT_AI_FALLBACK_PROVIDER=local
+ADBOT_AI_FALLBACK_BASE_URL=http://127.0.0.1:11434/v1
+ADBOT_AI_FALLBACK_MODEL=dolphin3:8b
+```
+
+The primary provider gets one request. Any HTTP response other than 200, timeout,
+network failure, invalid response, schema mismatch, or exhausted primary token
+reserve immediately switches the same request to the fallback. The fallback uses
+the configured retry budget and separate 60-second timeout for local inference by
+default. Model responses are capped at 800 output tokens by default, which is
+enough for the structured action and verification JSON.
+If the fallback returns malformed JSON or a response that fails the action schema,
+it retries internally before the agent records a failed step.
+When fallback is enabled,
+the agent reserves 10,000 tokens of each task's existing token budget for fallback
+calls by default. Set `ADBOT_AGENT_FALLBACK_TOKENS` to change that reserve; it must
+cover at least one maximum-length response. The reserve stays inside the task's
+overall token cap. If the primary model reaches its share of the budget, the next
+request runs on the fallback model. Provider throttling and availability errors
+continue to trigger fallback as before.
+Rejected primary requests release their token reservation before fallback, so they
+do not consume the task token budget.
+
+The agent also bounds each serialized model request to 18,000 characters by
+default (`ADBOT_AI_MAX_REQUEST_CHARS`). It prioritizes the goal, current URL,
+visible page text, and controls, then removes supplementary accessibility and
+old-memory data if needed. This prevents oversized observations from reaching
+the provider and triggering HTTP 413.
+For Docker, use a host address reachable inside the backend container instead of
+`127.0.0.1`.
+
 `ADBOT_AI_PROVIDER=disabled` preserves crawl/workflow functionality without an
 LLM. Agent creation then returns 503 with configuration instructions. Enabling a
 provider requires a model ID and, except for local endpoints, its API key at
