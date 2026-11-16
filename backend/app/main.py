@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .config import settings
 from .db import AutomationEvent, Frontier, Job, PageVisit, Schedule, Session, Website, Workflow, emit, transaction
-from .jobs import TERMINAL, make_job, next_occurrence
+from .jobs import TERMINAL, check_capacity, make_job, next_occurrence
 from .schemas import JobInput, ScheduleInput, SchedulePatch, WebsiteInput, WorkflowInput
 from .security import Policy
 from .api_support import Limit, Offset, Owner, collection, output, owned, workflow_for
@@ -28,6 +28,7 @@ from .content import router as content_router
 from .outbound import manager
 from .network_api import router as network_router
 from .user_agents import router as user_agent_router
+from .automation_api import router as automation_router
 
 logger = logging.getLogger("adbot.api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -38,6 +39,7 @@ install_redaction()
 async def lifespan(app):
     app.state.redis = None
     routing = None
+    config_task = None
     try:
         if settings().redis_url:
             from redis.asyncio import Redis
@@ -46,8 +48,13 @@ async def lifespan(app):
             await app.state.redis.ping()
         routing = manager()
         routing.start()
+        from .automation import watch_configuration
+        config_task=asyncio.create_task(watch_configuration())
         yield
     finally:
+        if config_task:
+            config_task.cancel()
+            await asyncio.gather(config_task,return_exceptions=True)
         if routing:
             await routing.close()
         if app.state.redis:
@@ -72,6 +79,7 @@ async def validation_error(request, exc):
     return JSONResponse({"detail": [{"loc": e["loc"], "type": e["type"], "msg": "Invalid value"} for e in exc.errors()]}, status_code=422)
 
 
+app.include_router(automation_router)
 app.include_router(user_agent_router)
 app.include_router(network_router)
 app.include_router(content_router)
@@ -120,6 +128,7 @@ async def ready(request: Request):
             session.execute(text("SELECT 1 FROM websites LIMIT 1"))
             session.execute(text("SELECT revision FROM user_agent_config LIMIT 1"))
             session.execute(text("SELECT revision FROM content_sections LIMIT 1"))
+            session.execute(text("SELECT revision FROM automation_control LIMIT 1"))
         if settings().redis_url:
             await request.app.state.redis.ping()
     except Exception:
@@ -177,6 +186,9 @@ def delete_website(identifier: str, owner: Owner):
         )
         if active:
             raise HTTPException(409, "Cancel active jobs before deleting this website")
+        dependent=session.scalar(select(Job.id).where(Job.depends_on.in_(select(Job.id).where(Job.website_id==identifier))).limit(1))
+        if dependent:
+            raise HTTPException(409,"Website job history is referenced by dependent jobs; retain it until dependency retention cleanup")
         # Schedules reference workflows with RESTRICT; remove them first.
         for schedule in session.scalars(select(Schedule).where(Schedule.website_id == identifier)):
             session.delete(schedule)
@@ -195,7 +207,7 @@ async def start_job(
         with transaction() as session:
             site = owned(session, Website, data.website_id, owner)
             workflow = workflow_for(session, data.workflow_id, site.id, owner)
-            job = make_job(session, site, workflow, idempotency_key)
+            job = make_job(session, site, workflow, idempotency_key, data.priority, data.depends_on)
             result = output(job)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -204,7 +216,7 @@ async def start_job(
             existing = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
             if not existing:
                 raise HTTPException(409, "Concurrent request conflict; retry") from None
-            expected = hashlib.sha256(json.dumps(data.model_dump(), sort_keys=True).encode()).hexdigest()
+            expected = hashlib.sha256(json.dumps(data.model_dump(exclude={"priority","depends_on"}) if not data.priority and not data.depends_on else data.model_dump(), sort_keys=True).encode()).hexdigest()
             if existing.payload_hash != expected:
                 raise HTTPException(409, "Idempotency key was used for a different request") from None
             result = output(existing)
@@ -280,11 +292,17 @@ def retry_job(identifier: str, owner: Owner):
             raise HTTPException(409, "Only failed or cancelled jobs can be retried")
         if "workflow" in item.snapshot and any(s["action"] == "CLICK" for s in item.snapshot["workflow"]["steps"]):
             raise HTTPException(409, "Review CLICK results and explicitly launch a new job")
+        try:
+            check_capacity(session)
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from None
         job = Job(
             owner=owner,
             website_id=item.website_id,
             snapshot=item.snapshot,
             job_type=item.job_type,
+            priority=item.priority,
+            depends_on=item.depends_on,
             retry_count=item.retry_count + 1,
         )
         session.add(job)

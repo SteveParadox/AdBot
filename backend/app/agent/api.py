@@ -69,11 +69,12 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
         raise HTTPException(422, "Visual reasoning is not enabled by the server")
     if data.session_persistence and not cfg.browser_session_persistence:
         raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
-    options = data.model_dump()
+    options = data.model_dump(exclude={'priority','depends_on'})
     options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
     options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens)
     options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
-    digest = hashlib.sha256(json.dumps(data.model_dump(), sort_keys=True).encode()).hexdigest()
+    request_values=data.model_dump(exclude={'priority','depends_on'}) if not data.priority and not data.depends_on else data.model_dump()
+    digest = hashlib.sha256(json.dumps(request_values, sort_keys=True).encode()).hexdigest()
     try:
         with transaction() as session:
             website = owned(session, Website, data.website_id, owner)
@@ -83,7 +84,7 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
                     if previous.job_type != "agent" or previous.payload_hash != digest:
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
-            job = make_job(session, website)
+            job = make_job(session, website,priority=data.priority,depends_on=data.depends_on)
             job.job_type = "agent"
             job.idempotency_key, job.payload_hash = idempotency_key, digest
             task = AgentTask(job_id=job.id, objective=data.objective, mode=data.mode, options=options)
@@ -91,6 +92,8 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
             session.flush()
             emit(session, job.id, "agent_queued", "Goal-driven task queued", objective=data.objective)
             return task_output(job, task)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from None
     except IntegrityError:
         with Session() as session:
             old = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))

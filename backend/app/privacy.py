@@ -20,13 +20,29 @@ def register_secrets(values):
 
 class Redact(logging.Filter):
     def filter(self, record):
-        message = record.getMessage()
         cfg = settings()
         secrets = [*cfg.api_keys.split(","), *cfg.content_admin_keys.split(","),
                    cfg.ai_api_key.get_secret_value(), cfg.groq_api_key.get_secret_value(),
                    cfg.ai_fallback_api_key.get_secret_value(), cfg.session_encryption_key.get_secret_value(),
                    cfg.database_url, cfg.redis_url]
         secrets += list(_extra_secrets)
+
+        # Uvicorn's AccessFormatter unpacks these fields independently of msg.
+        # Preserve their types and shape through repeated handler filters.
+        if record.name == "uvicorn.access" and isinstance(record.args, tuple) and len(record.args) == 5:
+            record.msg = self.redact(str(record.msg), secrets)
+            record.args = tuple(self.redact(value, secrets) if isinstance(value, str) else value
+                                for value in record.args)
+        else:
+            record.msg, record.args = self.redact(record.getMessage(), secrets), ()
+        if isinstance(getattr(record, 'color_message', None), str):
+            record.color_message = self.redact(record.color_message, secrets)
+        # Tracebacks can carry DSNs and user inputs; log exception class separately instead.
+        record.exc_info, record.exc_text = None, None
+        return True
+
+    @staticmethod
+    def redact(message, secrets):
         for value in sorted(secrets, key=len, reverse=True):
             if value and len(value) > 3:
                 message = message.replace(value, "[redacted]")
@@ -37,10 +53,7 @@ class Redact(logging.Filter):
         message = re.sub(r"(?i)(password|api[_-]?key|token|secret)([\"']?\s*[:=]\s*[\"']?)[^\s,\"'}]+",
                          r"\1\2[redacted]", message)
         message = re.sub(r"(\w+://)[^/@\s]+:[^/@\s]+@", r"\1[redacted]@", message)
-        record.msg, record.args = message, ()
-        # Tracebacks can carry DSNs and user inputs; log exception class separately instead.
-        record.exc_info, record.exc_text = None, None
-        return True
+        return message
 
 
 def install_redaction():

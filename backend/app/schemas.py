@@ -114,6 +114,8 @@ class WorkflowInput(Strict):
 
 
 class JobInput(Strict):
+    priority: int = Field(0,ge=-10,le=10)
+    depends_on: str | None = None
     website_id: str
     workflow_id: str | None = None
 

@@ -46,6 +46,8 @@ export type Website = {
   configuration: Config;
 };
 export type Job = {
+  priority: number;
+  depends_on: string | null;
   id: string;
   website_id: string;
   job_type: string;

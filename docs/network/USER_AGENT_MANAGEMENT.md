@@ -14,7 +14,9 @@ content/jobs. Constraints enforce singleton ID and nonnegative revision; schemas
 profile IDs/values and references. Dispatch validates the selected value again. Never edit these tables
 by hand. Invalid persisted configuration fails closed rather than sending an unknown malformed identity.
 Missing rows use the application default. Configuration reads cache for at most five seconds per process;
-a successful local save invalidates immediately. Existing contexts retain their identity until closed.
+a successful local save invalidates immediately. API/worker revision watchers poll committed SQL revisions
+each second, with bounded backoff. Existing contexts retain their identity until closed and recover the
+same persisted assignment after a safe worker retry.
 
 ## Resolution
 For a registered service, an operator-fixed identity is mandatory. Otherwise precedence is authorized
@@ -51,9 +53,15 @@ Modified db/config/main/browser, agent/controller, outbound, frontend Content, t
 Back up/export identity config before downgrade; downgrade drops only identity/audit tables. An old app
 can ignore the new tables. Rolling back removes this feature, restoring its old code's identity behavior.
 
-Limitations: no revision history restoration UI (duplicate/save profiles for reusable alternatives), audit
-retention requires operator policy, rotation counters are process-local, provider requirements must be
-correctly registered by the operator, and five-second cross-worker update latency is intentional.
+Limitations: no full User-Agent revision-history restoration UI (duplicate/save profiles for reusable
+alternatives), audit retention requires operator policy and provider requirements must be correctly
+registered by the operator. Browser round robin now uses shared SQL counters. The Automation tab restores
+approved orchestrator policies; it does not restore past User-Agent documents.
+
+The automation upgrade adds weighted/sticky/compatibility/manual selection, client eligibility and
+explicit fail-closed fallback. See [current behavior](../automation/USER_AGENT_AUTOMATION.md) and
+[coordination](../automation/NETWORK_IDENTITY_COORDINATION.md). The file inventories below describe the
+original User-Agent feature; the automation report records subsequent additions.
 
 Compatibility profiles change only the HTTP identity string, not browser engine, OS, client hints or
 TLS fingerprint. Automation markers remain explicit. The private model_clients helper accepts

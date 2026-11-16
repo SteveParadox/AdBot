@@ -39,8 +39,11 @@ workers and restarts. Sticky sessions remain attached to a route until released.
 `stable=false, allow_rotation=true`. Optional connect failover also requires `allow_failover=true`.
 No HTTP 429, denial, account restriction or destination response triggers IP changes/retries. Connection
 retries happen before the target request is sent; mutations are not replayed by the routing manager.
-Counters, circuits and scheduling are process-local; production diagnostic heartbeats use Redis but
-selection is not globally coordinated. Scheduled strategies are per-process monotonic intervals.
+Round-robin counters and circuit cooldowns now use shared SQL coordination. Scheduled selection uses
+wall-clock intervals. Latency/counters remain per-process diagnostics aggregated by Redis heartbeats.
+Weighted, latency and explicit fixed strategies are available; fixed requires a single endpoint.
+See [automation behavior](../automation/PROXY_ROTATION_AUTOMATION.md) and
+[session coordination](../automation/NETWORK_IDENTITY_COORDINATION.md).
 
 ## Health and failover
 Connections record success/failure counts, consecutive failures, timeout counts, latency and last success.
@@ -75,6 +78,7 @@ IP_ROTATION_CONFIGURATION.md, EXTERNAL_NETWORK_REQUIREMENTS.md, NETWORK_SECURITY
 Modified: .env.example; backend/app/config.py; backend/app/egress.py; backend/app/browser.py;
 backend/app/agent/model.py; backend/app/main.py; backend/app/worker.py; backend/app/privacy.py;
 frontend/src/Content.tsx; docker/security/compose.tunnel.yml; docker/security/tunnel.example.yml.
-No schema migration, new runtime dependency, public write API, provider account modification or
-production deployment is required/performed by these source changes. Failover metrics count authorized
+The original routing feature added no schema migration or runtime dependency. The subsequent automation
+upgrade requires migration `a20d00000001` for shared coordination and admin policy. Neither feature performs
+provider account modifications or production deployment. Failover metrics count authorized
 connect failover attempts, with separate redacted log events; they do not count successful IP changes.

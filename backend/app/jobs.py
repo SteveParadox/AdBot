@@ -5,7 +5,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, update, func, or_
+from sqlalchemy.orm import aliased
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
@@ -22,13 +23,28 @@ from .db import (
     emit,
     transaction,
     uid,
+    NetworkAssignment,
+    WorkerHeartbeat,
 )
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
-def make_job(session, website: Website, workflow: Workflow | None = None, key=None):
+def check_capacity(session):
+    from .automation import get_policy
+    policy=get_policy(session,lock=True)
+    if session.scalar(select(func.count()).select_from(Job).where(Job.status=='queued'))>=policy.max_backlog:
+        raise ValueError("Queue capacity reached; wait for backlog to drain")
+
+
+def make_job(session, website: Website, workflow: Workflow | None = None, key=None, priority=0, depends_on=None):
     payload = {"website_id": website.id, "workflow_id": workflow.id if workflow else None}
+    if priority or depends_on:
+        payload.update(priority=priority,depends_on=depends_on)
+    if depends_on:
+        parent=session.get(Job,depends_on)
+        if not parent or parent.owner!=website.owner:
+            raise ValueError("Dependency must be an existing job owned by this workspace")
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     if key:
         old = session.scalar(select(Job).where(Job.owner == website.owner, Job.idempotency_key == key))
@@ -36,6 +52,7 @@ def make_job(session, website: Website, workflow: Workflow | None = None, key=No
             if old.payload_hash != digest:
                 raise ValueError("Idempotency key was used for a different request")
             return old
+    check_capacity(session)
     snapshot = {
         "base_url": website.base_url,
         "allowed_domains": website.allowed_domains,
@@ -47,6 +64,7 @@ def make_job(session, website: Website, workflow: Workflow | None = None, key=No
         snapshot["workflow"] = workflow.definition
         snapshot["workflow_version"] = workflow.version
     job = Job(
+        priority=priority, depends_on=depends_on,
         owner=website.owner,
         website_id=website.id,
         snapshot=snapshot,
@@ -82,13 +100,40 @@ def acquire(session, name, token, now):
 def claim():
     now, token = time.time(), uid()
     with transaction() as session:
+        from .automation import get_policy
+        control=get_policy(session,lock=True)
+        if control.paused or control.emergency_stop:
+            return None
+        parent=aliased(Job)
+        failed=session.scalars(select(Job).where(Job.status=='queued',select(parent.id).where(parent.id==Job.depends_on,parent.status.in_(['failed','cancelled'])).exists()).limit(200)).all()
+        for child in failed:
+            child.status='failed'
+            child.completed_at=now
+            child.error_message='Dependency did not complete successfully'
+            emit(session,child.id,'dependency_failed',child.error_message)
+        session.flush()
         jobs = session.scalars(
             select(Job)
-            .where(Job.status == "queued", Job.cancel_requested.is_(False))
-            .order_by(Job.created_at)
+            .where(Job.status == "queued", Job.cancel_requested.is_(False),Job.job_type.not_in(control.disabled),
+                   Job.website_id.not_in(control.disabled_websites),
+                   or_(control.enabled,Job.manual_release.is_(True)),
+                   or_(Job.depends_on.is_(None),select(parent.id).where(parent.id==Job.depends_on,parent.status=='completed').exists()))
+            .order_by(Job.priority.desc(),Job.created_at)
             .limit(50)
         ).all()
         for job in jobs:
+            if job.job_type in control.disabled or (not control.enabled and not job.manual_release):
+                continue
+            if job.depends_on:
+                parent=session.get(Job,job.depends_on)
+                if not parent or parent.status in {'failed','cancelled'}:
+                    job.status='failed'
+                    job.completed_at=now
+                    job.error_message='Dependency did not complete successfully'
+                    emit(session,job.id,'dependency_failed',job.error_message)
+                    continue
+                if parent.status!='completed':
+                    continue
             # Conservatively lock every allowed domain for the whole job. Wildcard
             # targets share the registrable suffix lock with explicit subdomains.
             domains = job.snapshot["allowed_domains"]
@@ -105,7 +150,7 @@ def claim():
                     savepoint.rollback()
                     continue
                 slot = next(
-                    (i for i in range(settings().max_concurrency) if acquire(session, f"slot:{i}", token, now)), None
+                    (i for i in range(control.concurrency) if acquire(session, f"slot:{i}", token, now)), None
                 )
                 if slot is None:
                     savepoint.rollback()
@@ -131,6 +176,8 @@ def claim():
 def recover_expired():
     now = time.time()
     with transaction() as session:
+        from .automation import get_policy
+        recovery_limit=get_policy(session).recovery_retries
         jobs = session.scalars(
             select(Job).where(Job.status.in_(["running", "paused", "waiting_user"]), Job.lease_until < now)
         ).all()
@@ -160,7 +207,7 @@ def recover_expired():
                     last.status = "interrupted"
                     last.outcome = {"error": "Worker lease expired before a durable action outcome"}
             job.status = (
-                "cancelled" if job.cancel_requested else "failed" if unsafe or job.retry_count >= 3 else "queued"
+                "cancelled" if job.cancel_requested else "failed" if unsafe or job.retry_count >= recovery_limit else "queued"
             )
             job.retry_count += 1
             if job.status in TERMINAL:
@@ -190,12 +237,13 @@ def heartbeat(job_id, token):
             .values(lease_until=now + settings().lease_seconds)
         ).rowcount
         if changed:
+            session.execute(update(NetworkAssignment).where(NetworkAssignment.job_id==job_id,NetworkAssignment.token==token).values(expires_at=now+settings().lease_seconds))
             session.execute(update(Lease).where(Lease.token == token).values(expires_at=now + settings().lease_seconds))
         return bool(changed)
 
 
 def owned_job(session, job_id, token):
-    job = session.get(Job, job_id)
+    job = session.scalar(select(Job).where(Job.id==job_id).with_for_update())
     if not job or job.lease_token != token or job.lease_until <= time.time() or job.status in TERMINAL:
         raise InterruptedError("Worker lease lost")
     return job
@@ -209,13 +257,19 @@ def tick(now=None):
     now = now or time.time()
     count = 0
     with transaction() as session:
+        from .automation import get_policy
+        control=get_policy(session,lock=True)
+        if not control.enabled or control.paused or control.emergency_stop or 'schedules' in control.disabled:
+            return 0
         schedules = session.scalars(
             select(Schedule)
-            .where(Schedule.enabled.is_(True), Schedule.next_run_at <= now)
+            .where(Schedule.enabled.is_(True), Schedule.next_run_at <= now,Schedule.website_id.not_in(control.disabled_websites))
             .order_by(Schedule.next_run_at)
             .limit(100)
         ).all()
         for item in schedules:
+            if session.scalar(select(func.count()).select_from(Job).where(Job.status=="queued"))>=control.max_backlog:
+                break
             due = item.next_run_at
             changes = (
                 {"next_run_at": next_occurrence(item.cron_expression, item.timezone, now)}
@@ -241,10 +295,17 @@ def tick(now=None):
 def cleanup():
     cutoff = time.time() - settings().retention_days * 86400
     with transaction() as session:
+        session.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.expires_at<time.time()-86400))
+        session.execute(delete(Lease).where(Lease.expires_at<time.time()-3600))
         session.execute(delete(AgentMemory).where(AgentMemory.expires_at < time.time()))
-        session.execute(delete(Job).where(Job.status.in_(TERMINAL), Job.completed_at < cutoff))
+        child=aliased(Job)
+        retained=select(child.depends_on).where(child.depends_on.is_not(None))
+        session.execute(delete(Job).where(Job.status.in_(TERMINAL), Job.completed_at < cutoff,Job.id.not_in(retained)))
     root = settings().artifact_dir
     if root.exists():
         for path in list(root.glob("*.png")) + list(root.glob("*.bin")):
-            if path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass

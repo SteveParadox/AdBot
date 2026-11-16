@@ -18,7 +18,6 @@ from .jobs import owned_job
 from .security import Policy, PolicyError
 from . import polymorph
 
-from .user_agents import resolve
 
 USER_AGENT = "Adbot/1.0.0"  # Legacy import compatibility; live requests use the session identity.
 
@@ -370,8 +369,8 @@ class Runner:
         self.crawl_delay = 0
         async with egress_proxy(self.policy, self.proxy_method_allowed, session=self.id) as proxy, async_playwright() as playwright:
             from .outbound import manager
-            endpoint = manager().bind("browser",self.id)
-            self.user_agent = resolve("browser",proxy_endpoint=endpoint)
+            from .coordination import assign
+            self.user_agent = assign(self,manager())
             self.proxy = proxy
             engine = getattr(playwright, self.cfg["browser"])
             options = {"headless": self.cfg["headless"], "proxy": {"server": proxy}}
@@ -415,7 +414,7 @@ class Runner:
                 self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
                 await self.execute_page(page, context)
             finally:
-                await browser.close()
+                await asyncio.wait_for(browser.close(),10)
 
 
 class RateLimited(Exception):

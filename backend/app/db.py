@@ -44,6 +44,9 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     owner: Mapped[str] = mapped_column(String(64), index=True)
     website_id: Mapped[str] = mapped_column(ForeignKey("websites.id", ondelete="CASCADE"), index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    depends_on: Mapped[str | None] = mapped_column(ForeignKey("automation_jobs.id"), nullable=True)
+    manual_release: Mapped[bool] = mapped_column(Boolean, default=False)
     job_type: Mapped[str] = mapped_column(String(16), default="crawl")
     status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
     snapshot: Mapped[dict] = mapped_column(JSON)
@@ -193,6 +196,55 @@ class UserAgentAudit(Base):
     administrator: Mapped[str] = mapped_column(String(64))
     revision: Mapped[int] = mapped_column(Integer)
     timestamp: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AutomationControl(Base):
+    __tablename__ = "automation_control"
+    __table_args__ = (CheckConstraint('id=1',name='automation_control_singleton'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    policy: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class OperationalEvent(Base):
+    __tablename__ = "operational_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(80), index=True)
+    severity: Mapped[str] = mapped_column(String(16))
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16))
+    state: Mapped[dict] = mapped_column(JSON)
+    expires_at: Mapped[float] = mapped_column(Float, index=True)
+
+
+class SelectionCounter(Base):
+    __tablename__ = "selection_counters"
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SharedProxyHealth(Base):
+    __tablename__ = "shared_proxy_health"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    retry_at: Mapped[float] = mapped_column(Float, default=0)
+    observed_at: Mapped[float] = mapped_column(Float, default=0)
+
+
+class NetworkAssignment(Base):
+    __tablename__ = "network_assignments"
+    job_id: Mapped[str] = mapped_column(ForeignKey("automation_jobs.id", ondelete="CASCADE"), primary_key=True)
+    token: Mapped[str] = mapped_column(String(36))
+    user_agent: Mapped[str] = mapped_column(String(2048))
+    endpoint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    expires_at: Mapped[float] = mapped_column(Float, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 engine = create_engine(

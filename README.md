@@ -188,9 +188,10 @@ ADBOT_USER_AGENT_ROTATABLE_SERVICES=
 ADBOT_USER_AGENT_FIXED_IDENTITIES={}
 ```
 
-Saved runtime changes reach new worker requests within five seconds. Active browser contexts retain one
+API and worker revision watchers normally apply committed changes within one second, with a five-second
+read-cache fallback and bounded backoff during outages. Active browser contexts retain one
 identity for browsing, robots rules and downloads; model retries/failover preserve their selected header.
-Automatic browser-only round-robin/random/scheduled/endpoint-coordinated pools require explicit operator
+Automatic browser-only round-robin/random/weighted/sticky/compatibility/scheduled/endpoint-coordinated pools require explicit operator
 permission and compatible proxy policy. Coordination happens only when a NEW context chooses its route,
 not during retries or a stable authenticated session. A UA string does not change the browser engine or
 TLS fingerprint; automation markers remain present. Do not put credentials in these outbound headers.
@@ -226,7 +227,7 @@ ADBOT_OUTBOUND_PROXY_CONFIG_PATH=/absolute/private/outbound-proxies.json
 
 HTTP/HTTPS CONNECT is supported, with verified TLS and separate proxy authentication. HTTPS is preferred
 for authenticated proxy transport. SOCKS/remote DNS are not implemented: local DNS validates and pins
-public destination IPs. Selection supports round-robin/random/sticky/health/scheduled strategies under
+public destination IPs. Selection supports round-robin/random/weighted/sticky/fixed/health/latency/scheduled strategies under
 explicit service permissions. Circuits, backoff and bounded connect failover do not replay target
 mutations or rotate because of a target denial/429. Host firewalls are still needed to constrain arbitrary
 sockets under process compromise; application routing is not a network-layer anonymity guarantee.
@@ -391,10 +392,37 @@ restrictions. No blanket firewall script is deployed by this repository.
 | Proxy unavailable | CA/TLS, credentials, CONNECT IP/port support, approved health URL, cooldown and fixed-route policy |
 | UA save 409 | Reload revision, reconcile edits and save; do not blindly overwrite another admin |
 | UA save 422 | ASCII/control/length rules, profile references, permission and stable-route restrictions |
-| UA update not visible | New context required; cache can last five seconds; mandatory identity takes precedence |
+| UA update not visible | New context required; revision watcher/five-second fallback; mandatory identity takes precedence |
+| Uvicorn access log unpack error | Restart API with the redaction fix; its formatter must retain all five structured fields |
 | Frontend API failure | Vite proxy target/port, API process, Host/CORS configuration or production Nginx routing |
 | Browser tests fail early | Port conflicts, browser binaries, resource limits and actual runner diagnostics |
 | Docker build/pull fails | Registry/DNS/proxy access, image availability and disk; no runtime-success claim until fixed |
+
+## 12. Automation Control Center
+
+The **Automation** tab combines live queue outcomes, worker/scheduler heartbeats, browser session leases,
+network health, User-Agent management, alerts, recent owned jobs and approved policy history. It requires
+the existing administrator key role. Global controls affect all workspaces; individual job actions stay
+within the caller's workspace.
+
+Existing queue/worker/scheduler services now coordinate priority, one-parent dependencies, bounded queue
+admission, runtime concurrency/recovery limits, manual release, pause/resume and emergency cancellation.
+User-Agent and proxy round robin use atomic SQL counters; proxy cooldowns and browser identity assignments
+survive process restarts. Authenticated/persisted sessions fail closed on route loss. Fixed identities,
+stable egress, authorization, SSRF checks, TLS and action-review requirements remain enforced.
+
+Run `python -m alembic upgrade head` before deploying matching API/workers/scheduler. New migration
+`a20d00000001` follows `f19c00000001`; take a consistent backup first. Ordinary runtime policy changes use
+revision CAS and require no restart. Operator security environment changes still require deployment.
+
+- [Architecture and file report](docs/automation/AUTOMATION_ARCHITECTURE.md)
+- [Automation coverage matrix](docs/automation/AUTOMATION_COVERAGE_MATRIX.md)
+- [Administrator controls](docs/automation/ADMIN_CONTROLS.md)
+- [Workflow scheduling and dependencies](docs/automation/WORKFLOW_ORCHESTRATION.md)
+- [User-Agent automation](docs/automation/USER_AGENT_AUTOMATION.md), [proxy automation](docs/automation/PROXY_ROTATION_AUTOMATION.md)
+- [Network identity coordination](docs/automation/NETWORK_IDENTITY_COORDINATION.md)
+- [Recovery and retention](docs/automation/SELF_RECOVERY.md), [deployment and restore](docs/automation/DEPLOYMENT.md)
+- [Current verification results](docs/automation/TEST_RESULTS.md), [implementation report](docs/automation/IMPLEMENTATION_REPORT.md)
 
 ## Documentation and deployment limits
 
@@ -410,6 +438,6 @@ restrictions. No blanket firewall script is deployed by this repository.
 
 Still requiring deployment verification: real PostgreSQL/Redis multi-process behavior, Nginx runtime and
 CSP/TLS, Cloudflare/DNS/direct-origin rejection, proxy exit allocation, host egress ACLs, load/capacity,
-selected browser engines and backup restoration. SOCKS/remote DNS are unsupported, metadata is client-rendered and rotation counters are process-local. Arbitrary OS sockets
+selected browser engines and backup restoration. SOCKS/remote DNS are unsupported and metadata is client-rendered. Shared SQL counters and cooldowns require database availability and synchronized host clocks. Arbitrary OS sockets
 under compromise are not intercepted. No anonymity guarantee is made. Truthful lawful business
 information, legitimate ownership records and dependency attribution must remain intact.

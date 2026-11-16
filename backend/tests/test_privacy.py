@@ -187,6 +187,46 @@ def test_quoted_secret_redaction():
         assert '[redacted]' in record.getMessage()
 
 
+def test_uvicorn_access_logging_preserves_fields_and_redacts(monkeypatch, capsys):
+    import io
+    from uvicorn.logging import AccessFormatter
+    from app.privacy import install_redaction
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    logger = logging.getLogger('uvicorn.access')
+    monkeypatch.setattr(logger, 'handlers', [handler])
+    monkeypatch.setattr(logger, 'level', logging.INFO)
+    monkeypatch.setattr(logger, 'propagate', False)
+    install_redaction()
+    install_redaction()
+    assert sum(isinstance(item, Redact) for item in handler.filters) == 1
+
+    for colors in (False, True):
+        handler.setFormatter(AccessFormatter(
+            '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+            use_colors=colors))
+        for status in (200, 403, 500):
+            # Match the actual Uvicorn logging call, including integer status.
+            logger.info('%s - "%s %s HTTP/%s" %d', '127.0.0.1:53828', 'GET',
+                        '/api/admin/content?token=private-log-token', '1.1', status)
+
+    output = stream.getvalue()
+    assert output.count('GET /api/admin/content?token=[redacted] HTTP/1.1') == 6
+    assert '200 OK' in output and '403 Forbidden' in output and '500 Internal Server Error' in output
+    assert 'private-log-token' not in output
+    assert 'Logging error' not in capsys.readouterr().err
+
+
+def test_access_record_can_pass_multiple_redaction_filters():
+    record = logging.LogRecord('uvicorn.access', logging.INFO, '', 0, '%s - "%s %s HTTP/%s" %d',
+                               ('127.0.0.1:1', 'GET', '/?password=private-value', '1.1', 200), None)
+    for _ in range(2):
+        assert Redact().filter(record)
+    assert len(record.args) == 5 and record.args[-1] == 200
+    assert 'private-value' not in record.getMessage()
+
+
 async def test_partial_stream_failure_is_not_swallowed():
     import pytest
     async def broken(scope, receive, send):

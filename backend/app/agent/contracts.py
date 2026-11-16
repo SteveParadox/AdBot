@@ -99,6 +99,8 @@ class Verification(Strict):
 
 class TaskInput(Strict):
     website_id: str
+    priority: int = Field(0,ge=-10,le=10)
+    depends_on: str | None = Field(None,max_length=36)
     objective: str = Field(min_length=8, max_length=4000)
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
     mode: Literal["assisted", "autonomous", "supervised"] = "supervised"

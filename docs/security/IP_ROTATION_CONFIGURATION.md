@@ -1,5 +1,9 @@
 # IP rotation configuration
 
+Current shared counters/cooldowns, weighted/latency/fixed selection and session protection are documented
+in [proxy automation](../automation/PROXY_ROTATION_AUTOMATION.md). Runtime strategies can only refine
+existing operator permissions; the private endpoint file remains authoritative.
+
 Only use proxies approved for these destinations. No rotation for access denials, quotas, advertising
 engagement, financial transactions or authenticated/fixed-IP workflows. Default protection is disabled;
 turning on environment variables alone neither creates proxies nor changes the public server IP.

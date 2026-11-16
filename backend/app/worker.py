@@ -5,6 +5,7 @@ import signal
 import time
 
 from sqlalchemy import update, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from .browser import BrowserCrashed, Runner
 from .config import settings
@@ -50,9 +51,11 @@ async def execute(job_id, token):
                 last_beat = time.monotonic()
             with transaction() as session:
                 job = owned_job(session, job_id, token)
-                if job.cancel_requested:
+                from .automation import get_policy
+                control=get_policy(session)
+                if job.cancel_requested or control.emergency_stop or kind in control.disabled or job.website_id in control.disabled_websites:
                     raise asyncio.CancelledError()
-                if job.pause_requested:
+                if job.pause_requested or control.paused:
                     runner.gate.clear()
                     job.status = "paused"
                 else:
@@ -110,7 +113,8 @@ async def execute(job_id, token):
                                 {"error": "Browser disconnected; read-only task will replan"},
                             )
                         session.get(AgentTask, job_id).pending_step_id = None
-                    status = "queued" if safe and job.retry_count < runner.cfg["retries"] else "failed"
+                    from .automation import get_policy
+                    status = "queued" if safe and job.retry_count < min(runner.cfg["retries"],get_policy(session).recovery_retries) else "failed"
                     job.retry_count += 1
                     if status == "queued":
                         session.execute(
@@ -122,6 +126,8 @@ async def execute(job_id, token):
                 job.completed_at = None if job.status == "queued" else time.time()
                 job.error_message = error
                 job.lease_until = 0
+                from .db import NetworkAssignment
+                session.execute(update(NetworkAssignment).where(NetworkAssignment.job_id==job_id,NetworkAssignment.token==token).values(active=False))
                 if kind == "agent" and job.status in {"completed", "failed", "cancelled"}:
                     session.get(AgentTask, job_id).pending_step_id = None
                     step = session.scalar(
@@ -131,6 +137,9 @@ async def execute(job_id, token):
                         step.status = job.status if job.status != "completed" else "failed"
                         step.outcome = {"error": error or "Task stopped before a durable step outcome"}
                 emit(session, job_id, job.status, f"Job {job.status}", error=error)
+                from .automation import event, get_policy
+                if job.status in {"completed","failed","cancelled"} and get_policy(session).notifications:
+                    event(session,"job_"+job.status,"warning" if job.status=="failed" else "info",job_id=job.id)
             session.execute(update(Lease).where(Lease.token == token).values(expires_at=0))
         logger.info(json.dumps({"event": "job_finished", "job_id": job_id, "status": status, "error": "job_failed" if error else None}))
 
@@ -152,26 +161,53 @@ async def main():
         redis = Redis.from_url(settings().redis_url)
         await redis.ping()
     routing.start()
+    from .automation import watch_configuration
+    config_task=asyncio.create_task(watch_configuration())
+    from .automation import pulse
+    from .db import uid
+    identifier=uid()
+    last_pulse=0
     try:
+        failures=0
         while not stop.is_set():
-            recover_expired()
-            tasks = {t for t in tasks if not t.done()}
-            while len(tasks) < settings().max_concurrency and (item := claim()):
-                tasks.add(asyncio.create_task(execute(*item)))
-            if redis:
-                # Redis is a wakeup accelerator; the SQL queue is authoritative.
-                try:
-                    await redis.blpop("adbot:wakeup", timeout=1)
-                except Exception:
-                    await asyncio.sleep(1)
-            else:
-                await asyncio.sleep(0.5)
+            try:
+                if time.monotonic()-last_pulse>10:
+                    pulse(identifier,'worker',{'active_jobs':len(tasks),'last_check':time.time()})
+                    last_pulse=time.monotonic()
+                recover_expired()
+                for task in [t for t in tasks if t.done()]:
+                    try:
+                        task.result()
+                    except (Exception,asyncio.CancelledError):
+                        logger.error('worker_task_interrupted')
+                tasks = {t for t in tasks if not t.done()}
+                from .automation import get_policy
+                while len(tasks) < get_policy().concurrency and (item := claim()):
+                    tasks.add(asyncio.create_task(execute(*item)))
+                if redis:
+                    # Redis is a wakeup accelerator; the SQL queue is authoritative.
+                    try:
+                        await redis.blpop("adbot:wakeup", timeout=1)
+                    except Exception:
+                        await asyncio.sleep(1)
+                else:
+                    await asyncio.sleep(0.5)
+                failures=0
+            except SQLAlchemyError:
+                failures+=1
+                logger.error('worker_database_unavailable')
+                if failures>=6:
+                    raise
+                await asyncio.sleep(min(30,2**failures))
+
     finally:
         # Cancel browser activity promptly. Expired leases recover on restart;
         # operator-requested process shutdown is recorded as cancellation.
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        config_task.cancel()
+        await asyncio.gather(config_task,return_exceptions=True)
         await routing.close()
         if redis:
             await redis.aclose()

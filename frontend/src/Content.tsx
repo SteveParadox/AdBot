@@ -67,27 +67,26 @@ export function ContentAdmin({token}: {token: string}) {
   }
   if(query.isPending) return <p role="status">Loading content editor…</p>;
   if(query.error) return <p role="alert">{query.error.message}</p>;
-  return <section className="panel"><h2>Website content</h2>
+  return <section className="panel content-admin admin-surface"><div className="admin-intro"><span className="admin-kicker">PUBLISHING WORKSPACE</span><h2>Website content</h2><p>Create, refine, and publish your website sections.</p></div>
     <p>Reserved keys control existing page headings and SEO. Other keys appear as ordered promotional sections on the login page. Draft saves preserve the last publication; archive hides it.</p>
     <fieldset disabled={busy}><Button onClick={()=>{setRevision(null);setConflict(false);setLatest(null);setKey("");setDraft({});setStatus("draft");setPosition(0);setError("");setNotice("");}}>New section</Button>
     <Field label="Select section"><select value="" onChange={e=>{const s=query.data?.items.find(s=>s.key===e.target.value); if(s){setRevision(s.revision);setConflict(false);setLatest(null);setKey(s.key);setDraft(s.draft);setStatus(s.status);setPosition(s.position);}}}>
       <option value="">New section / select existing</option>{query.data?.items.map(s=><option key={s.key}>{s.key}</option>)}
     </select></Field>
-    <form onSubmit={e=>{e.preventDefault();void save();}}>
+    <form className="content-editor-grid" onSubmit={e=>{e.preventDefault();void save();}}>
       <Field label="Section key"><input disabled={revision!==null} required pattern="[A-Za-z0-9 _-]{1,80}" value={key} onChange={e=>setKey(e.target.value)} /></Field>
-      {(["navigation_label","title","description","image","image_alt","link","button","canonical"] as const).map(field=><Field label={field} key={field}><textarea aria-label={field} value={draft[field] || ""} onChange={e=>setDraft({...draft,[field]:e.target.value})} /></Field>)}
+      {(["navigation_label","title","description","image","image_alt","link","button","canonical"] as const).map(field=><Field label={field.replace(/_/g," ")} key={field}>{field==="description"?<textarea rows={5} aria-label={field} value={draft[field] || ""} onChange={e=>setDraft({...draft,[field]:e.target.value})}/>:<input aria-label={field} value={draft[field] || ""} onChange={e=>setDraft({...draft,[field]:e.target.value})}/>}</Field>)}
       <Field label="Status"><select value={status} onChange={e=>setStatus(e.target.value as Section["status"])}>{["draft","published","archived"].map(s=><option key={s}>{s}</option>)}</select></Field>
       <Field label="Order"><input type="number" min={0} max={10000} value={position} onChange={e=>setPosition(+e.target.value)} /></Field>
-      <Button type="submit" disabled={busy||conflict}>Save</Button><Button disabled={busy || !key || !revision || conflict} onClick={()=>void save(true)}>Delete</Button>
+      <div className="content-form-actions"><Button type="submit" disabled={busy||conflict}>Save</Button><Button variant="outline" disabled={busy || !key || !revision || conflict} onClick={()=>void save(true)}>Delete</Button></div>
     </form></fieldset>
     {conflict && <div role="status"><p>Your draft is preserved. Compare it with the latest saved section before continuing.</p>
       {latest ? <><h3>Latest saved content</h3><ContentBlock data={latest.draft}/><pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{JSON.stringify({draft:latest.draft,status:latest.status,position:latest.position},null,2)}</pre><Button onClick={()=>{setDraft(latest.draft);setStatus(latest.status);setPosition(latest.position);setRevision(latest.revision);setConflict(false);setError("");}}>Discard my draft and load latest</Button>
       <Button onClick={()=>{setRevision(latest.revision);setConflict(false);setError("");}}>Keep my draft for manual merge</Button></> : <p>Reload the section list or choose New section after preserving your draft.</p>}
     </div>}
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
-    <UserAgentAdmin token={token} />
-    <NetworkStatus token={token} />
-    <h3>Draft preview</h3><ContentBlock data={draft} />
+    <div className="content-preview"><span className="admin-kicker">LIVE DRAFT</span><h3>Preview your section</h3>{draft.title||draft.description||draft.image?<ContentBlock data={draft}/>:<p className="admin-empty">Add a title, description, or image to see your section take shape.</p>}</div>
+    <details className="admin-disclosure"><summary>Identity settings and network diagnostics</summary><UserAgentAdmin token={token} /><NetworkStatus token={token} /></details>
     {(query.data?.total || 0)>200 && <p>Only the first 200 sections are shown. Use the paginated admin API for additional sections.</p>}
   </section>;
 }

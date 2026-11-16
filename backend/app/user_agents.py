@@ -16,7 +16,6 @@ from .db import UserAgentConfig, UserAgentAudit, Session, transaction
 SERVICES = ('browser','ai','ai_local','proxy_health')
 _cache = None
 _cache_until = 0
-_counter = 0
 
 
 def validate(value):
@@ -32,6 +31,7 @@ class Profile(BaseModel):
     value: str
     description: str = Field('',max_length=1000)
     category: str = Field('custom',max_length=80)
+    clients: list[Literal['chromium','firefox','webkit','httpx']] = Field(default_factory=lambda:['chromium','firefox','webkit','httpx'])
     enabled: bool = True
     created_at: float = 0
     updated_at: float = 0
@@ -44,8 +44,10 @@ class ServicePolicy(BaseModel):
     model_config = ConfigDict(extra='forbid')
     value: str | None = None
     profile: str | None = None
-    rotation: Literal['none','round_robin','random','scheduled','proxy_endpoint'] = 'none'
+    rotation: Literal['none','manual','round_robin','random','weighted','sticky','compatibility','scheduled','proxy_endpoint'] = 'none'
     profiles: list[str] = Field(default_factory=list,max_length=100)
+    weights: dict[str,float] = Field(default_factory=dict)
+    fallback: Literal['global','fail'] = 'global'
     interval_seconds: int = Field(300,ge=30)
     @field_validator('value')
     @classmethod
@@ -76,9 +78,11 @@ class Document(BaseModel):
             if p.id=='app-default' and (p.value!=settings().user_agent_default or not p.enabled):
                 raise ValueError('Application-default profile is protected')
         for name,policy in self.services.items():
+            if any(not 0<w<=1000 for w in policy.weights.values()) or set(policy.weights)-set(policy.profiles):
+                raise ValueError('Weights must reference pool profiles with finite positive weights')
             if policy.profile and policy.profile not in ids or set(policy.profiles)-set(ids):
                 raise ValueError('Referenced profiles cannot be deleted')
-            if policy.rotation!='none':
+            if policy.rotation not in {'none','manual'}:
                 if name != 'browser' or name not in {s.strip() for s in settings().user_agent_rotatable_services.split(',')} or name in settings().user_agent_fixed_identities:
                     raise ValueError('Operator policy does not permit identity rotation for this service')
                 from .outbound import manager
@@ -107,6 +111,10 @@ def invalidate():
     _cache_until=0
 
 
+def cached_revision():
+    return _cache.revision if _cache is not None else None
+
+
 def read():
     global _cache, _cache_until
     if _cache is not None and time.monotonic()<_cache_until:
@@ -124,8 +132,7 @@ def read():
     return doc
 
 
-def resolve(service, *, override=None, authorized=False, proxy_endpoint=None):
-    global _counter
+def resolve(service, *, override=None, authorized=False, proxy_endpoint=None, client=None, session_key=None):
     if service not in SERVICES:
         raise ValueError('Unknown outbound identity service')
     if override is not None and not (authorized and settings().user_agent_allow_request_overrides):
@@ -143,10 +150,10 @@ def resolve(service, *, override=None, authorized=False, proxy_endpoint=None):
         policy=ServicePolicy()
     if policy.value is not None:
         return validate(policy.value)
-    pool={p.id:p for p in doc.profiles if p.enabled}
+    pool={p.id:p for p in doc.profiles if p.enabled and (client is None or client in p.clients)}
     if policy.profile in pool:
         return validate(pool[policy.profile].value)
-    if policy.rotation!='none':
+    if policy.rotation not in {'none','manual'}:
         from .outbound import manager
         routing=manager()
         if routing.enabled:
@@ -155,18 +162,25 @@ def resolve(service, *, override=None, authorized=False, proxy_endpoint=None):
                 raise ValueError('Stable proxy integration cannot rotate identity')
         choices=[pool[i].value for i in policy.profiles if i in pool]
         if choices:
+            if policy.rotation=='weighted':
+                ids=[i for i in policy.profiles if i in pool]
+                return validate(random.choices(choices,weights=[policy.weights.get(i,1) for i in ids],k=1)[0])
             if policy.rotation=='random':
                 return validate(random.choice(choices))
-            if policy.rotation=='proxy_endpoint':
+            if policy.rotation in {'sticky','compatibility'}:
+                index=int.from_bytes(hashlib.sha256((session_key or service).encode()).digest()[:8],'big')
+            elif policy.rotation=='proxy_endpoint':
                 if not proxy_endpoint:
                     raise ValueError('Proxy-coordinated rotation requires an assigned endpoint')
                 index=int.from_bytes(hashlib.sha256(proxy_endpoint.encode()).digest()[:8],'big')
             elif policy.rotation=='scheduled':
                 index=int(time.time()//policy.interval_seconds)
             else:
-                index=_counter
-                _counter+=1
+                from .coordination import next_counter
+                index=next_counter('ua:'+service)
             return validate(choices[index%len(choices)])
+    if policy.fallback=='fail' and (policy.profile or policy.profiles):
+        raise ValueError('No enabled compatible profile; explicit fallback is fail closed')
     return validate(doc.global_value or settings().user_agent_default)
 
 
@@ -214,6 +228,8 @@ def save_config(doc:Document,admin:Admin):
                     raise HTTPException(409,'Reload identity configuration')
                 session.add(UserAgentConfig(id=1,revision=1,payload=payload,updated_at=now))
             session.add(UserAgentAudit(administrator=admin,revision=doc.revision+1))
+            from .automation import event
+            event(session,"identity_configuration_changed",administrator=admin,revision=doc.revision+1)
         invalidate()
         return {'revision':doc.revision+1,'updated_at':now}
     except IntegrityError:

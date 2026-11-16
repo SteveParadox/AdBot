@@ -67,6 +67,12 @@ async def test_failover_and_no_direct_fallback(monkeypatch):
     assert await m.connect('browser','job',['8.8.8.8'],443) == ('reader','writer')
     assert calls == ['a','b'] and m.failovers == 1
     assert m.states['a']['timeouts'] == 1 and m.states['a']['retry_at'] > 0
+    # Independent no-failover scenario starts with a fresh shared pool, not just a new process.
+    from app.db import transaction, SharedProxyHealth, SelectionCounter
+    from sqlalchemy import delete
+    with transaction() as session:
+        session.execute(delete(SharedProxyHealth))
+        session.execute(delete(SelectionCounter))
     m=Manager(configured(),True)
     monkeypatch.setattr(m,'via',via)
     with pytest.raises(OutboundUnavailable):
@@ -75,6 +81,10 @@ async def test_failover_and_no_direct_fallback(monkeypatch):
     with pytest.raises(OutboundUnavailable):
         m.select('browser','job')
     m.states['a']['retry_at']=0
+    # Recovery must also be visible to other workers, not just the local manager.
+    from app.coordination import publish_health
+    import time
+    publish_health(m.config.endpoints[0],time.time(),0)
     assert m.select('browser','job').id in {'a','b'}
 
 
@@ -160,7 +170,9 @@ def test_monitor_authorization(client,monkeypatch):
     monkeypatch.setattr(settings(),'content_admin_keys',KEY)
     assert client.get('/api/admin/network',headers=OTHER_AUTH).status_code == 403
     response=client.get('/api/admin/network')
-    assert response.status_code == 200 and response.json()['scope'] == 'this-process-only'
+    expected_scope='shared-heartbeats' if settings().redis_url else 'this-process-only'
+    assert response.status_code == 200 and response.json()['scope'] == expected_scope
+    assert response.json()['instances']
     assert 'password' not in response.text
     client.headers.clear()
     assert client.get('/api/admin/network').status_code == 401

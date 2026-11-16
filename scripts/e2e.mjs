@@ -28,11 +28,17 @@ const env = {
   ADBOT_RATE_PER_MINUTE: "10000",
   ADBOT_AUTHORIZED_DOMAINS: "",
   ADBOT_AI_PROVIDER: "local",
+  ADBOT_AI_API_KEY: "fixture-only-not-a-live-provider-key",
   ADBOT_AI_FALLBACK_PROVIDER: "disabled",
   ADBOT_AI_MODEL: "fixture-model-not-live-llm",
   ADBOT_AI_BASE_URL: "http://127.0.0.1:8766/v1",
   ADBOT_AGENT_MAX_STEPS: "15",
   ADBOT_AGENT_MAX_TOKENS: "100000",
+  ADBOT_USER_AGENT_ROTATABLE_SERVICES: "browser",
+  ADBOT_USER_AGENT_FIXED_IDENTITIES: "{}",
+  ADBOT_OUTBOUND_PROXY_ENABLED: "false",
+  ADBOT_ENFORCE_HTTPS: "false",
+  ADBOT_HSTS_ENABLED: "false",
 };
 const children = [];
 let logs = "";

@@ -33,6 +33,12 @@ def database():
     invalidate()
     Base.metadata.create_all(engine)
     yield
+    # SQLite enforces self-referential constraints even for DROP TABLE.
+    # Remove test dependency edges before dropping this isolated test schema.
+    from sqlalchemy import update
+    from app.db import Job
+    with engine.begin() as connection:
+        connection.execute(update(Job).values(depends_on=None))
     Base.metadata.drop_all(engine)
     rate_windows.clear()
 

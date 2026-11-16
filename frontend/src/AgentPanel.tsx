@@ -173,6 +173,8 @@ export default function AgentPanel({
     [vision, setVision] = useState(false),
     [persist, setPersist] = useState(false);
   const [downloads, setDownloads] = useState(false);
+  const [priority, setPriority] = useState(0);
+  const [dependency, setDependency] = useState("");
   const config = useQuery({
     queryKey: ["agent-config", token],
     queryFn: () => api<Config>("/agent/config", token),
@@ -223,6 +225,8 @@ export default function AgentPanel({
         "POST",
         {
           website_id: identifier,
+          priority,
+          depends_on: dependency || null,
           objective,
           success_criteria: criteria.split("\n").filter((s) => s.trim()),
           mode,
@@ -348,6 +352,8 @@ export default function AgentPanel({
                 onChange={(e) => setMaxSteps(+e.target.value)}
               />
             </Field>
+            <Field label="Agent priority (-10 to 10)"><input type="number" min={-10} max={10} value={priority} onChange={e=>setPriority(+e.target.value)} /></Field>
+            <Field label="Required successful job ID (optional)"><input maxLength={36} value={dependency} onChange={e=>setDependency(e.target.value)} /></Field>
           </div>
           <Field label="Natural-language objective">
             <textarea

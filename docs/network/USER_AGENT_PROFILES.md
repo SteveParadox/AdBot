@@ -20,9 +20,11 @@ silently overwriting another admin's changes. Validation errors are displayed wi
 
 Automatic browser identity selection needs ADBOT_USER_AGENT_ROTATABLE_SERVICES=browser and an
 explicit rotation policy/profile pool. Other service types remain nonrotating. Options: round_robin,
-random, scheduled (minimum interval 30 seconds), proxy_endpoint (deterministic profile mapping from
+random, weighted, sticky, compatibility, scheduled (minimum interval 30 seconds), proxy_endpoint (deterministic profile mapping from
 assigned approved endpoint ID). Rotation pool must not conflict with custom/fixed profile overrides.
-Disabling candidates cannot cause malformed headers; empty eligible pools use global/default.
+Disabling candidates cannot cause malformed headers; empty eligible pools use global/default unless
+`fallback: "fail"` is configured. Profiles declare compatible clients; weights reference pool IDs.
+See [automation behavior](../automation/USER_AGENT_AUTOMATION.md).
 
 Example POST document: revision 0, global_value "ApprovedCompatibilityClient/2", profiles containing
 {id:"compat",name:"Compatibility",value:"ApprovedTest/2",enabled:true}, services containing

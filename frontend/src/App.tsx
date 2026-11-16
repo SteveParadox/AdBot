@@ -41,9 +41,11 @@ import {
 } from "./api";
 import { Badge, Button, Empty, Field, Pager } from "./ui";
 import AgentPanel from "./AgentPanel";
+import AutomationCenter from "./AutomationCenter";
 import { useContent, ContentAdmin, ContentBlock } from "./Content";
 
 type Tab =
+  | "Automation"
   | "Content"
   | "Overview"
   | "Websites"
@@ -198,6 +200,7 @@ export default function App() {
               ["Workflows", Route],
               ["Schedules", CalendarClock],
               ["Content", LayoutDashboard],
+              ["Automation", Activity],
             ] as const
           ).map(([name, Icon]) => (
             <button
@@ -250,6 +253,7 @@ export default function App() {
                 {copy[tab]?.description ??
                   {
                     Content: "Manage website content and publications.",
+                    Automation: "Monitor and control approved automatic execution.",
                     Overview: "Monitor every run. Understand every result.",
                     "AI Agent":
                       "Set an objective. Let the browser observe, act, and verify.",
@@ -294,6 +298,7 @@ export default function App() {
               </button>
             </div>
           )}
+          {tab === "Automation" && <AutomationCenter key={token} token={token} />}
           {tab === "Content" && <ContentAdmin token={token} />}
           {tab === "AI Agent" && (
             <AgentPanel token={token} sites={items} run={run} busy={busy} />
@@ -909,6 +914,8 @@ function Jobs({
 }) {
   const [site, setSite] = useState("");
   const [workflow, setWorkflow] = useState("");
+  const [priority, setPriority] = useState(0);
+  const [dependency, setDependency] = useState("");
   const [page, setPage] = useState(0);
   const [status, setStatus] = useState("");
   const jobs = useQuery({
@@ -926,7 +933,7 @@ function Jobs({
         "/jobs",
         token,
         "POST",
-        { website_id: site, workflow_id: workflow || null },
+        { website_id: site, workflow_id: workflow || null, priority, depends_on: dependency || null },
         { "Idempotency-Key": crypto.randomUUID() },
       );
       select(job.id);
@@ -973,6 +980,8 @@ function Jobs({
             <Play size={15} />
             Start job
           </Button>
+          <Field label="Job priority (-10 to 10)"><input type="number" min={-10} max={10} value={priority} onChange={e=>setPriority(+e.target.value)} /></Field>
+          <Field label="Required successful job ID (optional)"><input maxLength={36} value={dependency} onChange={e=>setDependency(e.target.value)} /></Field>
         </form>
       </section>
       <section className="panel">

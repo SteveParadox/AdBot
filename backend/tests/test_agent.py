@@ -244,7 +244,8 @@ async def test_tab_manager_and_bounded_download(client, target, agent_config, ag
 
     set_url(client, target, "/agent/news")
 
-    async def planned(self, kind, payload, schema, account, image_path=None):
+    async def planned(self, kind, payload, schema, account, image_path=None, timeout_cap_seconds=None):
+        assert timeout_cap_seconds is not None and timeout_cap_seconds > 0
         data = {"purpose": kind, **payload}
         state = payload.get("current_page", {})
         memory = payload.get("session_memory", {})
@@ -264,7 +265,7 @@ async def test_tab_manager_and_bounded_download(client, target, agent_config, ag
     task = new_task(client, target, allow_downloads=True)
     await execute(*claim())
     result = client.get("/api/agent/tasks/" + task["id"]).json()
-    assert result["status"] == "completed", result
+    assert result["status"] == "completed", (result.get("error_message"), result)
     assert len(result["memory"]["tabs"]) == 2
     steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
     download = next(s["outcome"]["download_path"] for s in steps if "download_path" in s["outcome"])
@@ -639,8 +640,9 @@ async def test_failed_action_replans_from_fresh_observation(client, target, agen
 
     count = 0
 
-    async def responses(self, kind, payload, schema, account, image_path=None):
+    async def responses(self, kind, payload, schema, account, image_path=None, timeout_cap_seconds=None):
         nonlocal count
+        assert timeout_cap_seconds is not None and timeout_cap_seconds > 0
         result = decide({"purpose": kind, **payload})
         if kind == "decide" and count == 0:
             result.update(decision="CLICK", target={"element_id": "missing"})
@@ -652,7 +654,7 @@ async def test_failed_action_replans_from_fresh_observation(client, target, agen
     task = new_task(client, target)
     await execute(*claim())
     result = client.get("/api/agent/tasks/" + task["id"]).json()
-    assert result["status"] == "completed", result
+    assert result["status"] == "completed", (result.get("error_message"), result)
     steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
     assert steps[0]["status"] == "failed" and steps[0]["outcome"]["replanning"]
     assert steps[1]["status"] == "succeeded"
@@ -674,7 +676,8 @@ async def test_natural_interactions_persist_traces_and_automation_identity(
         ]
     )
 
-    async def responses(self, kind, payload, schema, account, image_path=None):
+    async def responses(self, kind, payload, schema, account, image_path=None, timeout_cap_seconds=None):
+        assert timeout_cap_seconds is not None and timeout_cap_seconds > 0
         action = next(actions, None) if kind == "decide" else None
         if action:
             name, label, extras = action

@@ -4,7 +4,12 @@ x-backend: &backend
     context: .
     dockerfile: docker/backend.Dockerfile
   init: true
-  restart: unless-stopped
+  restart: "on-failure:5"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
   env_file: .env
   environment: &environment
     ADBOT_ENVIRONMENT: production

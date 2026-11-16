@@ -30,6 +30,7 @@ class Endpoint(BaseModel):
     username: SecretStr = SecretStr('')
     password: SecretStr = SecretStr('')
     allow_plaintext_auth: bool = False
+    weight: float = Field(1,gt=0,le=1000)
     health_url: str
 
     @model_validator(mode='after')
@@ -56,7 +57,7 @@ class Service(BaseModel):
     model_config = ConfigDict(extra='forbid')
     mode: Literal['required', 'direct'] = 'required'
     endpoints: list[str] = Field(default_factory=list)
-    strategy: Literal['round_robin','random','sticky','health','scheduled'] = 'sticky'
+    strategy: Literal['round_robin','random','weighted','sticky','fixed','health','latency','scheduled'] = 'sticky'
     stable: bool = True
     allow_rotation: bool = False
     allow_failover: bool = False
@@ -68,10 +69,12 @@ class Service(BaseModel):
             raise ValueError('Stable services require one fixed endpoint across workers and restarts')
         if self.stable and (self.allow_rotation or self.allow_failover):
             raise ValueError('Stable services cannot rotate or fail over to another IP')
-        if self.strategy != 'sticky' and not self.allow_rotation:
+        if self.strategy not in {'sticky','fixed'} and not self.allow_rotation:
             raise ValueError('Rotation requires explicit service permission')
         if self.mode == 'required' and not self.endpoints:
             raise ValueError('Required routing needs approved endpoints')
+        if self.mode == 'required' and self.strategy=='fixed' and len(self.endpoints)!=1:
+            raise ValueError('Fixed routing requires one approved endpoint')
         return self
 
 
@@ -89,6 +92,10 @@ class Routing(BaseModel):
 
 
 class OutboundUnavailable(RuntimeError):
+    pass
+
+
+class ProxyAuthenticationFailed(OutboundUnavailable):
     pass
 
 
@@ -112,6 +119,12 @@ class Manager:
                        for e in self.config.endpoints} if self.config else {}
         self.sticky = OrderedDict()
         self.bound = set()
+        self.assignment_tokens = {}
+        self.strict_sessions = set()
+        self.health_checked = {}
+        self.health_published = {}
+        self.policy_until = 0
+        self.strategies = {}
         self.counters = {}
         self.failovers = 0
         self.task = None
@@ -123,7 +136,12 @@ class Manager:
         policy = self.config.services.get(service)
         if policy is None:
             raise OutboundUnavailable('No approved egress policy for this service')
-        return policy
+        from .automation import get_policy
+        if time.monotonic()>=self.policy_until:
+            self.strategies=get_policy().proxy_strategies
+            self.policy_until=time.monotonic()+1
+        strategy=self.strategies.get(service)
+        return policy.model_copy(update={'strategy':strategy}) if strategy else policy
 
     def select(self, service, session):
         p = self.policy(service)
@@ -131,13 +149,23 @@ class Manager:
             return None
         now = time.monotonic()
         key = (service, session)
+        from .coordination import shared_retry
+        refresh=key not in self.bound or now-self.health_checked.get(service,0)>=1
+        for endpoint in self.config.endpoints if refresh else ():
+            if endpoint.id in p.endpoints:
+                retry=shared_retry(endpoint)
+                if retry>time.time():
+                    self.states[endpoint.id]['retry_at']=max(self.states[endpoint.id]['retry_at'],time.monotonic()+retry-time.time())
+        if refresh:
+            self.health_checked[service]=now
+        now=time.monotonic()
         previous = self.sticky.get(key)
         if previous and self.states[previous]['retry_at'] > now:
-            if p.stable or not p.allow_failover:
+            if p.stable or not p.allow_failover or key in self.strict_sessions:
                 raise OutboundUnavailable('Assigned egress route is unavailable')
             self.sticky.pop(key, None)
             previous = None
-        if previous and (key in self.bound or p.stable or not p.allow_rotation or p.strategy == 'sticky'):
+        if previous and (key in self.bound or p.stable or not p.allow_rotation or p.strategy in {'sticky','fixed'}):
             if self.states[previous]['retry_at'] > now:
                 raise OutboundUnavailable('Stable egress route is unavailable')
             return next(e for e in self.config.endpoints if e.id == previous)
@@ -145,14 +173,17 @@ class Manager:
                    self.states[e.id]['retry_at'] <= now]
         if not healthy:
             raise OutboundUnavailable('No healthy approved proxy')
-        if p.strategy == 'random':
+        if p.strategy == 'weighted':
+            selected=random.choices(healthy,weights=[e.weight for e in healthy],k=1)[0]
+        elif p.strategy == 'random':
             selected = random.choice(healthy)
-        elif p.strategy == 'health':
+        elif p.strategy in {'health','latency'}:
             selected = min(healthy, key=lambda e: self.states[e.id]['latency_ms'] if self.states[e.id]['latency_ms'] is not None else float('inf'))
         elif p.strategy == 'scheduled':
-            selected = healthy[int(now // p.rotation_seconds) % len(healthy)]
+            selected = healthy[int(time.time() // p.rotation_seconds) % len(healthy)]
         else:
-            count = self.counters.get(service,0)
+            from .coordination import next_counter
+            count=next_counter('proxy:'+service)
             selected = healthy[count % len(healthy)]
             self.counters[service] = count + 1
         if key not in self.sticky and len(self.sticky) >= 10000:
@@ -169,9 +200,12 @@ class Manager:
     def release(self, service, session):
         self.bound.discard((service,session))
         self.sticky.pop((service,session),None)
+        self.assignment_tokens.pop((service,session),None)
+        self.strict_sessions.discard((service,session))
 
     def record(self, endpoint, started, error=None):
         s = self.states[endpoint.id]
+        publish=error is not None or s['consecutive'] or time.monotonic()-self.health_published.get(endpoint.id,0)>=1
         s['in_flight'] = False
         if error is None:
             if started >= s['last_failure']:
@@ -180,10 +214,19 @@ class Manager:
             s['successes'] += 1
         else:
             s['last_failure'] = time.monotonic()
+            s['tls_errors']=s.get('tls_errors',0)+int(isinstance(error,ssl.SSLError))
+            s['auth_failures']=s.get('auth_failures',0)+int(isinstance(error,ProxyAuthenticationFailed))
             s['failures'] += 1
             s['consecutive'] += 1
             s['timeouts'] += isinstance(error, (TimeoutError, asyncio.TimeoutError))
             s['retry_at'] = time.monotonic()+min(300, 2**min(s['consecutive'],8))*random.uniform(.8,1.2)
+        from .coordination import publish_health
+        # Failures are ordered by observation; an earlier in-flight success must
+        # never erase a failure observed after that connection/probe began.
+        if publish:
+            publish_health(endpoint,time.time() if error else time.time()-(time.monotonic()-started),
+                           time.time()+max(0,s['retry_at']-time.monotonic()))
+            self.health_published[endpoint.id]=time.monotonic()
         log.info(json.dumps({'event':'egress_connection','endpoint':endpoint.id,'ok':error is None}))
 
     async def via(self, endpoint, host, port):
@@ -201,7 +244,10 @@ class Manager:
             writer.write((f'CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n'+auth+'\r\n').encode('ascii'))
             await writer.drain()
             reply = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'),settings().outbound_request_timeout_seconds)
-            if reply.split(b'\r\n',1)[0].split()[1] != b'200':
+            status=reply.split(b'\r\n',1)[0].split()[1]
+            if status==b'407':
+                raise ProxyAuthenticationFailed('Approved proxy authentication failed')
+            if status != b'200':
                 raise OutboundUnavailable('Approved proxy refused the connection')
             return reader,writer
         except BaseException:
@@ -213,22 +259,33 @@ class Manager:
         p = self.policy(service)
         if p.mode == 'direct':
             return await asyncio.wait_for(asyncio.open_connection(addresses[0],port),settings().outbound_connect_timeout_seconds)
+        previous=self.sticky.get((service,session))
         for attempt in range(settings().outbound_max_retries+1):
             endpoint = self.select(service,session)
             started = time.monotonic()
             try:
                 result = await self.via(endpoint,addresses[0],port)
-                self.record(endpoint,started)
-                return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.record(endpoint,started,exc)
-                if p.stable or not p.allow_failover or attempt >= settings().outbound_max_retries:
+                if p.stable or not p.allow_failover or (service,session) in self.strict_sessions or attempt >= settings().outbound_max_retries:
                     break
                 self.failovers += 1
                 log.info(json.dumps({'event':'egress_failover_attempt','service':service,'failed_endpoint':endpoint.id,'attempt':attempt+1}))
                 await asyncio.sleep(min(2, .1*2**attempt)*random.uniform(.8,1.2))
+                continue
+            try:
+                self.record(endpoint,started)
+                token=self.assignment_tokens.get((service,session))
+                if service=='browser' and token and previous and previous!=endpoint.id:
+                    from .coordination import route_changed
+                    route_changed(session,endpoint.id,token)
+                return result
+            except BaseException:
+                # A shared-state failure must not leak an already-open socket.
+                result[1].close()
+                raise
         raise OutboundUnavailable('Approved egress is unavailable; direct fallback is prohibited') from None
 
     def snapshot(self):
@@ -252,7 +309,7 @@ class Manager:
             if p.query:
                 path += '?'+p.query
             from .user_agents import resolve
-            identity = resolve('proxy_health')
+            identity = resolve('proxy_health',client='httpx')
             writer.write(f'HEAD {path} HTTP/1.1\r\nHost: {p.hostname}\r\nConnection: close\r\nUser-Agent: {identity}\r\n\r\n'.encode('ascii'))
             await writer.drain()
             status = await asyncio.wait_for(reader.readline(),settings().outbound_request_timeout_seconds)
@@ -281,7 +338,8 @@ class Manager:
                         await redis.set('adbot:egress:instance:'+self.instance,json.dumps(self.snapshot()),ex=settings().outbound_health_interval_seconds*3)
                     except Exception:
                         log.warning('egress_monitor_publication_failed')
-                    await asyncio.sleep(settings().outbound_health_interval_seconds)
+                    from .automation import get_policy
+                    await asyncio.sleep(get_policy().health_interval_seconds)
             publisher = asyncio.create_task(heartbeat())
         slots = asyncio.Semaphore(4)
 
@@ -293,7 +351,8 @@ class Manager:
             while True:
                 if self.enabled:
                     await asyncio.gather(*(check(e) for e in self.config.endpoints))
-                await asyncio.sleep(settings().outbound_health_interval_seconds)
+                from .automation import get_policy
+                await asyncio.sleep(get_policy().health_interval_seconds)
         finally:
             if publisher:
                 publisher.cancel()
@@ -352,7 +411,7 @@ async def model_clients(providers, user_agent_override=None, authorized_override
             service = 'ai_local' if cfg.ai_provider == 'local' or i > 0 else 'ai'
             options = dict(kwargs)
             headers = httpx.Headers(options.pop('headers', None))
-            headers['User-Agent'] = resolve(service,override=user_agent_override,authorized=authorized_override)
+            headers['User-Agent'] = resolve(service,override=user_agent_override,authorized=authorized_override,client='httpx')
             options['headers'] = headers
             if not manager().enabled:
                 clients.append(await stack.enter_async_context(httpx.AsyncClient(**options)))
