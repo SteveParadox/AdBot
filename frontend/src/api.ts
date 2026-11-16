@@ -117,6 +117,9 @@ export type Overview = {
   http_statuses: { status: string | number; count: number }[];
 };
 
+// Share a cooldown across endpoints in this tab so polling cannot keep hitting a
+// workspace that the server has already rate limited. Never persist credentials.
+const cooldowns = new Map<string, number>();
 export async function api<T>(
   path: string,
   token: string,
@@ -124,6 +127,10 @@ export async function api<T>(
   data?: unknown,
   extraHeaders?: Record<string, string>,
 ): Promise<T> {
+  const now = Date.now();
+  for (const [key, until] of cooldowns) if (until <= now) cooldowns.delete(key);
+  const until = cooldowns.get(token) || 0;
+  if (until > now) throw new ApiError(`Too many requests. Retry in ${Math.ceil((until-now)/1000)} seconds.`, 429);
   const response = await fetch("/api" + path, {
     method,
     headers: {
@@ -133,6 +140,12 @@ export async function api<T>(
     },
     body: data ? JSON.stringify(data) : undefined,
   });
+  if (response.status === 429) {
+    const header = response.headers.get("Retry-After");
+    const seconds = header && /^\d+$/.test(header) ? Number(header) : header ? (Date.parse(header)-Date.now())/1000 : 60;
+    const delay = Number.isFinite(seconds) ? Math.max(1, seconds) : 60;
+    cooldowns.set(token, Date.now()+delay*1000);
+  }
   if (!response.ok) {
     const body = await response
       .json()

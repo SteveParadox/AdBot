@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, parseEvents } from "./api";
 
 describe("SSE reconnect input", () => {
@@ -24,4 +24,18 @@ it("preserves conflict status for the editor without losing the server message",
   globalThis.fetch=async()=>new Response(JSON.stringify({detail:"Section changed"}),{status:409,headers:{"Content-Type":"application/json"}});
   try { await expect(api("/admin/content/test","test-key","POST",{})).rejects.toMatchObject({name:"ApiError",status:409,message:"Section changed"}); }
   finally {globalThis.fetch=original;}
+});
+
+it("honors Retry-After across endpoints and resumes when the cooldown expires",async()=>{
+ const original=globalThis.fetch;vi.useFakeTimers();
+ const fetch=vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({detail:"Rate limit exceeded"}),{status:429,headers:{"Retry-After":"60"}})).mockResolvedValue(new Response(JSON.stringify({ok:true}),{status:200}));
+ globalThis.fetch=fetch;
+ try{
+  await expect(api("/websites","cooldown-test-key")).rejects.toMatchObject({status:429});
+  await expect(api("/workflows","cooldown-test-key")).rejects.toMatchObject({status:429});
+  expect(fetch).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(60001);
+  await expect(api("/workflows","cooldown-test-key")).resolves.toEqual({ok:true});
+  expect(fetch).toHaveBeenCalledTimes(2);
+ }finally{globalThis.fetch=original;vi.useRealTimers();}
 });
