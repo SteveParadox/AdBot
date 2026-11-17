@@ -168,11 +168,25 @@ async def main():
     identifier=uid()
     last_pulse=0
     try:
+        from .agent.model import warm_local_fallback
+        warmup=asyncio.create_task(warm_local_fallback())
+        stopping=asyncio.create_task(stop.wait())
+        try:
+            while not warmup.done() and not stop.is_set():
+                pulse(identifier,'worker',{'active_jobs':0,'fallback_ready':False,'phase':'warming_fallback'})
+                await asyncio.wait([warmup,stopping],timeout=10,return_when=asyncio.FIRST_COMPLETED)
+            if stop.is_set():
+                return
+            fallback_ready=warmup.result()
+        finally:
+            warmup.cancel()
+            stopping.cancel()
+            await asyncio.gather(warmup,stopping,return_exceptions=True)
         failures=0
         while not stop.is_set():
             try:
                 if time.monotonic()-last_pulse>10:
-                    pulse(identifier,'worker',{'active_jobs':len(tasks),'last_check':time.time()})
+                    pulse(identifier,'worker',{'active_jobs':len(tasks),'last_check':time.time(),'fallback_ready':fallback_ready})
                     last_pulse=time.monotonic()
                 recover_expired()
                 for task in [t for t in tasks if t.done()]:

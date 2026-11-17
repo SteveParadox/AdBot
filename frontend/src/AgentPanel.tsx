@@ -56,10 +56,19 @@ type Step = {
   };
   outcome: {
     trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
-    interaction?: { changed: boolean; verified: boolean; verification: string; scroll: {y: number; height: number} };
+    interaction?: { changed: boolean; verified: boolean; verification: string; scroll?: {y: number; height: number} | null };
     [key: string]: unknown;
   };
 };
+export function InteractionOutcome({ interaction }: { interaction: Step["outcome"]["interaction"] }) {
+  if (!interaction) return null;
+  const y = interaction.scroll?.y;
+  return <p className="hint">
+    UI outcome: {interaction.verified ? "verified" : "no confirmed change"}
+    {" · "}{interaction.verification}
+    {typeof y === "number" && Number.isFinite(y) && <>{" · Scroll "}{y}px</>}
+  </p>;
+}
 type Config = {
   provider: string;
   model: string;
@@ -804,11 +813,7 @@ function AgentDetail({
                 </strong>
                 <p className="hint">{step.decision.reason}</p>
                 <small className="url">{step.observation.url}</small>
-                {step.outcome.interaction && <p className="hint">
-                  UI outcome: {step.outcome.interaction.verified ? "verified" : "no confirmed change"}
-                  {" · "}{step.outcome.interaction.verification}
-                  {" · Scroll "}{step.outcome.interaction.scroll.y}px
-                </p>}
+                <InteractionOutcome interaction={step.outcome.interaction} />
                 {!!step.outcome.trace?.length && <details>
                   <summary>Interaction trace · automated session</summary>
                   <table className="interaction-trace"><thead><tr><th scope="col">Phase</th><th scope="col">Started (UTC)</th><th scope="col">Duration</th><th scope="col">Status</th></tr></thead>

@@ -711,3 +711,41 @@ async def test_natural_interactions_persist_traces_and_automation_identity(
         assert {"decision", "inspection", "action", "waiting"} <= {span["phase"] for span in trace}
         assert all(span["ended_at"] >= span["started_at"] for span in trace)
     assert client.get("/api/agent/metrics").json()["traffic_kind"] == "automated"
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("deadline", [False, True])
+async def test_unchanged_observe_and_deadline_do_not_loop(
+    client, target, agent_config, agent_servers, monkeypatch, deadline
+):
+    from app.agent.model import ModelDeadlineExceeded
+
+    calls = []
+
+    async def response(self, kind, payload, schema, account, image_path=None, **kwargs):
+        calls.append(kind)
+        if deadline:
+            raise ModelDeadlineExceeded("Task time budget exhausted before model request")
+        return Decision(
+            observation="The same readable page",
+            decision="OBSERVE",
+            reason="Inspect again",
+            confidence=1,
+            expected_result="Same page",
+        )
+
+    monkeypatch.setattr(ModelClient, "request", response)
+    set_url(client, target, "/agent/news")
+    task = new_task(client, target)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + task["id"]).json()
+    assert result["status"] == "failed"
+    steps = client.get("/api/agent/tasks/" + task["id"] + "/steps").json()["items"]
+    logs = client.get("/api/jobs/" + task["id"] + "/logs").json()["items"]
+    if deadline:
+        assert len(calls) == 1
+        assert not any(e["event_type"] == "agent_replanning" for e in logs)
+    else:
+        assert len(calls) == 1 + agent_config.agent_max_retries
+        assert sum(s["status"] == "succeeded" for s in steps) == 1
+        assert "recovery budget" in result["error_message"]

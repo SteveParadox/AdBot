@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr = SecretStr("")
     ai_model: str = ""
     ai_timeout_seconds: int = Field(30, ge=1, le=120)
+    ai_ollama_native: bool = False
+    ai_ollama_warmup_timeout_seconds: int = Field(300, ge=1, le=600)
+    ai_primary_fallback_timeout_seconds: int = Field(10, ge=1, le=120)
     ai_fallback_provider: Literal["disabled", "local"] = "disabled"
     ai_fallback_base_url: str = "http://127.0.0.1:11434/v1"
     ai_fallback_api_key: SecretStr = SecretStr("")

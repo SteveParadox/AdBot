@@ -15,7 +15,9 @@ class Claim(Strict):
 
 
 class Decision(Strict):
-    observation: str = Field(min_length=1, max_length=1000)
+    observation: str = Field(
+        min_length=1, max_length=1000, description="Brief observation summary, not a copy of the page."
+    )
     decision: Literal[
         "NAVIGATE",
         "OBSERVE",
@@ -41,12 +43,20 @@ class Decision(Strict):
     ]
     target: Target | None = None
     url: str | None = Field(None, max_length=1800)
-    text: str | None = Field(None, max_length=4000)
+    text: str | None = Field(
+        None,
+        max_length=4000,
+        description="REQUIRED for EXTRACT: the exact visible quote. Also required for TYPE, SEARCH, ASK_USER and FAIL. Omit for other actions.",
+    )
     tab_id: str | None = Field(None, max_length=36)
     reason: str = Field(min_length=1, max_length=1000)
     confidence: float = Field(ge=0, le=1)
     expected_result: str = Field(min_length=1, max_length=1000)
-    claims: list[Claim] = Field(default_factory=list, max_length=30)
+    claims: list[Claim] = Field(
+        default_factory=list,
+        max_length=30,
+        description="Required for COMPLETE or SUMMARIZE only. Cite existing evidence_ids from session_memory.evidence. EXTRACT must use text instead of claims.",
+    )
     direction: Literal["down", "up"] = "down"
 
     key: (
@@ -86,21 +96,25 @@ class Decision(Strict):
 
 
 class Criterion(Strict):
-    criterion: str
-    met: bool
-    evidence_ids: list[str] = Field(default_factory=list)
+    criterion: str = Field(description="Copy one supplied success criterion exactly.")
+    met: bool = Field(description="True only when the cited evidence supports this criterion.")
+    evidence_ids: list[str] = Field(
+        default_factory=list, description="Actual identifiers of the supporting supplied evidence records."
+    )
 
 
 class Verification(Strict):
-    complete: bool
-    explanation: str = Field(max_length=2000)
     checks: list[Criterion] = Field(min_length=1, max_length=20)
+    explanation: str = Field(
+        max_length=2000, description="One brief sentence summarizing the checks. Do not narrate your analysis."
+    )
+    complete: bool = Field(description="True only if every check is met with supporting evidence; otherwise false.")
 
 
 class TaskInput(Strict):
     website_id: str
-    priority: int = Field(0,ge=-10,le=10)
-    depends_on: str | None = Field(None,max_length=36)
+    priority: int = Field(0, ge=-10, le=10)
+    depends_on: str | None = Field(None, max_length=36)
     objective: str = Field(min_length=8, max_length=4000)
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
     mode: Literal["assisted", "autonomous", "supervised"] = "supervised"

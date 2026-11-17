@@ -18,6 +18,10 @@ STATE = """() => JSON.stringify({url:location.href,ready:document.readyState,
  [e.tagName,e.type==='password'||e.type==='file'?'':e.value,e.checked,e.disabled,e.getAttribute('aria-expanded'),e.getAttribute('aria-busy'),!!e.getClientRects().length])})"""
 
 
+class ActionabilityTimeout(PlaywrightTimeout):
+    """The trial timed out before a real input action was dispatched."""
+
+
 class InteractionEngine:
     def __init__(self, timeout_ms=2000):
         self.timeout_ms = min(max(timeout_ms, 100), 5000)
@@ -57,7 +61,10 @@ class InteractionEngine:
             raise ValueError("Target is disabled")
         if pointer:
             # Playwright checks visibility, stability, enabled state and hit testing.
-            await locator.click(trial=True, timeout=self.timeout_ms)
+            try:
+                await locator.click(trial=True, timeout=self.timeout_ms)
+            except PlaywrightTimeout as exc:
+                raise ActionabilityTimeout("Target could not receive pointer input before the action deadline") from exc
 
     async def perform(self, page, decision, locator=None, tab_id="t1"):
         action = decision.decision
@@ -120,7 +127,9 @@ class InteractionEngine:
                         await locator.evaluate("e => e.scrollIntoView({block:'center',behavior:'instant'})")
                     else:
                         await page.mouse.wheel(
-                            0, int(page.viewport_size["height"] * random.uniform(0.5, 0.9)) * (1 if decision.direction == "down" else -1)
+                            0,
+                            int(page.viewport_size["height"] * random.uniform(0.5, 0.9))
+                            * (1 if decision.direction == "down" else -1),
                         )
             elif action != "WAIT":
                 raise ValueError("Unsupported interaction")

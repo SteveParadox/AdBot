@@ -151,3 +151,67 @@ async def test_keyboard_navigation_cannot_bypass_form_input_permission(lab):
         await controller.act(decision("PRESS_KEY", key="ArrowUp"), {"allow_form_input": False})
     await controller.act(decision("PRESS_KEY", key="Tab"), {"allow_form_input": False})
     assert await page.get_by_role("button", name="Delayed action").evaluate("e=>e===document.activeElement")
+
+
+@pytest.mark.parametrize("link,ambiguous", [(True, False), (False, False), (True, True), (True, "changed")])
+async def test_controller_recovers_only_ordinary_link_before_click_dispatch(lab, link, ambiguous):
+    from types import SimpleNamespace
+    from app.agent.controller import Controller
+    from app.agent.interaction import ActionabilityTimeout
+
+    page, _, _ = lab
+    destination = "http://127.0.0.1:8765/agent/article/orion"
+    tag = (
+        f'<a href="{destination}">Rankings</a>'
+        if link
+        else '<button data-adbot-safe="true" onclick="window.clicked=true">Rankings</button>'
+    )
+    await page.set_content(tag + '<div style="position:fixed;inset:0;background:white;z-index:99">Overlay</div>')
+    visits = []
+
+    async def permitted(url):
+        assert url == destination
+        return url
+
+    async def visit(current, url):
+        visits.append(url)
+        await current.goto(url)
+        return None, None, None
+
+    runner = SimpleNamespace(
+        cfg={"navigation_timeout_ms": 200},
+        permitted=permitted,
+        visit=visit,
+        policy=SimpleNamespace(check=lambda url: url),
+    )
+    controller = Controller(runner, page.context, page, {})
+    observation = await controller.observer.observe(page, "t1")
+    item = next(e for e in observation["elements"] if e["name"] == "Rankings")
+    choice = decision("CLICK", target={"element_id": item["element_id"]})
+    if ambiguous == "changed":
+
+        async def changed(*args, **kwargs):
+            await page.locator("a").evaluate("e => e.textContent='Delete account'")
+            raise ActionabilityTimeout("Trial failed before dispatch")
+
+        controller.engine.perform = changed
+        with pytest.raises(ValueError, match="Target changed"):
+            await controller.act(choice, {"allow_form_input": False})
+        assert not visits
+    elif ambiguous:
+
+        async def dispatched(*args, **kwargs):
+            raise PlaywrightTimeout("Actual click outcome is unknown")
+
+        controller.engine.perform = dispatched
+        with pytest.raises(PlaywrightTimeout):
+            await controller.act(choice, {"allow_form_input": False})
+        assert not visits
+    elif link:
+        outcome = await controller.act(choice, {"allow_form_input": False})
+        assert outcome["navigation_recovery"] and page.url == destination
+        assert visits == [destination]
+    else:
+        with pytest.raises(ActionabilityTimeout):
+            await controller.act(choice, {"allow_form_input": False})
+        assert not visits and not await page.evaluate("Boolean(window.clicked)")

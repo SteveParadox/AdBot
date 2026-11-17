@@ -3,12 +3,13 @@ import time
 import re
 from urllib.parse import urlsplit, urljoin
 import httpx
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from ..config import settings
 from ..db import uid
 from ..security import PolicyError
 from .observe import Observer
-from .interaction import InteractionEngine
+from .interaction import InteractionEngine, ActionabilityTimeout
 
 
 class Controller:
@@ -110,6 +111,18 @@ class Controller:
             return True
         return False
 
+    async def inspect_target(self, locator):
+        live = await locator.evaluate(
+            """e => {
+            const labelled=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.textContent||'').join(' ').trim();
+            const type=(e.type||'').toLowerCase();
+            const name=(e.getAttribute('aria-label')||labelled||[...(e.labels||[])].map(l=>l.textContent).join(' ')||e.innerText||e.getAttribute('alt')||e.getAttribute('placeholder')||(type==='submit'?e.value:'')||'').trim().replace(/\\s+/g,' ').slice(0,160);
+            return {name,disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',safe:e.dataset.adbotSafe==='true',type:(e.type||'').toLowerCase(),href:e.tagName==='A'?e.href:null,
+            form:e.closest('form')?{method:e.closest('form').method.toUpperCase(),action:e.closest('form').action}:null}}""",
+            timeout=self.engine.timeout_ms,
+        )
+        return live
+
     async def act(self, decision, options, approved=False):
         action = decision.decision
         result = {}
@@ -120,18 +133,11 @@ class Controller:
             await self.navigate(decision.url)
         elif action in {"CLICK", "TYPE", "SEARCH", "HOVER", "FOCUS"}:
             locator, element = self.observer.target(decision)
-            live = await locator.evaluate(
-                """e => {
-                const labelled=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.textContent||'').join(' ').trim();
-                const type=(e.type||'').toLowerCase();
-                const name=(e.getAttribute('aria-label')||labelled||[...(e.labels||[])].map(l=>l.textContent).join(' ')||e.innerText||e.getAttribute('alt')||e.getAttribute('placeholder')||(type==='submit'?e.value:'')||'').trim().replace(/\\s+/g,' ').slice(0,160);
-                return {name,safe:e.dataset.adbotSafe==='true',type:(e.type||'').toLowerCase(),href:e.tagName==='A'?e.href:null,
-                form:e.closest('form')?{method:e.closest('form').method.toUpperCase(),action:e.closest('form').action}:null}}""",
-                timeout=self.engine.timeout_ms,
-            )
+            live = await self.inspect_target(locator)
             expected_form = element.get("form")
             if (
                 live["name"] != element["name"]
+                or live["disabled"] != element["disabled"]
                 or live["safe"] != element["safe"]
                 or live["type"] != element["type"]
                 or live["href"] != element.get("href")
@@ -171,6 +177,31 @@ class Controller:
                     }
             try:
                 result = await self.engine.perform(self.page, decision, locator, self.active)
+            except ActionabilityTimeout:
+                # The trial dispatched no click. Only an unchanged ordinary link
+                # can recover through the normal authorized navigation path.
+                if (
+                    action != "CLICK"
+                    or not live.get("href")
+                    or live.get("form")
+                    or self.needs_review(decision, "autonomous")
+                ):
+                    raise
+                try:
+                    current = await self.inspect_target(locator)
+                except PlaywrightTimeout as exc:
+                    raise ValueError("Target changed after the failed click trial; reobserve") from exc
+                if current != live:
+                    raise ValueError("Target changed after the failed click trial; reobserve") from None
+                await self.navigate(live["href"])
+                return {
+                    "navigation_recovery": True,
+                    "interaction": {
+                        "changed": self.page.url != before_url,
+                        "verified": self.page.url != before_url,
+                        "verification": "Observed link navigated after a failed pointer trial",
+                    },
+                }
             finally:
                 self.mutation = None
             if self.page.url != before_url:
@@ -240,7 +271,11 @@ class Controller:
                 proxy=self.runner.proxy,
                 trust_env=False,
                 timeout=20,
-                headers={"User-Agent": self.runner.user_agent, "X-AdBot-Automation": "true", "X-AdBot-Session": self.runner.id},
+                headers={
+                    "User-Agent": self.runner.user_agent,
+                    "X-AdBot-Automation": "true",
+                    "X-AdBot-Session": self.runner.id,
+                },
             ) as client:
                 for _ in range(6):
                     await self.runner.permitted(url)

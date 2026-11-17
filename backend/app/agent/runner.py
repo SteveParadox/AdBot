@@ -14,7 +14,7 @@ from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, save_memory
-from .model import ModelBudgetExceeded, ModelClient, ModelError
+from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError
 
 
 class AgentRunner(Runner):
@@ -71,6 +71,15 @@ class AgentRunner(Runner):
                     task_budget = max(0, task_budget - settings().agent_fallback_tokens)
                 if task.prompt_tokens + task.completion_tokens + prompt + completion > task_budget:
                     raise ModelBudgetExceeded("Model token budget exhausted before request")
+                if provider_index == 1 and not getattr(self, "fallback_notified", False):
+                    emit(
+                        session,
+                        self.id,
+                        "model_fallback",
+                        "Local model selected for this task",
+                        model=settings().ai_fallback_model,
+                    )
+                    self.fallback_notified = True
                 task.model_calls += 1
                 task.prompt_tokens += prompt
                 task.completion_tokens += completion
@@ -85,10 +94,10 @@ class AgentRunner(Runner):
             if observation and self.options["visual_reasoning"]
             else None
         )
-        remaining = max(1, int(self.deadline - time.time()) - 5)
-        return await self.model.request(
-            kind, payload, schema, self.account, image, timeout_cap_seconds=remaining
-        )
+        remaining = self.deadline - time.time() - 5
+        if remaining <= 0:
+            raise ModelDeadlineExceeded("Task time budget exhausted before model request")
+        return await self.model.request(kind, payload, schema, self.account, image, timeout_cap_seconds=remaining)
 
     async def checkpoint(self, controller):
         self.memory["tabs"] = [
@@ -271,6 +280,12 @@ class AgentRunner(Runner):
                         Decision,
                         observation,
                     )
+                if decision.decision == "OBSERVE" and self.memory["recent_actions"]:
+                    previous = self.memory["recent_actions"][-1]
+                    if previous["action"] == "OBSERVE" and not previous.get("outcome", {}).get("page_changed", False):
+                        raise ValueError(
+                            "OBSERVE already returned unchanged content; navigate an observed link, interact with a relevant control, or report the blockage"
+                        )
                 key = action_key(decision.model_dump())
                 if any(
                     f["action_key"] == key and f["fingerprint"] == observation["fingerprint"]
@@ -352,6 +367,8 @@ class AgentRunner(Runner):
                 last_fingerprint = progress
                 if stagnant >= 5:
                     raise RuntimeError("Agent stopped after repeated actions without observable progress")
+            except ModelDeadlineExceeded:
+                raise
             except (ValueError, ModelError, BrowserError) as exc:
                 if isinstance(exc, BrowserError) and (
                     controller.page.is_closed() or not context.browser.is_connected()

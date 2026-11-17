@@ -28,6 +28,7 @@ const env = {
   ADBOT_RATE_PER_MINUTE: "10000",
   ADBOT_AUTHORIZED_DOMAINS: "",
   ADBOT_AI_PROVIDER: "local",
+  ADBOT_AI_OLLAMA_NATIVE: "false",
   ADBOT_AI_API_KEY: "fixture-only-not-a-live-provider-key",
   ADBOT_AI_FALLBACK_PROVIDER: "disabled",
   ADBOT_AI_MODEL: "fixture-model-not-live-llm",

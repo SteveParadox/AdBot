@@ -441,3 +441,5 @@ CSP/TLS, Cloudflare/DNS/direct-origin rejection, proxy exit allocation, host egr
 selected browser engines and backup restoration. SOCKS/remote DNS are unsupported and metadata is client-rendered. Shared SQL counters and cooldowns require database availability and synchronized host clocks. Arbitrary OS sockets
 under compromise are not intercepted. No anonymity guarantee is made. Truthful lawful business
 information, legitimate ownership records and dependency attribution must remain intact.
+
+Groq/Qwen backup configuration, early-quota handoff, warm-up and local verification: [failover guide](docs/network/GROQ_QWEN_FAILOVER.md).

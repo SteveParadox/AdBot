@@ -55,3 +55,80 @@ required matching default NO ACTION semantics in model/migration. Final results 
 Production PostgreSQL/Redis multi-host behavior, external proxy exit allocation/TLS, hosting restart/load,
 Cloudflare/DNS/firewall and a real backup restore remain external verification requirements. CI configuration
 is evidence of configured checks, not proof that those remote checks have executed for this unpushed work.
+
+## Groq / Qwen follow-up (2026-11-17)
+
+- Real local Qwen3:4b + Playwright: passed the complete controlled browser task after simulated Groq
+  429 in 131.35 seconds, with one job ID, actual stored evidence citation and successful verification.
+- Primary errors/429/timeouts, early quota headers, task-local sticky fallback, native JSON output,
+  malformed-output feedback, budget/deadline handling, warm-up and shutdown have focused regression tests
+  in test_provider_handoff.py alongside the existing test_agent.py model tests.
+- Local inference is CPU-only here; observed cold loading took about 103 seconds. Worker warm-up moves
+  that delay before pickup. Routing handoff and inference completion latency are different measurements.
+- The test fixture simulates Groq responses and uses real local Ollama; no live Groq quota was consumed.
+- Final focused regression: 34 passed (test_provider_handoff.py plus non-browser test_agent.py);
+  13 existing browser tests were deselected in that command. Backend Ruff checks passed.
+- Real local compatibility/negative-verification probe passed in 42.19 seconds: simulated Groq 429,
+  one valid Qwen extraction decision, then Qwen correctly rejected an unsupported 2030 launch claim
+  against evidence stating 2026. Calls were Groq-stub once, real Qwen twice.
+- Frontend production build and all 7 unit tests passed for the backup readiness badge.
+- No full unrelated project E2E rerun is claimed for this follow-up. Previously documented unrelated
+  E2E failures remain recorded above.
+
+## User-Agent rotation simulation (2026-11-17)
+
+Real browser destination-header capture passed: five jobs, ten page visits, round-robin A/B/A,
+mid-session configuration edit with identity continuity, next-session revision activation, disabled-profile
+exclusion, robots identity matching, disclosure headers and assignment cleanup. Runtime: 25.91 seconds.
+[Detailed evidence](../testing/USER_AGENT_ROTATION_E2E.md).
+
+## Click recovery and observation loops (2026-11-17)
+
+- Added recovery for an unchanged ordinary observed link when its pointer trial times out
+  before dispatch. Recovery uses the existing permitted navigation path. Forms, review-required
+  actions, changed targets, buttons and ambiguous actual-click timeouts do not receive this recovery.
+- Repeated unchanged OBSERVE decisions now receive recovery feedback instead of counting as
+  successful progress. An exhausted model deadline exits without another observation/replan;
+  this also covers a network timeout arriving after the deadline.
+- Four real-browser recovery cases passed: covered link navigation, covered button rejection,
+  ambiguous dispatched-click rejection and changed-target rejection.
+- Latest complete interaction test run: 7 passed, 4 failed in 135.18 seconds. All four new recovery
+  cases passed. The failures were existing hover, focus, no-effect click and delayed-confirmation
+  cases hitting their 700 ms action deadlines. This is not a clean full-suite result.
+- Runner observation/deadline browser regressions: 2 passed. Focused model/agent non-browser
+  regressions: 35 passed before adding the final network-timeout deadline case; both deadline
+  variants subsequently passed (20 other provider cases deselected).
+- Backend Ruff and git diff whitespace checks passed. The external website from the reported
+  job was not retested; these reproductions use the controlled local browser fixture.
+- Restart the API and worker to load the changes, then submit a new task. The already-expired
+  job does not resume automatically. Local CPU inference can still consume the task time budget.
+
+## Worker source recovery and search fallback (2026-11-17)
+
+The reported import failure was reproduced: model.py contained only null bytes. Two local
+fallback test files had the same corruption. Recovered the files from recorded source edits,
+preserving the native Ollama, sticky failover, warm-up and deadline behavior. Compilation of
+app/tests/testsupport, explicit worker/model imports, changed-text null-byte scanning, Ruff
+and whitespace checks passed after recovery. The cause of the file corruption is undetermined.
+
+Read-only inspection of job 1d9a40e6-c02a-4cbd-af9d-97f102ec3286 showed a 600-second site
+limit, seven model calls and about 559 seconds of model latency. Form input was disabled.
+The Search textbox appeared in a later observation; no successful query submission is recorded.
+Updated the prompt to explain automatic observations and explicit SEARCH parameters, and to
+request permission when form input is disabled. Validation feedback now names invalid/missing
+fields. An exhausted runner deadline is rejected before opening another model request.
+
+These changes do not grant form permission or extend the website time limit. Enable form input
+when creating a task that should type a search query. Restart the worker after loading the repaired
+source; no live queue jobs were executed as part of the import check.
+
+Post-recovery regression: provider handoff plus non-browser agent tests passed, 37 passed /
+15 deselected in 200.76 seconds. The separately added runner pre-request deadline regression
+also passed (1 passed / 23 deselected). This run uses simulated provider responses; real Qwen
+inference and the external website were not rerun after recovery.
+
+## Agent outcome UI (2026-11-17)
+
+Interaction results can omit scroll metadata, including ordinary link navigation recovery.
+The task detail view now renders these outcomes without reading a missing scroll.y and retains
+valid zero scroll positions. All 12 frontend unit tests and the production build passed.
