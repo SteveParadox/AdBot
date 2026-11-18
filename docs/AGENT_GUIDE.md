@@ -132,7 +132,7 @@ authentication key, not the LLM key), and choose **AI Agent**.
    input/search, downloads, memory, vision or encrypted session persistence as needed.
 4. Start the task. Inspect actual browser captures, current URL, semantic
    decisions, model usage, tabs, action outcomes and session memory.
-5. Approve or decline interactions requiring review, reply to questions, or
+5. Review non-click actions in assisted mode, reply to questions, or
    pause/resume/stop the task. Review waits consume the task's original deadline.
 6. Read the final claims, exact source quotes and criterion verification. Failed
    or budget-limited runs remain failed; they are not reported as completed.
@@ -141,8 +141,12 @@ Existing target settings govern browser engine, headed/headless mode, robots
 handling, page limit, navigation timeout, session duration and allowed domains.
 Add needed resource hosts explicitly in **Websites → Configure**. New targets
 created from the agent panel allow only the starting hostname, use 30 pages and a
-900-second session budget. Consequential submissions require explicit review;
-the agent cannot approve its own actions.
+900-second session budget. All clicks execute autonomously in every mode,
+including consequential buttons and form submissions.
+
+Existing deployments with `ADBOT_AGENT_MAX_STEPS=30` must update that setting to
+`500` and restart the API and workers to expose the increased limit. Step limits
+do not override the task's token, page or session-duration budgets.
 
 ## How execution works
 
@@ -156,9 +160,11 @@ Navigation, click, type, GET search, scrolling, tab open/switch/close, back,
 observe, wait, quote extraction, cited summarization, bounded download, ask-user,
 complete and fail actions are supported. Search is limited to observed GET
 search forms. Form input must be enabled for a task. Secret/payment/file inputs
-are unavailable. Other buttons and non-GET submissions require review even in
-autonomous mode. An approved form submission permits one matching method and
-destination through the request boundary; it is not a blanket network permission.
+are unavailable. Clicks do not request approval. An observed non-GET form click
+permits one matching method and destination through the request boundary. A
+JavaScript button without a non-GET form permits one policy-checked write during
+the click, expiring after five seconds or when the action finishes. Other assisted
+actions and explicit ASK_USER questions still wait for a response.
 Review approval is rejected as stale when the observed page or form state changes.
 
 Downloads use explicitly observed links through the validated proxy, enforce
@@ -193,7 +199,7 @@ and domain leases.
 | `app/agent/contracts.py` | Validated task, action, review and completion schemas |
 | `app/agent/model.py` | Provider transport, JSON validation, retries, token accounting, optional images |
 | `app/agent/observe.py` | Main/viewport text, accessibility, semantic elements, form-state fingerprints |
-| `app/agent/controller.py` | Controlled actions, tabs, reviewed submissions and bounded downloads |
+| `app/agent/controller.py` | Controlled actions, tabs, autonomous submissions and bounded downloads |
 | `app/agent/runner.py` | Observe/decide/act/verify/remember loop and completion checks |
 | `app/agent/memory.py` | Memory relevance/isolation and encrypted browser state |
 | `app/agent/api.py` | Task, review, memory, configuration and metrics endpoints |
@@ -219,7 +225,7 @@ All names below have the `ADBOT_` prefix.
 | AI_RETRIES | `2`; bounded transport retries |
 | AI_MAX_OUTPUT_TOKENS | `1800`; maximum per model response |
 | AI_JSON_MODE | `true`; sends `response_format: json_object` |
-| AGENT_MAX_STEPS | `30`; server ceiling, max 100 |
+| AGENT_MAX_STEPS | `500`; server ceiling, max 500 |
 | AGENT_MAX_TOKENS | `60000`; token budget ceiling |
 | AGENT_MAX_TABS | `4`; maximum simultaneous tabs |
 | AGENT_MAX_RETRIES | `3`; consecutive action/model recovery failures |
@@ -302,7 +308,7 @@ The end-to-end runner needs free ports **8000, 5173, 8765, 8766**. It starts
 real browsers and a local OpenAI-compatible **model test double**, whose choices
 depend on the current observation and goal. It is deliberately not represented
 as a live LLM. Fixtures cover news, changed link order, a dynamic page, documentation
-search, a product catalog without checkout, a reviewed multistep form, and downloads.
+search, a product catalog without checkout, an autonomous multistep form, and downloads.
 
 For a live-model local demonstration, configure your actual provider, enable
 development fixture mode, start `app.fixture:app` on loopback port 8765, and use

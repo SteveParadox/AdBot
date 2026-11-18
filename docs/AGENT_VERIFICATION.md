@@ -20,10 +20,11 @@ replanning. A repeated failed action on unchanged state is rejected. Step,
 token, tab, recovery, navigation, download and original session budgets terminate
 incomplete work as failed.
 
-Task modes support assisted approvals, autonomous ordinary browsing and live
-supervision. Significant non-search interactions and non-GET submissions require
-review. Approval is bound to the observed page/form fingerprint. A reviewed form
-request grants one matching method/destination; it does not broadly permit writes.
+Task modes support assisted approvals for non-click actions, autonomous browsing
+and live supervision. All clicks, including non-GET submissions, execute without
+approval. Targets must still match the observed page/form state. A form click
+grants one matching method/destination; a JavaScript click permits one
+policy-checked write during the action, bounded to five seconds.
 Ambiguous in-flight mutations stop for review after a worker/browser interruption.
 Read-only progress can recover from committed URL/tab checkpoints.
 

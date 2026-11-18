@@ -215,3 +215,30 @@ async def test_controller_recovers_only_ordinary_link_before_click_dispatch(lab,
         with pytest.raises(ActionabilityTimeout):
             await controller.act(choice, {"allow_form_input": False})
         assert not visits and not await page.evaluate("Boolean(window.clicked)")
+
+
+async def test_sensitive_js_click_submits_without_approval(lab):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from app.agent.controller import Controller
+
+    page, _, _ = lab
+    runner = SimpleNamespace(cfg={"navigation_timeout_ms": 2000},
+                             policy=SimpleNamespace(check=Mock()), permitted=AsyncMock())
+    controller = Controller(runner, page.context, page, {})
+    await page.context.route("**/*", controller.route)
+    await page.set_content("""<main><button onclick="fetch('/agent/form-result', {
+        method:'POST',body:'name=Ada',headers:{'Content-Type':'application/x-www-form-urlencoded'}
+        }).then(r=>r.text()).then(html=>document.querySelector('main').innerHTML=html)">Purchase</button></main>""")
+    observation = await controller.observer.observe(page, "t1")
+    item = next(e for e in observation["elements"] if e["name"] == "Purchase")
+    action = decision("CLICK", target={"element_id": item["element_id"]}, expected_text="Registration received for Ada.")
+    assert not controller.needs_review(action, "assisted")
+    result = await controller.act(action, {}, approved=False)
+    assert result["interaction"]["verified"]
+    assert "Registration received for Ada." in await page.inner_text("body")
+    assert controller.mutation is None and controller.egress_grant is None
+    # The click grant cannot be reused for a later unrelated submission.
+    assert await page.evaluate("""() => fetch('/agent/form-result', {
+        method:'POST',body:'name=Other'
+        }).then(()=>false).catch(()=>true)""") is True

@@ -8,7 +8,8 @@ import uvicorn
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
-from app.agent.contracts import Decision
+from app.agent.contracts import Decision, TaskInput
+from app.agent.controller import Controller
 from app.agent.model import ModelBudgetExceeded, ModelClient
 from app.agent.model import ModelError
 import httpx
@@ -160,8 +161,9 @@ async def test_goal_driven_real_browser(client, target, agent_config, agent_serv
 
 @pytest.mark.browser
 async def test_assisted_review_and_stale_review(client, target, agent_config, agent_servers):
-    set_url(client, target, "/agent/news")
-    task = new_task(client, target, mode="assisted")
+    set_url(client, target, "/agent/form")
+    task = new_task(client, target, "Complete demo registration using Ada in the Name field and verify confirmation.",
+                    mode="assisted", allow_form_input=True)
     execution = asyncio.create_task(execute(*claim()))
     deadline = time.monotonic() + 20
     pending = None
@@ -212,7 +214,7 @@ def test_interrupted_mutation_requires_review(client, target, agent_config):
 
 
 @pytest.mark.browser
-async def test_reviewed_multistep_form_with_real_post(client, target, agent_config, agent_servers):
+async def test_autonomous_multistep_form_with_real_post(client, target, agent_config, agent_servers):
     set_url(client, target, "/agent/form")
     task = new_task(
         client,
@@ -220,21 +222,12 @@ async def test_reviewed_multistep_form_with_real_post(client, target, agent_conf
         "Complete demo registration using Ada in the Name field and verify confirmation.",
         allow_form_input=True,
     )
-    execution = asyncio.create_task(execute(*claim()))
-    reviewed = set()
-    deadline = time.monotonic() + 30
-    while not execution.done() and time.monotonic() < deadline:
-        await asyncio.sleep(0.1)
-        current = client.get("/api/agent/tasks/" + task["id"]).json()
-        pending = current["pending_step_id"]
-        if pending and pending not in reviewed:
-            result = client.post(f"/api/agent/tasks/{task['id']}/review", json={"step_id": pending, "approved": True})
-            assert result.status_code == 200
-            reviewed.add(pending)
-    await asyncio.wait_for(execution, 5)
+    await asyncio.wait_for(execute(*claim()), 30)
     result = client.get("/api/agent/tasks/" + task["id"]).json()
     assert result["status"] == "completed", result
-    assert len(reviewed) == 2
+    assert result["pending_step_id"] is None
+    with transaction() as session:
+        assert all(step.approved is None for step in session.query(AgentStep).filter_by(job_id=task["id"]))
     assert "Registration received for Ada." in result["result"]["evidence"][0]["quote"]
 
 
@@ -749,3 +742,33 @@ async def test_unchanged_observe_and_deadline_do_not_loop(
         assert len(calls) == 1 + agent_config.agent_max_retries
         assert sum(s["status"] == "succeeded" for s in steps) == 1
         assert "recovery budget" in result["error_message"]
+
+
+@pytest.mark.parametrize("mode", ["assisted", "autonomous", "supervised"])
+def test_all_clicks_skip_review(mode):
+    controller = Controller.__new__(Controller)
+    decision = Decision(observation="A purchase button", decision="CLICK", target={"element_id": "e1"},
+                        reason="Complete the task", confidence=1, expected_result="Submitted")
+    assert controller.needs_review(decision, mode) is False
+    question = decision.model_copy(update={"decision": "ASK_USER", "text": "Which item?"})
+    assert controller.needs_review(question, mode) is True
+
+
+def test_step_limit_defaults_and_validation(client, target, agent_config, monkeypatch):
+    from app.config import Settings
+
+    assert Settings(_env_file=None).agent_max_steps == 500
+    body = {"website_id": target["id"], "objective": "Inspect this website."}
+    assert TaskInput(**body).max_steps == 500
+    monkeypatch.setattr(agent_config, "agent_max_steps", 500)
+    assert client.get("/api/agent/config").json()["max_steps"] == 500
+    for limit in [100, 101, 500]:
+        response = client.post("/api/agent/tasks", json={**body, "max_steps": limit})
+        assert response.status_code == 201, response.text
+        assert response.json()["options"]["max_steps"] == limit
+    for limit in [0, 501]:
+        assert client.post("/api/agent/tasks", json={**body, "max_steps": limit}).status_code == 422
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, agent_max_steps=limit)
+    monkeypatch.setattr(agent_config, "agent_max_steps", 100)
+    assert client.post("/api/agent/tasks", json={**body, "max_steps": 500}).json()["options"]["max_steps"] == 100

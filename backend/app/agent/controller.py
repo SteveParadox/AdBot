@@ -1,6 +1,5 @@
 import asyncio
 import time
-import re
 from urllib.parse import urlsplit, urljoin
 import httpx
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -57,23 +56,10 @@ class Controller:
     def needs_review(self, decision, mode):
         if decision.decision == "ASK_USER":
             return True
-        if decision.decision in {"CLICK", "TYPE", "SEARCH"}:
-            _, element = self.observer.target(decision)
-            if decision.decision == "CLICK" and re.search(
-                r"\b(delete|remove|send|publish|purchase|checkout|buy|pay|unsubscribe|logout|sign out)\b",
-                element.get("name", "") + " " + (element.get("href") or ""),
-                re.IGNORECASE,
-            ):
-                return True
-            form = element.get("form")
-            if decision.decision == "CLICK" and not element.get("href") and not element.get("safe"):
-                if not (form and form["search"] and form["method"] == "GET"):
-                    return True
-            if form and form["method"] != "GET" and decision.decision == "CLICK":
-                return True
+        if decision.decision == "CLICK":
+            return False
         return mode == "assisted" and decision.decision in {
             "NAVIGATE",
-            "CLICK",
             "TYPE",
             "SEARCH",
             "PRESS_KEY",
@@ -92,10 +78,13 @@ class Controller:
                 if (
                     not permit
                     or time.monotonic() > permit["until"]
-                    or request.method != permit["method"]
-                    or (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                    or (permit["method"] is not None and request.method != permit["method"])
+                    or (
+                        permit["destination"] is not None
+                        and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                    )
                 ):
-                    raise PolicyError("This request requires a reviewed form submission")
+                    raise PolicyError("This request requires an active click submission")
                 self.egress_grant = (request.method, request.url, time.monotonic() + 5)
                 self.mutation = None
             if request.is_navigation_request():
@@ -161,20 +150,20 @@ class Controller:
                         raise ValueError("SEARCH requires an observed GET search form")
                     await self.runner.permitted(form["action"])
             elif action == "CLICK":
-                if self.needs_review(decision, "autonomous") and not approved:
-                    raise ValueError("This interaction requires approval")
                 if element.get("href"):
                     await self.runner.permitted(element["href"])
                 form = element.get("form")
                 if form and form["method"] != "GET":
-                    if not approved:
-                        raise ValueError("Form submission requires approval")
                     destination = urlsplit(await self.runner.permitted(form["action"]))
                     self.mutation = {
                         "method": form["method"],
                         "destination": (destination.scheme, destination.netloc, destination.path),
                         "until": time.monotonic() + 5,
                     }
+                else:
+                    # A JS button can submit without a form. Permit one policy-checked
+                    # write during this click; revoke it as soon as the action ends.
+                    self.mutation = {"method": None, "destination": None, "until": time.monotonic() + 5}
             try:
                 result = await self.engine.perform(self.page, decision, locator, self.active)
             except ActionabilityTimeout:
@@ -204,6 +193,7 @@ class Controller:
                 }
             finally:
                 self.mutation = None
+                self.egress_grant = None
             if self.page.url != before_url:
                 self.runner.policy.check(self.page.url)
                 await self.runner.visit(self.page, self.page.url, navigate=False)

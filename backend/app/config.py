@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     ai_max_output_tokens: int = Field(800, ge=256, le=8000)
     ai_max_request_chars: int = Field(18000, ge=4000, le=100000)
     ai_json_mode: bool = True
-    agent_max_steps: int = Field(30, ge=1, le=100)
+    agent_max_steps: int = Field(500, ge=1, le=500)
     agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
     agent_max_tabs: int = Field(4, ge=1, le=10)
     agent_max_retries: int = Field(3, ge=1, le=10)
