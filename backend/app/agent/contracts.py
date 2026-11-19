@@ -118,7 +118,7 @@ class TaskInput(Strict):
     objective: str = Field(min_length=8, max_length=4000)
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
     mode: Literal["assisted", "autonomous", "supervised"] = "supervised"
-    max_steps: int = Field(30, ge=1, le=100)
+    max_steps: int = Field(500, ge=1, le=500)
     max_tokens: int = Field(60000, ge=2000, le=1000000)
     memory_enabled: bool = True
     visual_reasoning: bool = False

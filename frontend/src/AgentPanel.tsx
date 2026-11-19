@@ -175,7 +175,7 @@ export default function AgentPanel({
     [objective, setObjective] = useState("");
   const [criteria, setCriteria] = useState(""),
     [mode, setMode] = useState("supervised"),
-    [maxSteps, setMaxSteps] = useState(30);
+    [maxSteps, setMaxSteps] = useState(500);
   const [formInput, setFormInput] = useState(false),
     [authorized, setAuthorized] = useState(false),
     [memory, setMemory] = useState(true),
@@ -239,7 +239,7 @@ export default function AgentPanel({
           objective,
           success_criteria: criteria.split("\n").filter((s) => s.trim()),
           mode,
-          max_steps: Math.min(maxSteps, config.data?.max_steps || 30),
+          max_steps: Math.min(maxSteps, config.data?.max_steps || 500),
           max_tokens: config.data?.max_tokens || 60000,
           memory_enabled: memory,
           visual_reasoning: vision,
@@ -345,10 +345,10 @@ export default function AgentPanel({
                   Supervised — live progress and intervention
                 </option>
                 <option value="autonomous">
-                  Autonomous — ordinary browsing
+                  Autonomous — clicks and browsing
                 </option>
                 <option value="assisted">
-                  Assisted — approve interactions
+                  Assisted — review other actions; autonomous clicks
                 </option>
               </select>
             </Field>
@@ -356,7 +356,7 @@ export default function AgentPanel({
               <input
                 type="number"
                 min={1}
-                max={config.data?.max_steps || 30}
+                max={config.data?.max_steps || 500}
                 value={maxSteps}
                 onChange={(e) => setMaxSteps(+e.target.value)}
               />
