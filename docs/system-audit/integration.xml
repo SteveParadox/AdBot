@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="4" skipped="0" tests="28" time="836.878" timestamp="2026-11-20T10:01:43.095874+01:00" hostname="DESKTOP-SV10J2P"><testcase classname="tests.test_system_audit_browser" name="test_redaction_preserves_private_target_identity" time="4.356" /><testcase classname="tests.test_system_audit_browser" name="test_semantic_disclosure_extraction_and_confirmed_empty" time="11.037" /><testcase classname="tests.test_system_audit_browser" name="test_scheduler_executes_repeat_and_persists_real_change" time="9.021" /><testcase classname="tests.test_system_audit_browser" name="test_expired_worker_preserves_extraction_and_fences_old_writer" time="2.544" /><testcase classname="tests.test_system_audit_browser" name="test_real_concurrent_worker_workspaces_and_cleanup" time="2.126"><failure message="AssertionError: {&quot;detail&quot;:[{&quot;loc&quot;:[&quot;body&quot;],&quot;type&quot;:&quot;value_error&quot;,&quot;msg&quot;:&quot;Invalid value&quot;}]}&#10;assert 422 == 201&#10; +  where 422 = &lt;Response [422 Unprocessable Entity]&gt;.status_code">tests\test_system_audit_browser.py:154: in test_real_concurrent_worker_workspaces_and_cleanup
+    assert response.status_code == 201, response.text
+E   AssertionError: {"detail":[{"loc":["body"],"type":"value_error","msg":"Invalid value"}]}
+E   assert 422 == 201
+E    +  where 422 = &lt;Response [422 Unprocessable Entity]&gt;.status_code</failure></testcase><testcase classname="tests.test_system_audit_browser" name="test_modal_authority_follows_top_layer_not_dom_order" time="4.356" /><testcase classname="tests.test_extraction" name="test_normalization_schema_limits_and_templates" time="1.726" /><testcase classname="tests.test_extraction" name="test_persistence_versions_dedup_changes_exports_and_ownership" time="3.145" /><testcase classname="tests.test_extraction" name="test_missing_confirmation_failed_runs_and_scheduler" time="2.112" /><testcase classname="tests.test_extraction" name="test_csv_injection_and_flattening" time="2.941" /><testcase classname="tests.test_extraction" name="test_real_css_xpath_jsonld_and_dynamic_capture" time="4.976" /><testcase classname="tests.test_extraction" name="test_real_worker_dynamic_pagination_pipeline" time="7.646" /><testcase classname="tests.test_extraction" name="test_extraction_migration_roundtrip" time="46.005" /><testcase classname="tests.test_extraction" name="test_ai_evidence_hallucination_and_usage" time="4.688" /><testcase classname="tests.test_extraction" name="test_missing_requires_successful_exhaustive_confirmations" time="9.849" /><testcase classname="tests.test_extraction" name="test_export_limits_cleanup_and_stale_worker_fencing" time="12.456" /><testcase classname="tests.test_extraction" name="test_concurrent_observations_are_idempotent_and_transactional" time="11.335" /><testcase classname="tests.test_extraction" name="test_agent_enrichment_cannot_bypass_agent_token_budget" time="8.613" /><testcase classname="tests.test_planning" name="test_literal_contract_complex_ambiguities_and_compaction" time="3.264" /><testcase classname="tests.test_planning" name="test_graph_validation_rejects_injected_facts_and_dependency_bypass" time="5.319" /><testcase classname="tests.test_planning" name="test_dependencies_recovery_checkpoint_and_bounded_failure" time="5.160" /><testcase classname="tests.test_planning" name="test_authorization_stagnation_and_completion_checkpoints" time="6.581" /><testcase classname="tests.test_planning" name="test_preview_scope_no_provider_calls_and_stable_profiles" time="5.577" /><testcase classname="tests.test_planning" name="test_task_record_scope_survives_other_read_but_rejects_changed_content" time="7.845" /><testcase classname="tests.test_accessibility" name="test_semantic_contracts_and_native_name_parsing" time="8.657" /><testcase classname="tests.test_accessibility" name="test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[chromium]" time="63.974"><failure message="playwright._impl._errors.TimeoutError: ElementHandle.fill: Timeout 3000ms exceeded.&#10;Call log:&#10;    - fill(&quot;5&quot;)&#10;  - attempting fill action&#10;    - waiting for element to be visible, enabled and editable">tests\test_accessibility.py:108: in test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes
+    assert (await perform("TYPE", "Result count", text="5"))["interaction"]["verified"]
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_accessibility.py:80: in perform
+    return await controller.act(
+app\agent\controller.py:229: in act
+    result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app\agent\interaction.py:156: in perform
+    await target.fill(decision.text, timeout=self.timeout_ms)
+..\.venv\Lib\site-packages\playwright\async_api\_generated.py:2382: in fill
+    await self._impl_obj.fill(
+..\.venv\Lib\site-packages\playwright\_impl\_element_handle.py:200: in fill
+    await self._channel.send(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:559: in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E   playwright._impl._errors.TimeoutError: ElementHandle.fill: Timeout 3000ms exceeded.
+E   Call log:
+E       - fill("5")
+E     - attempting fill action
+E       - waiting for element to be visible, enabled and editable</failure></testcase><testcase classname="tests.test_accessibility" name="test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[firefox]" time="479.371"><failure message="playwright._impl._errors.TimeoutError: Page.goto: Timeout 30000ms exceeded.&#10;Call log:&#10;  - navigating to &quot;http://127.0.0.1:8765/agent/accessibility&quot;, waiting until &quot;load&quot;">tests\test_accessibility.py:55: in test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes
+    await page.goto("http://127.0.0.1:8765/agent/accessibility")
+..\.venv\Lib\site-packages\playwright\async_api\_generated.py:8992: in goto
+    await self._impl_obj.goto(
+..\.venv\Lib\site-packages\playwright\_impl\_page.py:555: in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\.venv\Lib\site-packages\playwright\_impl\_frame.py:153: in goto
+    await self._channel.send(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:559: in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E   playwright._impl._errors.TimeoutError: Page.goto: Timeout 30000ms exceeded.
+E   Call log:
+E     - navigating to "http://127.0.0.1:8765/agent/accessibility", waiting until "load"</failure></testcase><testcase classname="tests.test_accessibility" name="test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[webkit]" time="97.988"><failure message="app.agent.interaction.ActionabilityTimeout: Target could not receive pointer input before the action deadline">app\agent\interaction.py:69: in actionable
+    await locator.click(trial=True, timeout=self.timeout_ms)
+..\.venv\Lib\site-packages\playwright\async_api\_generated.py:15527: in click
+    await self._impl_obj.click(
+..\.venv\Lib\site-packages\playwright\_impl\_locator.py:160: in click
+    return await self._frame.click(self._selector, strict=True, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\.venv\Lib\site-packages\playwright\_impl\_frame.py:549: in click
+    await self._channel.send("click", self._timeout, locals_to_params(locals()))
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:559: in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E   playwright._impl._errors.TimeoutError: Locator.click: Timeout 3000ms exceeded.
+E   Call log:
+E     - waiting for locator("section").filter(has=get_by_role("heading", name="Engineering", exact=True)).get_by_role("button", name="View details", exact=True)
+E       - locator resolved to &lt;button onclick="statusText.textContent='Engineering details'"&gt;View details&lt;/button&gt;
+E     - attempting click action (trial run)
+E       - waiting for element to be visible, enabled and stable
+E       - element is visible, enabled and stable
+E       - scrolling into view if needed
+E       - done scrolling
+E       - performing click action
+
+The above exception was the direct cause of the following exception:
+tests\test_accessibility.py:95: in test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes
+    result = await perform(
+tests\test_accessibility.py:80: in perform
+    return await controller.act(
+app\agent\controller.py:229: in act
+    result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app\agent\interaction.py:126: in perform
+    await self.actionable(locator, action in {"CLICK", "HOVER"})
+app\agent\interaction.py:71: in actionable
+    raise ActionabilityTimeout("Target could not receive pointer input before the action deadline") from exc
+E   app.agent.interaction.ActionabilityTimeout: Target could not receive pointer input before the action deadline</failure></testcase></testsuite></testsuites>

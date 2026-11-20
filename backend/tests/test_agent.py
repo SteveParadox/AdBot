@@ -433,7 +433,7 @@ async def test_model_compacts_oversized_observation_before_request(agent_config,
     class Reply(BaseModel):
         status: str
 
-    agent_config.ai_max_request_chars = 8000
+    monkeypatch.setattr(agent_config, "ai_max_request_chars", 8000)
     original = httpx.AsyncClient
     requests = []
 
@@ -495,7 +495,10 @@ async def test_model_request_timeout_is_capped_by_remaining_session(agent_config
         "decide", {"objective": "test"}, Reply, lambda *args: (1, 1), timeout_cap_seconds=7
     )
     assert result.status == "ok"
-    assert observed == [7]
+    # Request construction consumes part of the remaining session budget.
+    # Coarse Windows clocks sometimes left exactly 7, hiding this false exact
+    # equality assumption. Verify the actual contract: positive and capped.
+    assert len(observed) == 1 and 0 < observed[0] <= 7
 
 
 async def test_model_falls_back_after_413_without_spending_rejected_reservation(agent_config, monkeypatch):

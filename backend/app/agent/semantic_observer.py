@@ -1,0 +1,290 @@
+"""Native ARIA semantics and identity-bound, observation-scoped targets."""
+
+import asyncio
+import hashlib
+import json
+import re
+import time
+
+from playwright.async_api import Error as BrowserError
+
+from .memory import fingerprint
+from .semantics import CONTROL_SELECTOR, DOM, METADATA
+
+ARIA_ROLES = set(
+    "alert alertdialog application article banner blockquote button caption cell checkbox code columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure form generic grid gridcell group heading img insertion link list listbox listitem log main marquee math menu menubar menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status strong subscript superscript switch tab table tablist tabpanel term textbox time timer toolbar tooltip tree treegrid treeitem".split()
+)
+
+
+def redact(text):
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~-]{12,}", r"\1[redacted]", text)
+    return re.sub(r"(?i)((?:api[_-]?key|password|access[_-]?token|secret)\s*[:=]\s*)[^\s,;]+", r"\1[redacted]", text)
+
+
+def native_semantics(snapshot, fallback):
+    first = snapshot.splitlines()[0].strip() if snapshot else ""
+    match = re.match(r'^- ([a-z][a-z0-9-]*)(?: ("(?:[^"\\]|\\.)*"))?', first)
+    if not match or match[1] in {"text", "generic"}:
+        return fallback["role"] if fallback["role"] in ARIA_ROLES else "generic", fallback["name"], "dom_fallback"
+    try:
+        name = json.loads(match[2]) if match[2] else ""
+    except (ValueError, TypeError):
+        return fallback["role"] if fallback["role"] in ARIA_ROLES else "generic", fallback["name"], "dom_fallback"
+    return match[1], name, "playwright_aria"
+
+
+class Observer:
+    def __init__(self):
+        self.registry, self.bindings, self.previous = {}, {}, {}
+        self.private_targets = {}
+        self.document = self.page = self.tab_id = None
+        self.generation = 0
+        self.secrets = []
+
+    def safe_text(self, text):
+        for secret in self.secrets:
+            text = text.replace(secret, "[redacted]")
+        return redact(text)
+
+    def sanitize(self, value):
+        if isinstance(value, str):
+            return self.safe_text(value)
+        if isinstance(value, list):
+            return [self.sanitize(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self.sanitize(v) for k, v in value.items()}
+        return value
+
+    async def observe(self, page, tab_id, goal="", _retry=0):
+        start = time.perf_counter()
+        await asyncio.gather(*(h.dispose() for h in self.bindings.values()), return_exceptions=True)
+        self.bindings, self.registry, self.private_targets = {}, {}, {}
+        same_document = False
+        if self.document is not None and self.page == page:
+            try:
+                same_document = await self.document.evaluate("s=>s.document===document")
+            except BrowserError:
+                pass
+        if not same_document:
+            if self.document is not None:
+                await self.document.dispose()
+            self.document = await page.evaluate_handle("({document,nodes:new WeakMap(),next:0})")
+            self.generation += 1
+        self.page, self.tab_id = page, tab_id
+        data = await page.evaluate(DOM)
+        secrets = data.pop("sensitive_values")
+        self.secrets = secrets
+
+        def clean(value):
+            if isinstance(value, str):
+                for secret in secrets:
+                    value = value.replace(secret, "[redacted]")
+                return redact(value)
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            if isinstance(value, dict):
+                return {key: clean(item) for key, item in value.items()}
+            return value
+
+        all_elements = data.pop("elements")
+        words = set(re.findall(r"\w{3,}", goal.lower()))
+
+        def priority(e):
+            relevance = len(words & set(re.findall(r"\w{3,}", (e["name"] + " " + str(e["context"])).lower())))
+            return (
+                e["blocked_by_modal"],
+                not e["visible"],
+                e["role"] not in {"dialog", "alertdialog"},
+                not e["focused"],
+                not e["actionable"],
+                -relevance,
+                not e["in_view"],
+                e["role"] == "link",
+                e["index"],
+            )
+
+        candidates = sorted((e for e in all_elements if not e["sensitive"]), key=priority)[:80]
+        semaphore = asyncio.Semaphore(8)
+
+        async def inspect(element):
+            async with semaphore:
+                locator = page.locator(CONTROL_SELECTOR).nth(element["index"])
+                try:
+                    handle = await locator.element_handle(timeout=1500)
+                except BrowserError:
+                    if page.is_closed():
+                        raise
+                    return None
+                if handle is None:
+                    return None
+                try:
+                    current = await handle.evaluate(METADATA)
+                    if current != {k: v for k, v in element.items() if k != "index"}:
+                        await handle.dispose()
+                        return None
+                    token = await handle.evaluate(
+                        "(e,s)=>{if(!s.nodes.has(e))s.nodes.set(e,++s.next);return s.nodes.get(e)}", self.document
+                    )
+                    snapshot = await locator.aria_snapshot(timeout=1500) if element["visible"] else ""
+                    role, name, source = native_semantics(snapshot, element)
+                    element = {
+                        **element,
+                        "role": role,
+                        "name": name,
+                        "accessible_name": name,
+                        "semantic_source": source,
+                        "node_token": f"{self.generation}:{token}",
+                    }
+                    resolved, strategy, ambiguous = await self.locate(page, locator, handle, element)
+                    element["locator_strategy"], element["ambiguous"] = strategy, ambiguous
+                    element["actionable"] = element["actionable"] and not ambiguous
+                    return element, resolved, handle
+                except BrowserError:
+                    await handle.dispose()
+                    if page.is_closed():
+                        raise
+                    return None
+                except BaseException:
+                    await handle.dispose()
+                    raise
+
+        inspected = [item for item in await asyncio.gather(*(inspect(e) for e in candidates)) if item]
+        source_url = data.pop("source_url")
+        try:
+            coherent = await self.document.evaluate("s=>s.document===document") and page.url == source_url
+        except BrowserError:
+            coherent = False
+        if not coherent:
+            await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
+            if _retry < 1:
+                return await self.observe(page, tab_id, goal, _retry=1)
+            raise ValueError("Page changed repeatedly during semantic observation; no coherent evidence available")
+        if len(inspected) < len(candidates) and _retry < 1:
+            await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
+            retried = await self.observe(page, tab_id, goal, _retry=1)
+            retried["observation_metrics"]["read_attempts"] = 2
+            retried["observation_metrics"]["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
+            return retried
+        data["elements"] = [item[0] for item in inspected]
+        data["url"], data["tab_id"] = source_url, tab_id
+        data["form_state"] = hashlib.sha256(
+            json.dumps(
+                [
+                    {k: e[k] for k in ("node_token", "value", "checked", "selected", "invalid")}
+                    for e in data["elements"]
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        data = clean(data)
+        data["accessibility"] = "\n".join(
+            f"- {e['role']} {json.dumps(e['name'])}" for e in data["elements"] if e["visible"]
+        )[:6000]
+        snapshot_key = fingerprint(data)[:10]
+        for i, (private, locator, handle) in enumerate(inspected):
+            public = data["elements"][i]
+            public["element_id"] = f"e{snapshot_key}_{i}"
+            self.registry[public["element_id"]] = (locator, public)
+            self.bindings[public["element_id"]] = handle
+            # Redaction is a presentation boundary, not target identity. Raw
+            # metadata stays in this bounded, observation-scoped private map.
+            self.private_targets[public["element_id"]] = {**private, "element_id": public["element_id"]}
+        data["fingerprint"] = fingerprint(data)
+        states = {
+            e["node_token"]: {
+                k: e[k] for k in ("role", "name", "focused", "expanded", "checked", "selected", "invalid", "value")
+            }
+            for e in data["elements"]
+        }
+        data["semantic_changes"] = [v for k, v in states.items() if self.previous.get(k) != v][:12]
+        self.previous = states
+        data["focus"] = next((e["element_id"] for e in data["elements"] if e["focused"]), None)
+        data["dialogs"] = [
+            {k: e[k] for k in ("element_id", "role", "name", "focused", "visible")}
+            for e in data["elements"]
+            if e["role"] in {"dialog", "alertdialog"} and e["visible"]
+        ]
+        data["feedback"] = [
+            {"role": e["role"], "name": e["name"], "text": e["text"], "busy": e["busy"]}
+            for e in data["elements"]
+            if e["live"]
+        ][:10]
+        data["observation_metrics"] = {
+            "candidates": len(all_elements),
+            "included": len(data["elements"]),
+            "truncated": data.pop("candidate_limit") or sum(not e["sensitive"] for e in all_elements) > 80,
+            "withheld_sensitive": sum(e["sensitive"] for e in all_elements),
+            "changed_during_inspection": len(candidates) - len(data["elements"]),
+            "read_attempts": _retry + 1,
+            "native_semantics": sum(e["semantic_source"] == "playwright_aria" for e in data["elements"]),
+            "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+        }
+        data["observation_metrics"]["characters"] = len(json.dumps(data, ensure_ascii=False))
+        return data
+
+    async def locate(self, page, fallback, handle, element):
+        name, role = element["name"], element["role"]
+        scopes = [(page, "")]
+        context = element.get("context")
+        if context and context["name"] and context["role"] in ARIA_ROLES - {"generic"}:
+            scopes.insert(0, (page.get_by_role(context["role"], name=context["name"], exact=True), "context + "))
+        if context and context["heading"]:
+            scopes.insert(
+                0,
+                (
+                    page.locator(context["tag"]).filter(
+                        has=page.get_by_role("heading", name=context["heading"], exact=True)
+                    ),
+                    "context heading + ",
+                ),
+            )
+        attempts = []
+        for scope, prefix in scopes:
+            if name and role != "generic":
+                attempts.append((scope.get_by_role(role, name=name, exact=True), prefix + "role + accessible name"))
+            for label in element["labels"][:2]:
+                attempts.append((scope.get_by_label(label, exact=True), prefix + "associated label"))
+            if element["placeholder"]:
+                attempts.append((scope.get_by_placeholder(element["placeholder"], exact=True), prefix + "placeholder"))
+        if element["test_id"]:
+            attempts.append((page.get_by_test_id(element["test_id"]), "test identifier"))
+        if element["dom_id"]:
+            attempts.append((page.locator("[id=" + json.dumps(element["dom_id"]) + "]"), "unique DOM identifier"))
+        if element["href"] and name:
+            attempts.append(
+                (
+                    page.get_by_role(role, name=name, exact=True).and_(
+                        page.locator("a[href=" + json.dumps(element["href"]) + "]")
+                    ),
+                    "role + name + destination",
+                )
+            )
+        for locator, strategy in attempts:
+            if await locator.count() == 1 and await locator.evaluate("(e,original)=>e===original", handle):
+                return locator, strategy, False
+        count = await page.get_by_role(role, name=name, exact=True).count() if role != "generic" else 0
+        return fallback, "bound DOM fallback", count > 1
+
+    def target(self, decision):
+        if not decision.target or decision.target.element_id not in self.registry:
+            raise ValueError("Action must reference an element from the latest observation")
+        return self.registry[decision.target.element_id]
+
+    async def resolve(self, decision, page, tab_id):
+        locator, _ = self.target(decision)
+        element = self.private_targets[decision.target.element_id]
+        handle = self.bindings[decision.target.element_id]
+        if element["ambiguous"]:
+            raise ValueError("Ambiguous semantic target; inspect context or request clarification")
+        if self.page != page or self.tab_id != tab_id or not await handle.evaluate("e=>e.isConnected"):
+            raise ValueError("Target changed or detached since observation; reobserve")
+        if not await locator.evaluate("(e,original)=>e===original", handle):
+            raise ValueError("Target changed: locator resolved to a replaced control")
+        current = await handle.evaluate(METADATA)
+        role, name, _ = native_semantics(await locator.aria_snapshot(timeout=1500), current)
+        keys = ("disabled", "readonly", "href", "form", "expanded", "checked", "selected", "value", "blocked_by_modal")
+        if role != element["role"] or name != element["name"] or any(current[k] != element[k] for k in keys):
+            raise ValueError("Target changed since observation; reobserve")
+        if not current["actionable"]:
+            raise ValueError("Target is hidden, disabled, sensitive, or outside the active modal")
+        return locator, element, handle

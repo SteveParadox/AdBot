@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     fixture_mode: bool = False
     fixture_port: int = 8765
     max_concurrency: int = Field(2, ge=1, le=8)
+    max_io_threads: int = Field(4, ge=1, le=32)
+    max_proxy_connections: int = Field(64, ge=1, le=1024)
+    extraction_max_export_bytes: int = Field(52428800, ge=1024, le=209715200)
+    extraction_export_ttl_seconds: int = Field(86400, ge=60, le=604800)
+    max_concurrent_agents: int = Field(2, ge=1, le=8)
+    max_browser_sessions: int = Field(2, ge=1, le=8)
+    priority_aging_seconds: int = Field(300, ge=1, le=86400)
+    resource_monitoring_enabled: bool = True
+    max_host_memory_percent: float = Field(95, gt=0, le=100)
+    max_host_cpu_percent: float = Field(95, gt=0, le=100)
     lease_seconds: int = Field(90, ge=30)
     artifact_dir: Path = Path("./data/screenshots")
     retention_days: int = Field(30, ge=1)
@@ -56,6 +66,8 @@ class Settings(BaseSettings):
     ai_fallback_model: str = ""
     ai_fallback_timeout_seconds: int = Field(60, ge=1, le=600)
     agent_fallback_tokens: int = Field(10000, ge=0, le=250000)
+    ai_provider_rpm: int = Field(0, ge=0, le=1000000)
+    ai_provider_tpm: int = Field(0, ge=0, le=1000000000)
     ai_retries: int = Field(2, ge=0, le=4)
     ai_max_output_tokens: int = Field(800, ge=256, le=8000)
     ai_max_request_chars: int = Field(18000, ge=4000, le=100000)

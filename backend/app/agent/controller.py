@@ -9,6 +9,8 @@ from ..db import uid
 from ..security import PolicyError
 from .observe import Observer
 from .interaction import InteractionEngine, ActionabilityTimeout
+from .semantics import METADATA
+from .semantic_observer import native_semantics
 
 
 class Controller:
@@ -35,7 +37,13 @@ class Controller:
             asyncio.create_task(page.close())
 
     async def observe(self):
-        data = await self.observer.observe(self.page, self.active)
+        planning = self.memory.get("planning", {})
+        active = next(
+            (n for n in planning.get("plan", {}).get("subtasks", []) if n["id"] == planning.get("active_subtask")), {}
+        )
+        data = await self.observer.observe(
+            self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", "")
+        )
         data["tabs"] = [
             {"tab_id": key, "url": tab["page"].url, "purpose": tab["purpose"]} for key, tab in self.tabs.items()
         ]
@@ -63,6 +71,8 @@ class Controller:
             "TYPE",
             "SEARCH",
             "PRESS_KEY",
+            "SET_CHECKED",
+            "SELECT_OPTION",
             "OPEN_TAB",
             "GO_BACK",
             "CLOSE_TAB",
@@ -101,16 +111,13 @@ class Controller:
         return False
 
     async def inspect_target(self, locator):
-        live = await locator.evaluate(
-            """e => {
-            const labelled=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.textContent||'').join(' ').trim();
-            const type=(e.type||'').toLowerCase();
-            const name=(e.getAttribute('aria-label')||labelled||[...(e.labels||[])].map(l=>l.textContent).join(' ')||e.innerText||e.getAttribute('alt')||e.getAttribute('placeholder')||(type==='submit'?e.value:'')||'').trim().replace(/\\s+/g,' ').slice(0,160);
-            return {name,disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',safe:e.dataset.adbotSafe==='true',type:(e.type||'').toLowerCase(),href:e.tagName==='A'?e.href:null,
-            form:e.closest('form')?{method:e.closest('form').method.toUpperCase(),action:e.closest('form').action}:null}}""",
-            timeout=self.engine.timeout_ms,
-        )
-        return live
+        live = await locator.evaluate(METADATA, timeout=self.engine.timeout_ms)
+        _, name, _ = native_semantics(await locator.aria_snapshot(timeout=self.engine.timeout_ms), live)
+        return {
+            **{k: live[k] for k in ("disabled", "safe", "type", "href")},
+            "name": name,
+            "form": {k: live["form"][k] for k in ("method", "action")} if live["form"] else None,
+        }
 
     async def act(self, decision, options, approved=False):
         action = decision.decision
@@ -120,8 +127,21 @@ class Controller:
             return await self.download(decision, options)
         elif action == "NAVIGATE":
             await self.navigate(decision.url)
-        elif action in {"CLICK", "TYPE", "SEARCH", "HOVER", "FOCUS"}:
-            locator, element = self.observer.target(decision)
+        elif (
+            action in {"CLICK", "TYPE", "SEARCH", "HOVER", "FOCUS", "SET_CHECKED", "SELECT_OPTION"}
+            or action == "PRESS_KEY"
+            and decision.target
+        ):
+            observed = self.observer.registry.get(decision.target.element_id, (None, {}))[1]
+            with self.engine.phase(
+                "resolution",
+                element_id=decision.target.element_id,
+                role=observed.get("role"),
+                accessible_name=observed.get("name"),
+                strategy=observed.get("locator_strategy"),
+                actionable=observed.get("actionable"),
+            ):
+                locator, element, binding = await self.observer.resolve(decision, self.page, self.active)
             live = await self.inspect_target(locator)
             expected_form = element.get("form")
             if (
@@ -135,24 +155,65 @@ class Controller:
                 raise ValueError("Target changed since observation; inspect and replan")
             if element["disabled"]:
                 raise ValueError("Element is disabled")
-            if action in {"TYPE", "SEARCH"}:
+            if action == "CLICK" and element["role"] in {"checkbox", "radio", "switch", "option"}:
+                if not options.get("allow_form_input", False):
+                    raise ValueError("Enable form input before changing a selection control")
+                if element["readonly"]:
+                    raise ValueError("Read-only selection controls cannot be changed")
+            if action in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}:
                 if not options["allow_form_input"]:
                     raise ValueError("Enable form input when creating the task")
                 if element["type"] in {"password", "file"} or any(
                     x in element["name"].lower() for x in ("password", "credit card", "api key", "secret")
                 ):
                     raise ValueError("Secret, payment and file fields are unavailable")
-                if element["role"] not in {"textbox", "searchbox"}:
-                    raise ValueError("TYPE/SEARCH requires an observed text input")
+                if element["readonly"]:
+                    raise ValueError("Read-only controls cannot be edited")
+                if action in {"TYPE", "SEARCH"} and (
+                    (
+                        element["role"] not in {"textbox", "searchbox", "combobox", "spinbutton"}
+                        and not (
+                            element["tag"] == "input"
+                            and element["type"] in {"date", "time", "month", "week", "datetime-local"}
+                        )
+                    )
+                    or element["tag"] == "select"
+                ):
+                    raise ValueError("TYPE/SEARCH requires an observed editable text or numeric input")
+                if action == "SELECT_OPTION" and element["tag"] != "select":
+                    raise ValueError(
+                        "Custom selection requires observed options and native keyboard or click interaction"
+                    )
+                if action == "SELECT_OPTION" and not any(
+                    not o["disabled"] and decision.option in {o["label"], o["value"]} for o in element["options"]
+                ):
+                    raise ValueError("Requested option is not an available observed choice")
+                if action == "SET_CHECKED" and element["role"] not in {"checkbox", "radio", "switch"}:
+                    raise ValueError("SET_CHECKED requires a checkbox, radio or switch")
+                if action == "SET_CHECKED" and element["role"] == "radio" and not decision.checked:
+                    raise ValueError("Select another observed radio instead of unchecking a radio")
                 if action == "SEARCH":
                     form = element.get("form")
                     if not form or not form["search"] or form["method"] != "GET":
                         raise ValueError("SEARCH requires an observed GET search form")
                     await self.runner.permitted(form["action"])
-            elif action == "CLICK":
+            if action == "PRESS_KEY":
+                if not element["focused"]:
+                    raise ValueError("Focus the observed control before sending a targeted key")
+                await self.keyboard_policy(decision, options, element)
+            activation = action == "CLICK" or action == "PRESS_KEY" and decision.key in {"Enter", "Space"}
+            if activation:
                 if element.get("href"):
                     await self.runner.permitted(element["href"])
                 form = element.get("form")
+                if (
+                    form
+                    and (element["type"] == "submit" or action == "PRESS_KEY" and decision.key == "Enter")
+                    and form["invalid_count"]
+                ):
+                    raise ValueError(
+                        "Form validation is unresolved; inspect required fields and validation feedback before submission"
+                    )
                 if form and form["method"] != "GET":
                     destination = urlsplit(await self.runner.permitted(form["action"]))
                     self.mutation = {
@@ -165,7 +226,15 @@ class Controller:
                     # write during this click; revoke it as soon as the action ends.
                     self.mutation = {"method": None, "destination": None, "until": time.monotonic() + 5}
             try:
-                result = await self.engine.perform(self.page, decision, locator, self.active)
+                result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
+                result["semantic"] = {
+                    "role": element["role"],
+                    "name": element["name"],
+                    "strategy": element["locator_strategy"],
+                    "element_id": element["element_id"],
+                    "context": element["context"],
+                    "actionable": element["actionable"],
+                }
             except ActionabilityTimeout:
                 # The trial dispatched no click. Only an unchanged ordinary link
                 # can recover through the normal authorized navigation path.
@@ -199,13 +268,18 @@ class Controller:
                 await self.runner.visit(self.page, self.page.url, navigate=False)
                 self.tabs[self.active]["history"].append(self.page.url)
         elif action in {"SCROLL", "SCROLL_BACK", "PRESS_KEY", "WAIT"}:
-            if action == "PRESS_KEY" and not options.get("allow_form_input", False):
-                edits_field = await self.page.evaluate("""() => !!document.activeElement?.matches(
-                    'input,textarea,select,[contenteditable=true],[role=combobox],[role=slider],[role=spinbutton],[role=radio]')""")
-                if edits_field and decision.key not in {"Tab", "Shift+Tab", "Escape"}:
-                    raise ValueError("Enable form input before sending keys to an editable control")
-            locator = self.observer.target(decision)[0] if decision.target else None
-            result = await self.engine.perform(self.page, decision, locator, self.active)
+            binding = None
+            if action == "PRESS_KEY":
+                if decision.key in {"Enter", "Space"}:
+                    raise ValueError("Keyboard activation requires an observed focused target")
+                await self.keyboard_policy(
+                    decision, options, await self.page.evaluate("() => (" + METADATA + ")(document.activeElement)")
+                )
+            if decision.target:
+                locator, _, binding = await self.observer.resolve(decision, self.page, self.active)
+            else:
+                locator = None
+            result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
         elif action == "OPEN_TAB":
             if len(self.tabs) >= settings().agent_max_tabs:
                 raise ValueError("Tab budget exhausted; close a tab first")
@@ -245,10 +319,33 @@ class Controller:
         self.mutation = None
         return result
 
+    async def keyboard_policy(self, decision, options, element):
+        if element["sensitive"] and decision.key not in {"Tab", "Shift+Tab", "Escape"}:
+            raise ValueError("Secret, payment and file fields are unavailable")
+        if element["blocked_by_modal"] and decision.key not in {"Tab", "Shift+Tab", "Escape"}:
+            raise ValueError("Focus must remain inside the active modal")
+        editing = element["role"] in {
+            "textbox",
+            "searchbox",
+            "combobox",
+            "listbox",
+            "slider",
+            "spinbutton",
+            "radio",
+            "checkbox",
+            "switch",
+            "option",
+        }
+        if editing and decision.key not in {"Tab", "Shift+Tab", "Escape"}:
+            if not options.get("allow_form_input", False):
+                raise ValueError("Enable form input before sending keys to an editable control")
+            if element["readonly"]:
+                raise ValueError("Read-only controls cannot be edited with keyboard actions")
+
     async def download(self, decision, options):
         if not options["allow_downloads"]:
             raise ValueError("Downloads are disabled for this task")
-        _, element = self.observer.target(decision)
+        _, element, _ = await self.observer.resolve(decision, self.page, self.active)
         if not element.get("href"):
             raise ValueError("DOWNLOAD requires an observed link")
         url = element["href"]

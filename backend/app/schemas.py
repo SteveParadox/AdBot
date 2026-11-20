@@ -14,6 +14,7 @@ class Strict(BaseModel):
 
 
 class TargetConfig(Strict):
+    extraction_dataset_id: str | None = Field(None, max_length=36)
     max_pages: int = Field(10, ge=1, le=1000)
     max_depth: int = Field(2, ge=0, le=10)
     navigation_timeout_ms: int = Field(30000, ge=100, le=120000)
@@ -114,7 +115,7 @@ class WorkflowInput(Strict):
 
 
 class JobInput(Strict):
-    priority: int = Field(0,ge=-10,le=10)
+    priority: int = Field(0, ge=-10, le=10)
     depends_on: str | None = None
     website_id: str
     workflow_id: str | None = None

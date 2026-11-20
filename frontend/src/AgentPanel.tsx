@@ -1,3 +1,4 @@
+import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
@@ -10,6 +11,8 @@ import {
   type Website,
 } from "./api";
 import { Badge, Button, Empty, Field, Pager } from "./ui";
+import { AgentPlan, type Planning } from "./AgentPlan";
+import { SemanticTrace, SemanticObservation, type SemanticObservationData, type SemanticAction, type SemanticInteraction } from "./SemanticTrace";
 
 type Run = (
   action: () => Promise<unknown>,
@@ -18,6 +21,8 @@ type Run = (
 type Evidence = { id: string; url: string; quote: string; step_id: number };
 type Claim = { text: string; evidence_ids: string[] };
 type Task = Job & {
+  planning?: Planning;
+  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
   objective: string;
   mode: string;
   options: {
@@ -26,6 +31,7 @@ type Task = Job & {
     max_tokens: number;
   };
   result: {
+    artifact?: { format: string; download_url: string };
     claims?: Claim[];
     evidence?: Evidence[];
     verification?: { complete: boolean; explanation: string };
@@ -41,7 +47,7 @@ type Step = {
   id: number;
   number: number;
   status: string;
-  observation: {
+  observation: SemanticObservationData & {
     url: string;
     screenshot_path: string;
     tabs?: { tab_id: string; url: string; purpose: string }[];
@@ -55,8 +61,9 @@ type Step = {
     target?: { element_id: string };
   };
   outcome: {
+    semantic?: SemanticAction;
     trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
-    interaction?: { changed: boolean; verified: boolean; verification: string; scroll?: {y: number; height: number} | null };
+    interaction?: SemanticInteraction & { changed: boolean; scroll?: {y: number; height: number} | null };
     [key: string]: unknown;
   };
 };
@@ -184,6 +191,20 @@ export default function AgentPanel({
   const [downloads, setDownloads] = useState(false);
   const [priority, setPriority] = useState(0);
   const [dependency, setDependency] = useState("");
+  const [dataset, setDataset] = useState("");
+  const [datasetQuery, setDatasetQuery] = useState("{}");
+  const [outputFormat, setOutputFormat] = useState("");
+  const [preview, setPreview] = useState<Planning | null>(null);
+  const datasets = useQuery({
+    queryKey: ["agent-datasets", token, website],
+    queryFn: () => api<Collection<{ id: string; name: string; website_id: string }>>("/extraction/datasets?limit=100", token),
+    enabled: Boolean(website),
+  });
+  const taskOptions = {
+    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
+    max_steps: maxSteps, allow_form_input: formInput,
+    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
+  };
   const config = useQuery({
     queryKey: ["agent-config", token],
     queryFn: () => api<Config>("/agent/config", token),
@@ -246,6 +267,9 @@ export default function AgentPanel({
           session_persistence: persist,
           allow_form_input: formInput,
           allow_downloads: downloads,
+          dataset_id: dataset || null,
+          output_format: outputFormat || null,
+          dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery),
         },
         { "Idempotency-Key": crypto.randomUUID() },
       );
@@ -313,12 +337,22 @@ export default function AgentPanel({
             task.
           </div>
         )}
-        <form onSubmit={submit}>
+        <form onSubmit={submit} onChange={() => setPreview(null)}>
+          <Field label="Natural-language objective">
+            <textarea
+              required
+              minLength={8}
+              maxLength={4000}
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              placeholder="Find three recent AI articles and summarize their main findings with source quotes."
+            />
+          </Field>
           <div className="form-grid">
             <Field label="Agent target">
               <select
                 value={website}
-                onChange={(e) => setWebsite(e.target.value)}
+                onChange={(e) => { setWebsite(e.target.value); setDataset(""); setPreview(null); }}
               >
                 <option value="">Register a new URL</option>
                 {sites.map((s) => (
@@ -361,19 +395,7 @@ export default function AgentPanel({
                 onChange={(e) => setMaxSteps(+e.target.value)}
               />
             </Field>
-            <Field label="Agent priority (-10 to 10)"><input type="number" min={-10} max={10} value={priority} onChange={e=>setPriority(+e.target.value)} /></Field>
-            <Field label="Required successful job ID (optional)"><input maxLength={36} value={dependency} onChange={e=>setDependency(e.target.value)} /></Field>
           </div>
-          <Field label="Natural-language objective">
-            <textarea
-              required
-              minLength={8}
-              maxLength={4000}
-              value={objective}
-              onChange={(e) => setObjective(e.target.value)}
-              placeholder="Find three recent AI articles and summarize their main findings with source quotes."
-            />
-          </Field>
           <Field label="Success criteria (optional, one per line)">
             <textarea
               maxLength={10000}
@@ -382,6 +404,28 @@ export default function AgentPanel({
               placeholder="Find three relevant articles&#10;Include source citations for each finding"
             />
           </Field>
+          <details className="agent-advanced">
+            <summary>Dataset output, priority and dependencies</summary>
+            <div className="form-grid">
+            <Field label="Agent priority (-10 to 10)"><input type="number" min={-10} max={10} value={priority} onChange={e=>setPriority(+e.target.value)} /></Field>
+            <Field label="Required successful job ID (optional)"><input maxLength={36} value={dependency} onChange={e=>setDependency(e.target.value)} /></Field>
+            <Field label="Dataset filters, sort and limit (JSON)">
+              <textarea value={datasetQuery} onChange={e => setDatasetQuery(e.target.value)} />
+            </Field>
+            <p className="hint">For the cheapest ten captured products, use {'{"sort":[{"field":"price","direction":"asc"}],"limit":10}'}. Applies to captured records.</p>
+            <Field label="Structured extraction dataset">
+              <select value={dataset} onChange={e => { setDataset(e.target.value); setPreview(null); }}>
+                <option value="">Use target default (if configured)</option>
+                {datasets.data?.items.filter(d => d.website_id === website).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Output format">
+              <select value={outputFormat} onChange={e => { setOutputFormat(e.target.value); setPreview(null); }}>
+                <option value="">From objective</option><option value="answer">Cited answer</option><option value="json">JSON artifact</option><option value="csv">CSV artifact</option>
+              </select>
+            </Field>
+            </div>
+          </details>
           <div className="checks">
             <label>
               <input
@@ -398,7 +442,7 @@ export default function AgentPanel({
                 checked={formInput}
                 onChange={(e) => setFormInput(e.target.checked)}
               />
-              Allow text input and search
+              Allow form input and search
             </label>
             <label>
               <input
@@ -438,11 +482,18 @@ export default function AgentPanel({
               I authorize browser automation on this URL.
             </label>
           )}
+          <div className="agent-submit-actions">
           <Button type="submit" disabled={busy || !config.data?.configured}>
             <Play size={15} />
             Start agent task
           </Button>
+          <Button type="button" variant="outline" disabled={busy || !website || objective.length < 8} onClick={() => run(async () => {
+            setPreview(await api<Planning>("/agent/preview", token, "POST", { ...taskOptions, dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery), website_id: website }));
+          })}>Preview task understanding</Button>
+          </div>
+          <p className="hint">Preview uses the selected saved target and current form values. Starting a task creates a fresh plan; complex tasks receive model decomposition in the worker.</p>
         </form>
+        {preview && <AgentPlan planning={preview} />}
       </section>
       <div className="stats">
         {[
@@ -658,7 +709,9 @@ function AgentDetail({
             {t.prompt_tokens + t.completion_tokens} tokens · {t.model_calls}{" "}
             model calls
           </span>
+          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
+        <JobFailure failure={t.failure} />
         {t.error_message && (
           <p className="error" role="alert">
             {t.error_message}
@@ -728,6 +781,7 @@ function AgentDetail({
           </div>
         </section>
       )}
+      <AgentPlan planning={t.planning} />
       <div className="agent-grid">
         <section className="panel">
           <div className="panel-heading">
@@ -770,11 +824,19 @@ function AgentDetail({
               {JSON.stringify(t.memory, null, 2)}
             </pre>
           </details>
+          <SemanticObservation observation={latest?.observation} />
         </section>
       </div>
-      {t.result.claims && (
+      {t.status === "completed" && t.result.verification?.complete && t.result.claims && (
         <section className="panel form-panel">
           <h2>Verified task result</h2>
+          {t.status === "completed" && t.result.artifact && <Button disabled={busy} onClick={() => run(async () => {
+            const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: "Bearer " + token } });
+            if (!response.ok) throw new Error("Export unavailable or expired");
+            const url = URL.createObjectURL(await response.blob());
+            const link = document.createElement("a"); link.href = url; link.download = `agent-${id}.${t.result.artifact!.format}`; link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          })}>Download verified artifact</Button>}
           <p className="hint">{t.result.verification?.explanation}</p>
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
@@ -814,6 +876,8 @@ function AgentDetail({
                 <p className="hint">{step.decision.reason}</p>
                 <small className="url">{step.observation.url}</small>
                 <InteractionOutcome interaction={step.outcome.interaction} />
+                <SemanticTrace semantic={step.outcome.semantic} interaction={step.outcome.interaction} resolution={step.outcome.trace?.find(s => s.phase === "resolution")} />
+                {typeof step.outcome.error === "string" && <p className="error" role="status">{step.outcome.error}</p>}
                 {!!step.outcome.trace?.length && <details>
                   <summary>Interaction trace · automated session</summary>
                   <table className="interaction-trace"><thead><tr><th scope="col">Phase</th><th scope="col">Started (UTC)</th><th scope="col">Duration</th><th scope="col">Status</th></tr></thead>

@@ -17,7 +17,7 @@ class Policy(BaseModel):
     concurrency: int = Field(1, ge=1, le=8)
     recovery_retries: int = Field(3, ge=0, le=3)
     max_backlog: int = Field(1000, ge=1, le=100000)
-    disabled: list[Literal["crawl", "workflow", "agent", "schedules"]] = Field(default_factory=list)
+    disabled: list[Literal["crawl", "workflow", "agent", "export", "schedules"]] = Field(default_factory=list)
     disabled_websites: list[Annotated[str, Field(min_length=1, max_length=36)]] = Field(
         default_factory=list, max_length=1000
     )

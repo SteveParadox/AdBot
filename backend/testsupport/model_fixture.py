@@ -43,6 +43,8 @@ def words(text):
 
 
 def decide(payload):
+    if payload["purpose"] == "plan":
+        return payload["seed_plan"]
     goal = payload["objective"]
     memory = payload.get("session_memory", {})
     observation = payload.get("current_page", {})
@@ -72,7 +74,31 @@ def decide(payload):
             ],
         }
     if evidence:
+        planning = payload.get("task_plan", {})
+        nodes = planning.get("subtasks", [])
+        active = next((n for n in nodes if n["id"] == planning.get("active_subtask")), None)
+        if active and active["kind"] == "dataset":
+            return action("EXTRACT_DATASET")
+        if active and active["kind"] == "export":
+            return action("EXPORT_DATASET")
         return action("COMPLETE", claims=[{"text": e["quote"], "evidence_ids": [e["id"]]} for e in evidence])
+    if observation.get("title") == "Semantic interaction laboratory" and "remote" in goal.lower():
+        # Deterministic test double: every target/state comes from the live
+        # semantic observation, never a production task router or fixed URL.
+        controls = observation.get("elements", [])
+        search = next((e for e in controls if e["role"] == "searchbox" and e["name"] == "Search jobs"), None)
+        remote = next((e for e in controls if e["role"] == "checkbox" and e["name"] == "Remote only"), None)
+        sort = next((e for e in controls if e["role"] == "combobox" and e["name"] == "Sort results"), None)
+        if search and search.get("value") != "Backend Engineer":
+            return action("TYPE", target={"element_id": search["element_id"]}, text="Backend Engineer")
+        if remote and remote.get("checked") is not True:
+            return action("SET_CHECKED", target={"element_id": remote["element_id"]}, checked=True)
+        if sort and sort.get("value") != "newest":
+            return action("SELECT_OPTION", target={"element_id": sort["element_id"]}, option="Newest")
+        if "Sorted Newest" in observation.get("text", "") or any(
+            f.get("text") == "Sorted Newest" for f in observation.get("feedback", [])
+        ):
+            return action("EXTRACT", text="Sorted Newest")
     text = observation.get("text", "")
     elements = observation.get("elements", [])
     if "registration" in goal.lower():

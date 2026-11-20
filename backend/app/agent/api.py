@@ -4,7 +4,7 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
@@ -25,6 +25,7 @@ def task_for(session, identifier, owner):
 
 
 def task_output(job, task):
+    elapsed = max(0, (job.completed_at or time.time()) - job.started_at) if job.started_at else 0
     return output(job) | {
         "traffic_kind": "automated",
         "automation_session_id": job.id,
@@ -38,6 +39,12 @@ def task_output(job, task):
         "completion_tokens": task.completion_tokens,
         "model_calls": task.model_calls,
         "model_latency_ms": task.model_latency_ms,
+        "planning": task.memory.get("planning"),
+        "budget": {
+            "elapsed_seconds": elapsed,
+            "remaining_seconds": max(0, job.snapshot["configuration"]["max_duration_seconds"] - elapsed),
+            "remaining_tokens": max(0, task.options["max_tokens"] - task.prompt_tokens - task.completion_tokens),
+        },
     }
 
 
@@ -52,6 +59,8 @@ def configuration(owner: Owner):
         "configured": cfg.ai_provider != "disabled",
         "max_steps": cfg.agent_max_steps,
         "max_tokens": cfg.agent_max_tokens,
+        "provider_rpm": cfg.ai_provider_rpm,
+        "provider_tpm": cfg.ai_provider_tpm,
         "memory_enabled": cfg.agent_memory_enabled,
         "visual_reasoning": cfg.agent_visual_reasoning,
         "session_persistence": cfg.browser_session_persistence,
@@ -69,11 +78,18 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
         raise HTTPException(422, "Visual reasoning is not enabled by the server")
     if data.session_persistence and not cfg.browser_session_persistence:
         raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
-    options = data.model_dump(exclude={'priority','depends_on'})
+    options = data.model_dump(exclude={"priority", "depends_on"})
     options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
     options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens)
     options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
-    request_values=data.model_dump(exclude={'priority','depends_on'}) if not data.priority and not data.depends_on else data.model_dump()
+    request_values = (
+        data.model_dump(exclude={"priority", "depends_on"})
+        if not data.priority and not data.depends_on
+        else data.model_dump()
+    )
+    for optional in ("dataset_id", "output_format", "dataset_query"):
+        if request_values.get(optional) is None:
+            request_values.pop(optional, None)
     digest = hashlib.sha256(json.dumps(request_values, sort_keys=True).encode()).hexdigest()
     try:
         with transaction() as session:
@@ -84,22 +100,77 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
                     if previous.job_type != "agent" or previous.payload_hash != digest:
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
-            job = make_job(session, website,priority=data.priority,depends_on=data.depends_on)
+            from .planning import specification, initial_plan
+
+            job = make_job(
+                session, website, priority=data.priority, depends_on=data.depends_on, dataset_id=data.dataset_id
+            )
+            extraction = job.snapshot.get("extraction")
+            if data.dataset_query is not None and not extraction:
+                raise HTTPException(422, "Dataset queries require a configured extraction dataset")
+            if extraction:
+                from ..extraction.query import resolve_query
+                try:
+                    options["dataset_query"] = resolve_query(data.objective, extraction["definition"], options.get("dataset_query"))
+                except ValueError as exc:
+                    raise HTTPException(422, str(exc)) from None
+            spec = specification(data.objective, data.success_criteria, options, website.allowed_domains)
             job.job_type = "agent"
             job.idempotency_key, job.payload_hash = idempotency_key, digest
-            task = AgentTask(job_id=job.id, objective=data.objective, mode=data.mode, options=options)
+            task = AgentTask(
+                job_id=job.id,
+                objective=data.objective,
+                mode=data.mode,
+                options=options,
+                memory={"planning": initial_plan(spec, options["max_steps"], bool(job.snapshot.get("extraction")))},
+            )
             session.add(task)
             session.flush()
             emit(session, job.id, "agent_queued", "Goal-driven task queued", objective=data.objective)
             return task_output(job, task)
     except ValueError as exc:
-        raise HTTPException(409,str(exc)) from None
+        raise HTTPException(409, str(exc)) from None
     except IntegrityError:
         with Session() as session:
             old = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
             if old and old.job_type == "agent" and old.payload_hash == digest:
                 return task_output(old, session.get(AgentTask, old.id))
         raise HTTPException(409, "Concurrent task creation conflict; retry with the same key") from None
+
+
+@router.post("/preview")
+def preview(data: TaskInput, owner: Owner):
+    from .planning import specification, initial_plan
+
+    with Session() as session:
+        website = owned(session, Website, data.website_id, owner)
+        if data.dataset_id:
+            from ..db import Dataset
+
+            dataset = owned(session, Dataset, data.dataset_id, owner)
+            if dataset.website_id != website.id:
+                raise HTTPException(422, "Dataset must belong to the selected website")
+        try:
+            options = data.model_dump()
+            dataset_id = data.dataset_id or website.configuration.get("extraction_dataset_id")
+            if dataset_id:
+                from ..db import Dataset, ExtractionSchema
+                from ..extraction.query import resolve_query
+                dataset = owned(session, Dataset, dataset_id, owner)
+                if dataset.website_id != website.id:
+                    raise HTTPException(422, "Dataset must belong to the selected website")
+                definition = session.get(ExtractionSchema, dataset.schema_id).definition
+                options["dataset_query"] = resolve_query(data.objective, definition, options.get("dataset_query"))
+            elif data.dataset_query is not None:
+                raise HTTPException(422, "Dataset queries require a configured extraction dataset")
+            spec = specification(data.objective, data.success_criteria, options, website.allowed_domains)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return initial_plan(
+            spec,
+            min(data.max_steps, settings().agent_max_steps),
+            bool(data.dataset_id or website.configuration.get("extraction_dataset_id")),
+        )
 
 
 @router.get("/tasks")
@@ -140,7 +211,13 @@ def review(identifier: str, data: ReviewInput, owner: Owner):
             or step.approved is not None
         ):
             raise HTTPException(409, "This review is stale or already answered")
-        step.approved, step.user_answer = data.approved, data.answer
+        changed = session.execute(
+            update(AgentStep)
+            .where(AgentStep.id == step.id, AgentStep.status == "waiting_user", AgentStep.approved.is_(None))
+            .values(approved=data.approved, user_answer=data.answer)
+        ).rowcount
+        if not changed:
+            raise HTTPException(409, "This review is stale or already answered")
         emit(
             session,
             identifier,

@@ -1,0 +1,68 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.2, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\ADMIN\Videos\AdBot\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\ADMIN\Videos\AdBot\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.2.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 7 items
+
+tests/test_system_audit_browser.py::test_redaction_preserves_private_target_identity PASSED [ 14%]
+tests/test_system_audit_browser.py::test_semantic_disclosure_extraction_and_confirmed_empty FAILED [ 28%]
+tests/test_system_audit_browser.py::test_scheduler_executes_repeat_and_persists_real_change PASSED [ 42%]
+tests/test_system_audit_browser.py::test_expired_worker_preserves_extraction_and_fences_old_writer PASSED [ 57%]
+tests/test_system_audit_browser.py::test_real_concurrent_worker_workspaces_and_cleanup PASSED [ 71%]
+tests/test_system_audit_browser.py::test_modal_authority_follows_top_layer_not_dom_order PASSED [ 85%]
+tests/test_system_audit_browser.py::test_long_semantic_sequence_preserves_planning_constraints_and_stale_downloads PASSED [100%]
+
+================================== FAILURES ===================================
+___________ test_semantic_disclosure_extraction_and_confirmed_empty ___________
+tests\test_system_audit_browser.py:70: in test_semantic_disclosure_extraction_and_confirmed_empty
+    result = await InteractionEngine(500).perform(page, action, locator, binding=binding)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app\agent\interaction.py:144: in perform
+    await target.click(timeout=self.timeout_ms)
+..\.venv\Lib\site-packages\playwright\async_api\_generated.py:2132: in click
+    await self._impl_obj.click(
+..\.venv\Lib\site-packages\playwright\_impl\_element_handle.py:142: in click
+    await self._channel.send(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\.venv\Lib\site-packages\playwright\_impl\_connection.py:559: in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E   playwright._impl._errors.TimeoutError: ElementHandle.click: Timeout 500ms exceeded.
+E   Call log:
+E     - attempting click action
+E       - waiting for element to be visible, enabled and stable
+E       - element is visible, enabled and stable
+E       - scrolling into view if needed
+E       - done scrolling
+E       - performing click action
+---------------------------- Captured stderr setup ----------------------------
+{"event": "request", "method": "POST", "route": "/api/websites", "status": 201, "duration_ms": 172}
+----------------------------- Captured log setup ------------------------------
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/websites", "status": 201, "duration_ms": 172}
+---------------------------- Captured stderr call -----------------------------
+{"event": "request", "method": "POST", "route": "/api/extraction/schemas", "status": 201, "duration_ms": 125}
+{"event": "request", "method": "POST", "route": "/api/extraction/datasets", "status": 201, "duration_ms": 140}
+{"event": "request", "method": "POST", "route": "/api/extraction/datasets/{identifier}/run", "status": 201, "duration_ms": 47}
+------------------------------ Captured log call ------------------------------
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/extraction/schemas", "status": 201, "duration_ms": 125}
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/extraction/datasets", "status": 201, "duration_ms": 140}
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/extraction/datasets/{identifier}/run", "status": 201, "duration_ms": 47}
+============================== warnings summary ===============================
+..\.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_system_audit_browser.py::test_semantic_disclosure_extraction_and_confirmed_empty - playwright._impl._errors.TimeoutError: ElementHandle.click: Timeout 500ms exceeded.
+Call log:
+  - attempting click action
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - performing click action
+============= 1 failed, 6 passed, 1 warning in 152.24s (0:02:32) ==============

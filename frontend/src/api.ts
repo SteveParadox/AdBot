@@ -1,6 +1,7 @@
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); this.name="ApiError"; } }
 export type Collection<T> = { items: T[]; total: number };
 export type Config = {
+  extraction_dataset_id?: string | null;
   max_pages: number;
   max_depth: number;
   navigation_timeout_ms: number;
@@ -57,6 +58,7 @@ export type Job = {
   started_at: number | null;
   completed_at: number | null;
   error_message: string | null;
+  failure?: { category: string; stage: string; last_successful_action: {action: string; step: number | null} | null; retry_eligible: boolean; automatic_retry_scheduled: boolean; suggested_recovery: string } | null;
   discovered_count?: number;
 };
 export type Visit = {

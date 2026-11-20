@@ -1,0 +1,12 @@
+﻿{
+  "scenario": "Local Orion launch-month goal; Chromium; deterministic semantic fixture, not live LLM",
+  "status": "completed",
+  "elapsed_seconds": 6.424568799999179,
+  "steps": 3,
+  "model_calls": 4,
+  "tokens": 3200,
+  "failed_actions": 0,
+  "verified": true,
+  "planning_present": false,
+  "error": null
+}

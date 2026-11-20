@@ -11,7 +11,11 @@ from ..db import AgentMemory
 
 
 def fingerprint(observation):
-    data = {key: observation.get(key) for key in ("url", "text", "elements", "scroll", "form_state")}
+    data = {key: observation.get(key) for key in ("url", "tab_id", "text", "scroll", "form_state")}
+    data["elements"] = [
+        {key: value for key, value in element.items() if key != "element_id"}
+        for element in observation.get("elements", [])
+    ]
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
@@ -30,6 +34,8 @@ def action_key(decision):
                     "key",
                     "input_method",
                     "expected_text",
+                    "checked",
+                    "option",
                 )
             },
             sort_keys=True,

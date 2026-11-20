@@ -1,0 +1,68 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.2, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\ADMIN\Videos\AdBot\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\ADMIN\Videos\AdBot\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.2.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 53 items / 3 deselected / 50 selected
+
+tests/test_concurrency.py::test_resource_pressure_and_sampling PASSED    [  2%]
+tests/test_concurrency.py::test_resource_sampling_unavailable PASSED     [  4%]
+tests/test_concurrency.py::test_pool_bound_and_event_loop_responsive PASSED [  6%]
+tests/test_concurrency.py::test_exception_shutdown_and_reject_new_work PASSED [  8%]
+tests/test_concurrency.py::test_shutdown_waits_for_cancelled_callers PASSED [ 10%]
+tests/test_concurrency.py::test_priority_aging PASSED                    [ 12%]
+tests/test_concurrency.py::test_browser_cap_across_distinct_domains PASSED [ 14%]
+tests/test_concurrency.py::test_agent_capacity_does_not_block_crawls PASSED [ 16%]
+tests/test_concurrency.py::test_blocked_domain_backlog_does_not_hide_eligible_work PASSED [ 18%]
+tests/test_concurrency.py::test_worker_execution_overlap_and_failure_isolation PASSED [ 20%]
+tests/test_concurrency_audit.py::test_cancelled_shutdown_keeps_running_thread_tracked PASSED [ 22%]
+tests/test_concurrency_audit.py::test_proxy_connection_admission_is_bounded PASSED [ 24%]
+tests/test_concurrency_audit.py::test_cancel_does_not_overwrite_completion_read_concurrently PASSED [ 26%]
+tests/test_concurrency_audit.py::test_review_cannot_overwrite_an_answer_committed_after_read PASSED [ 28%]
+tests/test_concurrency_audit.py::test_retry_after_never_shortens_provider_delay PASSED [ 30%]
+tests/test_concurrency_audit.py::test_worker_startup_failure_closes_redis PASSED [ 32%]
+tests/test_concurrency_audit.py::test_model_retry_delay_respects_remaining_deadline PASSED [ 34%]
+tests/test_concurrency_audit.py::test_sse_does_not_hold_database_connection_while_client_waits PASSED [ 36%]
+tests/test_concurrency_audit.py::test_bounded_stress_with_isolated_failures[5] PASSED [ 38%]
+tests/test_concurrency_audit.py::test_bounded_stress_with_isolated_failures[10] PASSED [ 40%]
+tests/test_concurrency_audit.py::test_bounded_stress_with_isolated_failures[25] PASSED [ 42%]
+tests/test_concurrency_audit.py::test_bounded_stress_with_isolated_failures[50] PASSED [ 44%]
+tests/test_concurrency_audit.py::test_bounded_stress_with_isolated_failures[100] PASSED [ 46%]
+tests/test_concurrency_audit.py::test_real_redis_atomic_rate_counter_across_clients PASSED [ 48%]
+tests/test_concurrency_audit.py::test_parallel_claims_are_unique_and_respect_capacity PASSED [ 50%]
+tests/test_concurrency_audit.py::test_egress_monitor_survives_policy_database_outage PASSED [ 52%]
+tests/test_extraction.py::test_normalization_schema_limits_and_templates PASSED [ 54%]
+tests/test_extraction.py::test_persistence_versions_dedup_changes_exports_and_ownership PASSED [ 56%]
+tests/test_extraction.py::test_missing_confirmation_failed_runs_and_scheduler PASSED [ 58%]
+tests/test_extraction.py::test_csv_injection_and_flattening PASSED       [ 60%]
+tests/test_extraction.py::test_extraction_migration_roundtrip PASSED     [ 62%]
+tests/test_extraction.py::test_ai_evidence_hallucination_and_usage PASSED [ 64%]
+tests/test_extraction.py::test_missing_requires_successful_exhaustive_confirmations PASSED [ 66%]
+tests/test_extraction.py::test_export_limits_cleanup_and_stale_worker_fencing PASSED [ 68%]
+tests/test_extraction.py::test_concurrent_observations_are_idempotent_and_transactional PASSED [ 70%]
+tests/test_extraction.py::test_agent_enrichment_cannot_bypass_agent_token_budget PASSED [ 72%]
+tests/test_system_audit.py::test_reobserved_content_reversion_is_persisted PASSED [ 74%]
+tests/test_system_audit.py::test_export_version_tracks_last_seen_and_retention PASSED [ 76%]
+tests/test_system_audit.py::test_reobserved_review_candidate_is_not_duplicated PASSED [ 78%]
+tests/test_system_audit.py::test_empty_capture_cannot_confirm_removal_or_success PASSED [ 80%]
+tests/test_system_audit.py::test_incompatible_schema_cannot_relabel_existing_dataset PASSED [ 82%]
+tests/test_system_audit.py::test_critical_ambiguity_blocks_keyboard_activation[Enter] PASSED [ 84%]
+tests/test_system_audit.py::test_critical_ambiguity_blocks_keyboard_activation[Space] PASSED [ 86%]
+tests/test_system_audit.py::test_explicit_download_prohibition_overrides_optional_permission PASSED [ 88%]
+tests/test_system_audit.py::test_explicit_negative_instructions_preserved_and_enforced[Don't] PASSED [ 90%]
+tests/test_system_audit.py::test_explicit_negative_instructions_preserved_and_enforced[Don\u2019t] PASSED [ 92%]
+tests/test_system_audit.py::test_explicit_negative_instructions_preserved_and_enforced[Mustn't] PASSED [ 94%]
+tests/test_system_audit.py::test_explicit_negative_instructions_preserved_and_enforced[Mustn\u2019t] PASSED [ 96%]
+tests/test_system_audit.py::test_explicit_negative_instructions_preserved_and_enforced[Do not] PASSED [ 98%]
+tests/test_system_audit.py::test_explicit_negative_instructions_preserved_and_enforced[Never] PASSED [100%]
+
+============================== warnings summary ===============================
+..\.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: C:\Users\ADMIN\Videos\AdBot\docs\system-audit\postgres-redis.xml -
+=========== 50 passed, 3 deselected, 1 warning in 111.43s (0:01:51) ===========

@@ -1,7 +1,14 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { WorkspaceSearch } from "./WorkspaceSearch";
+import { JobFailure } from "./JobFailure";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
+  Search,
+  Grid2X2,
+  List,
+  RefreshCw,
+  Rows3,
   ArrowUpRight,
   CalendarClock,
   ChevronRight,
@@ -42,9 +49,11 @@ import {
 import { Badge, Button, Empty, Field, Pager } from "./ui";
 import AgentPanel from "./AgentPanel";
 import AutomationCenter from "./AutomationCenter";
+import DataExtraction from "./DataExtraction";
 import { useContent, ContentAdmin, ContentBlock } from "./Content";
 
 type Tab =
+  | "Data Extraction"
   | "Automation"
   | "Content"
   | "Overview"
@@ -73,6 +82,19 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [compact, setCompact] = useState(() => localStorage.getItem("adbot-density-v1") === "compact");
+  const [activityDays, setActivityDays] = useState(30);
+  const [createWebsite, setCreateWebsite] = useState(false);
+  const [websiteCreateRequest, setWebsiteCreateRequest] = useState(0);
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => { window.removeEventListener("online", update); window.removeEventListener("offline", update); };
+  }, []);
+  useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(""), 6000); return () => clearTimeout(timer); }, [notice]);
   const client = useQueryClient();
   const run: Run = async (action, success) => {
     setBusy(true);
@@ -110,6 +132,22 @@ export default function App() {
     enabled: !!token,
   });
   const [selected, setSelected] = useState<string | null>(null);
+  const navigation = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!token) return;
+    window.scrollTo({ top: 0, behavior: "instant" });
+    navigation.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+  }, [tab, token, selected]);
+  function navigate(destination: Tab) { setTab(destination); setSelected(null); setCreateWebsite(false); }
+  function addWebsite() { navigate("Websites"); setCreateWebsite(true); setWebsiteCreateRequest(value => value + 1); }
+  async function refreshWorkspace() {
+    setRefreshing(true);
+    setError("");
+    setNotice("");
+    try { await client.invalidateQueries({ type: "active" }, { throwOnError: true }); setNotice("Workspace refreshed"); }
+    catch (error) { setError((error as Error).message); }
+    finally { setRefreshing(false); }
+  }
   const logout = () => {
     sessionStorage.removeItem("adbot-token");
     setToken("");
@@ -134,6 +172,13 @@ export default function App() {
   if (!token)
     return (
       <main className="login">
+        <section className="login-intro" aria-label="About AdBot">
+          <span className="login-kicker"><Radar size={18}/> YOUR WEB OPERATIONS, CONNECTED</span>
+          <h2>Less busywork.<br/><em>More perspective.</em></h2>
+          <p>Bring website monitoring, browser tasks, and structured data into one focused workspace.</p>
+          <div className="login-steps"><div><Globe2/><strong>Configure</strong><span>Choose your authorized targets.</span></div><div><Play/><strong>Run</strong><span>Automate repeatable browser work.</span></div><div><Activity/><strong>Understand</strong><span>Review results and every step.</span></div></div>
+          <span className="login-footnote">Built for clarity. Designed to keep you in control.</span>
+        </section>
         <div className="login-card">
           <div className="brand">
             <Radar />
@@ -163,7 +208,7 @@ export default function App() {
                 {error}
               </p>
             )}
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" loading={busy}>
               Connect workspace <ArrowUpRight size={16} />
             </Button>
           </form>
@@ -176,7 +221,8 @@ export default function App() {
     );
   const items = sites.data?.items || [];
   return (
-    <div className="shell">
+    <div className="shell" data-density={compact ? "compact" : "comfortable"}>
+      <a className="skip-link" href="#workspace-main">Skip to content</a>
       <aside>
         <div className="brand">
           <Radar />
@@ -190,11 +236,12 @@ export default function App() {
           <ChevronRight size={14} />
         </div>
         <div className="nav-label">WORKSPACE</div>
-        <nav>
+        <nav ref={navigation} aria-label="Workspace navigation">
           {(
             [
               ["Overview", LayoutDashboard],
               ["AI Agent", Radar],
+              ["Data Extraction", LayoutDashboard],
               ["Websites", Globe2],
               ["Jobs", Activity],
               ["Workflows", Route],
@@ -206,10 +253,8 @@ export default function App() {
             <button
               key={name}
               className={tab === name ? "active" : ""}
-              onClick={() => {
-                setTab(name);
-                setSelected(null);
-              }}
+              aria-current={tab === name ? "page" : undefined}
+              onClick={() => navigate(name)}
             >
               <Icon size={18} />
               {copy[name]?.navigation_label || name}
@@ -235,14 +280,20 @@ export default function App() {
       </aside>
       <div className="main">
         <header>
-          <span>
-            Workspace <ChevronRight size={14} /> <strong>{tab}</strong>
-          </span>
-          <span className="connection">
-            <i /> API connected
-          </span>
+          {(busy || refreshing) && <div className="workspace-progress" role="progressbar" aria-label="Updating workspace"/>}
+          <span className="breadcrumb"><span>Workspace</span><ChevronRight size={14} /><strong>{tab}</strong></span>
+          <div className="header-actions">
+            <WorkspaceSearch destinations={[
+              { id: "add-website", label: "Add website", description: "Register an authorized target", choose: addWebsite },
+              ...(["Overview", "AI Agent", "Data Extraction", "Websites", "Jobs", "Workflows", "Schedules", "Content", "Automation"] as Tab[]).map(destination => ({ id: destination, label: copy[destination]?.navigation_label || destination, description: `Open ${destination.toLowerCase()}`, choose: () => navigate(destination) })),
+            ]}/>
+            <Button variant="ghost" className="density-toggle icon-button" aria-label="Compact view" aria-pressed={compact} title="Toggle compact view" onClick={() => { setCompact(value => !value); localStorage.setItem("adbot-density-v1", compact ? "comfortable" : "compact"); }}><Rows3 size={18}/></Button>
+            <Button variant="ghost" className="icon-button" aria-label="Refresh workspace" title="Refresh workspace" disabled={refreshing || busy} aria-busy={refreshing} onClick={() => void refreshWorkspace()}><RefreshCw size={17} className={refreshing ? "spin" : ""}/></Button>
+            <span className={`connection ${!online || sites.error || overview.error ? "connection-error" : ""}`} title={!online ? "You are offline" : sites.error || overview.error ? "API connection needs attention" : "API connected"}><i/><span>{!online ? "Offline" : sites.error || overview.error ? "API unavailable" : sites.isPending ? "Connecting" : "API connected"}</span></span>
+          </div>
         </header>
-        <main>
+        <main id="workspace-main" tabIndex={-1}>
+          <div className="sr-only" aria-live="polite">{tab} workspace</div>
           <div className="page-heading">
             <div>
               <div className="eyebrow">WEBSITE OPERATIONS</div>
@@ -260,6 +311,7 @@ export default function App() {
                     Websites:
                       "Configure authorized targets and keep your crawls in bounds.",
                     Jobs: "Launch, inspect, and control your browser sessions.",
+                    "Data Extraction": "Turn authorized website content into versioned datasets.",
                     Workflows: "Build repeatable, permitted browser actions.",
                     Schedules: "Put routine checks on a reliable schedule.",
                   }[tab]
@@ -267,7 +319,7 @@ export default function App() {
               </p>
             </div>
             {tab === "Overview" && (
-              <Button onClick={() => setTab("Websites")}>
+              <Button onClick={addWebsite}>
                 <Plus size={16} />
                 Add website
               </Button>
@@ -288,7 +340,7 @@ export default function App() {
             </div>
           )}
           {notice && (
-            <div role="status" className="alert success">
+            <div role="status" className="alert success workspace-toast">
               {notice}
               <button
                 aria-label="Dismiss notification"
@@ -299,6 +351,7 @@ export default function App() {
             </div>
           )}
           {tab === "Automation" && <AutomationCenter key={token} token={token} />}
+          {tab === "Data Extraction" && <DataExtraction key={token} token={token} sites={items} />}
           {tab === "Content" && <ContentAdmin token={token} />}
           {tab === "AI Agent" && (
             <AgentPanel token={token} sites={items} run={run} busy={busy} />
@@ -314,6 +367,11 @@ export default function App() {
                     (overview.data?.statuses.running || 0) +
                       (overview.data?.statuses.paused || 0),
                     Activity,
+  Search,
+  Grid2X2,
+  List,
+  RefreshCw,
+  Rows3,
                   ],
                   [
                     "Avg. navigation",
@@ -321,7 +379,7 @@ export default function App() {
                     CalendarClock,
                   ],
                 ].map(([label, value, Icon]) => (
-                  <div className="stat" key={String(label)}>
+                  <button className={`stat ${overview.isPending ? "is-loading" : ""}`} key={String(label)} onClick={() => navigate(label === "Registered websites" ? "Websites" : "Jobs")} aria-busy={overview.isPending} aria-label={`Open ${label === "Registered websites" ? "Websites" : "Jobs"}: ${String(label)}, ${value === undefined ? "loading" : String(value)}`}>
                     <div>
                       <span>{String(label)}</span>
                       {typeof Icon !== "string" &&
@@ -329,8 +387,8 @@ export default function App() {
                         Icon && <Icon size={17} />}
                     </div>
                     <strong>{value === undefined ? "—" : String(value)}</strong>
-                    <small>From persisted execution results</small>
-                  </div>
+                    <small>View execution details <ArrowUpRight size={12}/></small>
+                  </button>
                 ))}
               </div>
               <div className="chart-grid">
@@ -338,15 +396,15 @@ export default function App() {
                   <div className="panel-heading">
                     <div>
                       <h2>Page activity</h2>
-                      <p>Pages recorded over the last 30 days</p>
+                      <p>Pages recorded over the last {activityDays} days</p>
                     </div>
-                    <span className="pill">30 days</span>
+                    <div className="segmented" role="group" aria-label="Activity period">{[7, 14, 30].map(days => <button key={days} aria-pressed={activityDays === days} onClick={() => setActivityDays(days)}>{days} days</button>)}</div>
                   </div>
                   {overview.data?.daily_pages.length ? (
                     <div className="chart">
                       <ResponsiveContainer width="100%" height="100%">
                         <AreaChart
-                          data={overview.data.daily_pages.map((d) => ({
+                          data={overview.data.daily_pages.filter(d => d.day >= Math.floor(Date.now() / 86400000) * 86400 - (activityDays - 1) * 86400).map((d) => ({
                             ...d,
                             label: new Date(d.day * 1000).toLocaleDateString(
                               undefined,
@@ -390,6 +448,7 @@ export default function App() {
                           <Tooltip />
                           <Area
                             type="monotone"
+                            isAnimationActive={false}
                             dataKey="count"
                             name="Pages"
                             stroke="#4968f5"
@@ -487,6 +546,8 @@ export default function App() {
           )}
           {tab === "Websites" && (
             <Websites
+              key={websiteCreateRequest}
+              initialCreate={createWebsite}
               token={token}
               sites={items}
               run={run}
@@ -601,15 +662,20 @@ function Websites({
   run,
   busy,
   loading,
+  initialCreate = false,
 }: {
   token: string;
   sites: Website[];
   run: Run;
   busy: boolean;
   loading: boolean;
+  initialCreate?: boolean;
 }) {
   const [editing, setEditing] = useState<Website | null>(null);
-  const [show, setShow] = useState(false);
+  const [show, setShow] = useState(initialCreate);
+  const [search, setSearch] = useState("");
+  const [view, setView] = useState<"grid" | "list">("grid");
+  const filtered = sites.filter(site => `${site.name} ${site.base_url} ${site.allowed_domains.join(" ")}`.toLowerCase().includes(search.trim().toLowerCase()));
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [domains, setDomains] = useState("");
@@ -651,12 +717,13 @@ function Websites({
   return (
     <>
       <div className="toolbar">
-        <span>{sites.length} configured targets</span>
+        <div className="website-tools"><label className="search-field"><Search size={17}/><input aria-label="Search websites" type="search" placeholder="Search websites..." value={search} onChange={event => setSearch(event.target.value)}/></label><span>{filtered.length} of {sites.length} targets</span><div className="segmented view-switch" role="group" aria-label="Website layout"><button aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => setView("grid")}><Grid2X2 size={17}/></button><button aria-label="List view" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={17}/></button></div></div>
         <Button onClick={() => edit()}>
           <Plus size={16} />
           Add website
         </Button>
       </div>
+      {search && !loading && sites.length > 0 && !filtered.length && <Empty text="No matching websites. Try a different name or domain."/>}
       {show && (
         <section className="panel form-panel">
           <div className="panel-heading">
@@ -845,8 +912,8 @@ function Websites({
       ) : !sites.length ? (
         <Empty text="Register your first website to start monitoring." />
       ) : (
-        <div className="site-grid">
-          {sites.map((site) => (
+        <div className={`site-grid ${view === "list" ? "list-view" : ""}`}>
+          {filtered.map((site) => (
             <section className="panel site-card" key={site.id}>
               <div className="site-icon">
                 <Globe2 size={23} />
@@ -1042,6 +1109,7 @@ function JobDetail({
   busy: boolean;
   back: () => void;
 }) {
+  const client = useQueryClient();
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
@@ -1091,6 +1159,14 @@ function JobDetail({
             if (parsed.events.length) {
               last = parsed.events.at(-1)!.id;
               setLive((old) => [...old, ...parsed.events].slice(-200));
+              // Streamed progress and HTTP snapshots must describe the same
+              // job. Refresh its status, pages and log cache after each batch;
+              // otherwise a completion event can appear beside queued data.
+              await Promise.all(
+                ["job", "pages", "logs"].map((key) =>
+                  client.invalidateQueries({ queryKey: [key, id] }),
+                ),
+              );
             }
           }
           if (isTerminal) return;
@@ -1102,7 +1178,7 @@ function JobDetail({
     }
     connect();
     return () => controller.abort();
-  }, [id, token, isTerminal]);
+  }, [id, token, isTerminal, client]);
   useEffect(
     () => () => {
       if (image) URL.revokeObjectURL(image);
@@ -1222,6 +1298,7 @@ function JobDetail({
           {latest?.details.url ? String(latest.details.url) : ""}
         </p>
         {j.error_message && <p className="error">{j.error_message}</p>}
+        <JobFailure failure={j.failure} />
       </section>
       <section className="panel">
         <div className="panel-heading">

@@ -31,7 +31,7 @@ of throughput. This is not a public-suffix parser.
 Workers heartbeat every ten seconds. Every persistence operation checks the
 lease token and expiry. A dead worker's lease expires after 90 seconds; recovery
 requeues unfinished crawl URLs, retaining committed results. Recovery has a
-three-attempt ceiling and preserves the original session deadline. This provides
+policy-configured retry ceiling and preserves the original session deadline. This provides
 at-least-once read-only navigation, not exactly-once HTTP execution. A page read
 can repeat if a worker dies between its network request and database commit.
 
@@ -74,10 +74,12 @@ non-proxied WebRTC UDP and QUIC; Firefox disables peer connections. Network-leve
 egress enforcement remains necessary for production isolation, particularly for
 browser-internal channels and WebKit. Application routing is not an OS sandbox.
 
-An operator allowlist narrows user allowlists in production. Forms and mutating
-HTTP methods are unavailable, including from CLICK workflows. Buttons require
-the target site's `data-adbot-safe="true"` attribute; links must pass navigation
-policy. No user-provided code runs. Ad identification is not universally
+An operator allowlist narrows user allowlists in production. Agent clicks run
+autonomously within that boundary. Form input requires the task's explicit
+permission; secret, payment and file controls are unavailable. A validated
+activation can grant one matching mutating request, after checking the form and
+destination; arbitrary background writes remain denied. Links and downloads
+must pass navigation policy. No user-provided code runs. Ad identification is not universally
 inferable from markup: operator authorization must exclude ad selectors and
 destinations. Do not schedule this software to inflate visits or engagement.
 

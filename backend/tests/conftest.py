@@ -10,7 +10,13 @@ os.environ["ADBOT_ENVIRONMENT"] = "development"
 os.environ["ADBOT_AI_OLLAMA_NATIVE"] = "false"
 os.environ["ADBOT_AI_PROVIDER"] = "disabled"
 os.environ["ADBOT_AI_FALLBACK_PROVIDER"] = "disabled"
+for credential in ('AI_API_KEY', 'GROQ_API_KEY', 'AI_FALLBACK_API_KEY'):
+    # Only dedicated test credentials may reach fixture model endpoints.
+    os.environ['ADBOT_' + credential] = os.environ.get(
+        'ADBOT_TEST_' + credential, 'fixture-model-key-not-a-real-provider-key'
+    )
 os.environ["ADBOT_BROWSER_SESSION_PERSISTENCE"] = "false"
+os.environ["ADBOT_USER_AGENT_ROTATABLE_SERVICES"] = ""
 os.environ["ADBOT_AUTHORIZED_DOMAINS"] = ""
 os.environ["ADBOT_FIXTURE_MODE"] = "true"
 os.environ["ADBOT_RATE_PER_MINUTE"] = "10000"
@@ -32,7 +38,13 @@ OTHER_AUTH = {"Authorization": "Bearer " + OTHER_KEY}
 def database():
     from app.user_agents import invalidate
     invalidate()
-    Base.metadata.create_all(engine)
+    # sqlite3's legacy transaction mode otherwise commits each DDL statement
+    # separately, making every fixture perform hundreds of disk syncs. Keep
+    # the same fresh-schema isolation in one explicit atomic transaction.
+    with engine.begin() as connection:
+        if engine.dialect.name == 'sqlite':
+            connection.exec_driver_sql('BEGIN')
+        Base.metadata.create_all(connection)
     yield
     # SQLite enforces self-referential constraints even for DROP TABLE.
     # Remove test dependency edges before dropping this isolated test schema.
@@ -40,7 +52,7 @@ def database():
     from app.db import Job
     with engine.begin() as connection:
         connection.execute(update(Job).values(depends_on=None))
-    Base.metadata.drop_all(engine)
+        Base.metadata.drop_all(connection)
     rate_windows.clear()
 
 

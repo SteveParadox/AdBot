@@ -1,0 +1,29 @@
+{
+  "records": 1000,
+  "normalization_seconds": 0.7989901999999347,
+  "persistence_seconds": 13.508793900000455,
+  "records_per_second_persistence": 74.02585363301503,
+  "persistence_query_count": 7100,
+  "total_query_count": 7281,
+  "total_seconds": 16.202990099999624,
+  "process_cpu_seconds": 9.0,
+  "peak_python_bytes": 3626086,
+  "exports": {
+    "json": {
+      "seconds": 0.8779137000001356,
+      "bytes": 555417,
+      "rows": 1000,
+      "query_count": 84
+    },
+    "csv": {
+      "seconds": 0.8150368000005983,
+      "bytes": 52796,
+      "rows": 1000,
+      "query_count": 84
+    }
+  },
+  "errors": 0,
+  "expired_read_job_requeue_seconds": 0.05338630000005651,
+  "process_peak_working_set_bytes": 74723328,
+  "database_bytes": 2183168
+}

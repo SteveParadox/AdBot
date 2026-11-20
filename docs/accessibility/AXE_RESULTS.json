@@ -1,0 +1,58 @@
+{
+  "axe_sha256": "880970c081707360e64f34cea25ff91892f5bc95675b0776925b9709dd8a68bb",
+  "scenarios": {
+    "semantic_laboratory": {
+      "version": "4.10.3",
+      "violations": [
+        {
+          "id": "aria-required-children",
+          "impact": "critical",
+          "description": "Ensure elements with an ARIA role that require child roles contain them",
+          "help_url": "https://dequeuniversity.com/rules/axe/4.10/aria-required-children?application=axeAPI",
+          "targets": [
+            [
+              "div[role=\"list\"]"
+            ]
+          ]
+        }
+      ],
+      "incomplete": [],
+      "passes": 24
+    },
+    "accessible_reference": {
+      "version": "4.10.3",
+      "violations": [],
+      "incomplete": [],
+      "passes": 15
+    },
+    "known_inaccessible_reference": {
+      "version": "4.10.3",
+      "violations": [
+        {
+          "id": "aria-required-attr",
+          "impact": "critical",
+          "description": "Ensure elements with ARIA roles have all required ARIA attributes",
+          "help_url": "https://dequeuniversity.com/rules/axe/4.10/aria-required-attr?application=axeAPI",
+          "targets": [
+            [
+              "div"
+            ]
+          ]
+        },
+        {
+          "id": "label",
+          "impact": "critical",
+          "description": "Ensure every form element has a label",
+          "help_url": "https://dequeuniversity.com/rules/axe/4.10/label?application=axeAPI",
+          "targets": [
+            [
+              "input"
+            ]
+          ]
+        }
+      ],
+      "incomplete": [],
+      "passes": 10
+    }
+  }
+}

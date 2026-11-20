@@ -37,8 +37,10 @@ def check_capacity(session):
         raise ValueError("Queue capacity reached; wait for backlog to drain")
 
 
-def make_job(session, website: Website, workflow: Workflow | None = None, key=None, priority=0, depends_on=None):
+def make_job(session, website: Website, workflow: Workflow | None = None, key=None, priority=0, depends_on=None, dataset_id=None, extract=True):
     payload = {"website_id": website.id, "workflow_id": workflow.id if workflow else None}
+    if dataset_id:
+        payload['dataset_id'] = dataset_id
     if priority or depends_on:
         payload.update(priority=priority,depends_on=depends_on)
     if depends_on:
@@ -76,6 +78,10 @@ def make_job(session, website: Website, workflow: Workflow | None = None, key=No
     session.flush()
     session.add(Frontier(job_id=job.id, discovered_url=website.base_url, normalized_url=website.base_url))
     emit(session, job.id, "queued", "Job queued")
+    extraction_id = dataset_id or website.configuration.get('extraction_dataset_id')
+    if extraction_id and extract:
+        from .extraction.service import snapshot as extraction_snapshot
+        extraction_snapshot(session,job,extraction_id)
     return job
 
 
@@ -118,10 +124,16 @@ def claim():
                    Job.website_id.not_in(control.disabled_websites),
                    or_(control.enabled,Job.manual_release.is_(True)),
                    or_(Job.depends_on.is_(None),select(parent.id).where(parent.id==Job.depends_on,parent.status=='completed').exists()))
-            .order_by(Job.priority.desc(),Job.created_at)
-            .limit(50)
-        ).all()
+            .order_by((Job.priority + (now - Job.created_at) / settings().priority_aging_seconds).desc(),Job.created_at)
+        ).yield_per(50)
         for job in jobs:
+            if job.job_type == "agent":
+                active_agents = session.scalar(select(func.count()).select_from(Job).where(
+                    Job.job_type == "agent", Job.status.in_(["running", "paused", "waiting_user"]),
+                    Job.lease_until > now,
+                ))
+                if active_agents >= settings().max_concurrent_agents:
+                    continue
             if job.job_type in control.disabled or (not control.enabled and not job.manual_release):
                 continue
             if job.depends_on:
@@ -146,18 +158,24 @@ def claim():
                 }
             )
             with session.begin_nested() as savepoint:
+                if job.job_type == "agent" and not any(
+                    acquire(session, f"agent-slot:{i}", token, now)
+                    for i in range(settings().max_concurrent_agents)
+                ):
+                    savepoint.rollback()
+                    continue
                 if not all(acquire(session, name, token, now) for name in names):
                     savepoint.rollback()
                     continue
                 slot = next(
-                    (i for i in range(control.concurrency) if acquire(session, f"slot:{i}", token, now)), None
+                    (i for i in range(min(control.concurrency, settings().max_browser_sessions)) if acquire(session, f"slot:{i}", token, now)), None
                 )
                 if slot is None:
                     savepoint.rollback()
-                    continue
+                    return None
                 changed = session.execute(
                     update(Job)
-                    .where(Job.id == job.id, Job.status == "queued")
+                    .where(Job.id == job.id, Job.status == "queued", Job.cancel_requested.is_(False))
                     .values(
                         status="running",
                         lease_token=token,
@@ -199,7 +217,7 @@ def recover_expired():
                 unsafe = bool(
                     last
                     and last.status == "executing"
-                    and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY"}
+                    and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
                 )
                 task = session.get(AgentTask, job.id)
                 task.pending_step_id = None
@@ -287,7 +305,9 @@ def tick(now=None):
             if item.workflow_id and (not workflow or not workflow.enabled):
                 item.enabled = False
                 continue
-            make_job(session, site, workflow, f"schedule:{item.id}:{due:.6f}")
+            from .db import ExtractionSchedule
+            binding = session.get(ExtractionSchedule,item.id)
+            make_job(session, site, workflow, f"schedule:{item.id}:{due:.6f}",dataset_id=binding.dataset_id if binding else None)
             count += 1
     return count
 
@@ -295,6 +315,8 @@ def tick(now=None):
 def cleanup():
     cutoff = time.time() - settings().retention_days * 86400
     with transaction() as session:
+        from .extraction.exporter import cleanup as extraction_cleanup
+        extraction_cleanup(session)
         session.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.expires_at<time.time()-86400))
         session.execute(delete(Lease).where(Lease.expires_at<time.time()-3600))
         session.execute(delete(AgentMemory).where(AgentMemory.expires_at < time.time()))
