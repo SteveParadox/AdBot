@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="4" time="304.405" timestamp="2026-11-20T11:10:54.138021+01:00" hostname="DESKTOP-SV10J2P"><testcase classname="tests.test_planning_browser" name="test_complex_plan_real_export_and_owned_download" time="14.550"><failure message="AssertionError: Agent recovery budget exhausted; inspect failed steps&#10;assert 'failed' == 'completed'&#10;  &#10;  - completed&#10;  + failed">tests\test_planning_browser.py:89: in test_complex_plan_real_export_and_owned_download
+    plan = result["planning"]
+E   AssertionError: Agent recovery budget exhausted; inspect failed steps
+E   assert 'failed' == 'completed'
+E     
+E     - completed
+E     + failed</failure></testcase><testcase classname="tests.test_accessibility" name="test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[chromium]" time="80.486" /><testcase classname="tests.test_accessibility" name="test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[firefox]" time="102.178" /><testcase classname="tests.test_accessibility" name="test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[webkit]" time="105.380" /></testsuite></testsuites>

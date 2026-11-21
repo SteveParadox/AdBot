@@ -1,0 +1,73 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+___________ test_semantic_disclosure_extraction_and_confirmed_empty ___________
+app\extraction\service.py:117: in extract_page
+    await page.locator(options["ready_selector"]).first.wait_for(state="visible")
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\async_api\_generated.py:17906: in wait_for
+    await self._impl_obj.wait_for(timeout=timeout, state=state)
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_locator.py:692: in wait_for
+    await self._frame.wait_for_selector(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_frame.py:369: in wait_for_selector
+    await self._channel.send(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:557: in wrap_api_call
+    return await cb()
+           ^^^^^^^^^^
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:123: in _inner_send
+    done, _ = await asyncio.wait(
+..\..\..\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\tasks.py:464: in wait
+    return await _wait(fs, timeout, return_when, loop)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\tasks.py:550: in _wait
+    await waiter
+E   asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+app\extraction\service.py:115: in extract_page
+    async with asyncio.timeout(min(30, runner.cfg["navigation_timeout_ms"] / 1000)):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\timeouts.py:115: in __aexit__
+    raise TimeoutError from exc_val
+E   TimeoutError
+
+During handling of the above exception, another exception occurred:
+tests\test_system_audit_browser.py:66: in test_semantic_disclosure_extraction_and_confirmed_empty
+    await extract_page(runner, page, required=False)
+app\extraction\service.py:205: in extract_page
+    runner.log("extraction_failed", "Page extraction failed; inspect dataset diagnostics")
+    ^^^^^^^^^^
+E   AttributeError: 'types.SimpleNamespace' object has no attribute 'log'
+---------------------------- Captured stderr setup ----------------------------
+{"event": "request", "method": "POST", "route": "/api/websites", "status": 201, "duration_ms": 359}
+----------------------------- Captured log setup ------------------------------
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/websites", "status": 201, "duration_ms": 359}
+---------------------------- Captured stderr call -----------------------------
+{"event": "request", "method": "POST", "route": "/api/extraction/schemas", "status": 201, "duration_ms": 110}
+{"event": "request", "method": "POST", "route": "/api/extraction/datasets", "status": 201, "duration_ms": 141}
+{"event": "request", "method": "POST", "route": "/api/extraction/datasets/{identifier}/run", "status": 201, "duration_ms": 78}
+------------------------------ Captured log call ------------------------------
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/extraction/schemas", "status": 201, "duration_ms": 110}
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/extraction/datasets", "status": 201, "duration_ms": 141}
+INFO     adbot.api:main.py:107 {"event": "request", "method": "POST", "route": "/api/extraction/datasets/{identifier}/run", "status": 201, "duration_ms": 78}
+============================== warnings summary ===============================
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\ADMIN\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_system_audit_browser.py::test_semantic_disclosure_extraction_and_confirmed_empty
+1 failed, 1 warning in 19.14s
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\ADMIN\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\ADMIN\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 1859, in call_exception_handler
+    self.default_exception_handler(context)
+  File "C:\Users\ADMIN\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 1833, in default_exception_handler
+    logger.error('\n'.join(log_lines), exc_info=exc_info)
+Message: 'Future exception was never retrieved\nfuture: <Future finished exception=TargetClosedError(\'Target page, context or browser has been closed\\nCall log:\\n  - waiting for locator(".product").first to be visible\\n\')>'
+Arguments: ()

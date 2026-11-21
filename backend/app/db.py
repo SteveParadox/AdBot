@@ -224,6 +224,15 @@ class WorkerHeartbeat(Base):
     expires_at: Mapped[float] = mapped_column(Float, index=True)
 
 
+class ProviderQuota(Base):
+    __tablename__ = "provider_quotas"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window: Mapped[int] = mapped_column(Integer, default=0)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cooldown_until: Mapped[float] = mapped_column(Float, default=0)
+
+
 class SelectionCounter(Base):
     __tablename__ = "selection_counters"
     name: Mapped[str] = mapped_column(String(120), primary_key=True)
@@ -245,6 +254,124 @@ class NetworkAssignment(Base):
     endpoint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     expires_at: Mapped[float] = mapped_column(Float, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ExtractionSchema(Base):
+    __tablename__ = 'extraction_schemas'
+    __table_args__ = (UniqueConstraint('owner', 'family', 'version'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    owner: Mapped[str] = mapped_column(String(64), index=True)
+    family: Mapped[str] = mapped_column(String(36), default=uid)
+    version: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(120))
+    definition: Mapped[dict] = mapped_column(JSON)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class Dataset(Base):
+    __tablename__ = 'datasets'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    owner: Mapped[str] = mapped_column(String(64), index=True)
+    website_id: Mapped[str] = mapped_column(ForeignKey('websites.id', ondelete='CASCADE'), index=True)
+    schema_id: Mapped[str] = mapped_column(ForeignKey('extraction_schemas.id', ondelete='RESTRICT'))
+    name: Mapped[str] = mapped_column(String(120))
+    options: Mapped[dict] = mapped_column(JSON)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ExtractionRun(Base):
+    __tablename__ = 'extraction_runs'
+    job_id: Mapped[str] = mapped_column(ForeignKey('automation_jobs.id', ondelete='CASCADE'), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id', ondelete='CASCADE'), index=True)
+    schema_id: Mapped[str] = mapped_column(ForeignKey('extraction_schemas.id', ondelete='RESTRICT'))
+    status: Mapped[str] = mapped_column(String(24), default='queued')
+    valid_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_count: Mapped[int] = mapped_column(Integer, default=0)
+    pages: Mapped[int] = mapped_column(Integer, default=0)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    finalized: Mapped[bool] = mapped_column(Boolean, default=False)
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ExtractionSchedule(Base):
+    __tablename__ = 'extraction_schedule_bindings'
+    schedule_id: Mapped[str] = mapped_column(ForeignKey('schedules.id', ondelete='CASCADE'), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id', ondelete='CASCADE'), index=True)
+
+
+class ExtractedRecord(Base):
+    __tablename__ = 'extracted_records'
+    __table_args__ = (UniqueConstraint('dataset_id', 'identity'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id', ondelete='CASCADE'), index=True)
+    identity: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    data: Mapped[dict] = mapped_column(JSON)
+    original: Mapped[dict] = mapped_column(JSON)
+    provenance: Mapped[dict] = mapped_column(JSON)
+    validation_status: Mapped[str] = mapped_column(String(24), index=True)
+    status: Mapped[str] = mapped_column(String(24), default='active', index=True)
+    first_seen: Mapped[float] = mapped_column(Float, default=time.time)
+    last_seen: Mapped[float] = mapped_column(Float, default=time.time, index=True)
+    last_job_id: Mapped[str | None] = mapped_column(ForeignKey('automation_jobs.id', ondelete='SET NULL'), nullable=True)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class RecordRevision(Base):
+    __tablename__ = 'record_revisions'
+    __table_args__ = (UniqueConstraint('record_id', 'number'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    record_id: Mapped[str] = mapped_column(ForeignKey('extracted_records.id', ondelete='CASCADE'), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    data: Mapped[dict] = mapped_column(JSON)
+    provenance: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ExtractionObservation(Base):
+    __tablename__ = 'extraction_observations'
+    __table_args__ = (UniqueConstraint('job_id', 'fingerprint'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey('extraction_runs.job_id', ondelete='CASCADE'), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+
+
+class ExtractionIssue(Base):
+    __tablename__ = 'extraction_issues'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey('extraction_runs.job_id', ondelete='CASCADE'), index=True)
+    source_url: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(32))
+    details: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class DataChange(Base):
+    __tablename__ = 'data_changes'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id', ondelete='CASCADE'), index=True)
+    record_id: Mapped[str] = mapped_column(ForeignKey('extracted_records.id', ondelete='CASCADE'), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    details: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
+
+
+class DatasetExport(Base):
+    __tablename__ = 'dataset_exports'
+    job_id: Mapped[str] = mapped_column(ForeignKey('automation_jobs.id', ondelete='CASCADE'), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey('datasets.id', ondelete='CASCADE'), index=True)
+    format: Mapped[str] = mapped_column(String(8))
+    options: Mapped[dict] = mapped_column(JSON)
+    filename: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[float] = mapped_column(Float)
 
 
 engine = create_engine(

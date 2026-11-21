@@ -1,0 +1,138 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\ADMIN\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\ADMIN\Videos\AdBot\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.16.0, asyncio-1.2.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 271 items / 218 deselected / 53 selected
+
+tests/test_accessibility_agent.py::test_planner_semantic_tools_transport_and_durable_traces PASSED [  1%]
+tests/test_accessibility_safety.py::test_semantic_failures_permissions_and_bounded_keyboard PASSED [  3%]
+tests/test_agent.py::test_goal_driven_real_browser[/agent/news?layout=0-Find the launch month for Orion AI and cite the source.-False] PASSED [  5%]
+tests/test_agent.py::test_goal_driven_real_browser[/agent/news?layout=1-Find the launch month for Orion AI and cite the source.-False] PASSED [  7%]
+tests/test_agent.py::test_goal_driven_real_browser[/agent/dynamic-Find the launch month for Orion AI and cite the source.-False] PASSED [  9%]
+tests/test_agent.py::test_goal_driven_real_browser[/agent/search-Search this portal for Orion AI and find its launch month.-True] PASSED [ 11%]
+tests/test_agent.py::test_goal_driven_real_browser[/agent/catalog-Find the price of the Orion AI workstation with source evidence.-False] PASSED [ 13%]
+tests/test_agent.py::test_assisted_review_and_stale_review PASSED        [ 15%]
+tests/test_agent.py::test_step_budget_does_not_mark_incomplete_success PASSED [ 16%]
+tests/test_agent.py::test_autonomous_multistep_form_with_real_post PASSED [ 18%]
+tests/test_agent.py::test_tab_manager_and_bounded_download PASSED        [ 20%]
+tests/test_agent.py::test_unobserved_completion_is_rejected PASSED       [ 22%]
+tests/test_agent.py::test_real_session_state_is_encrypted PASSED         [ 24%]
+tests/test_agent.py::test_failed_action_replans_from_fresh_observation PASSED [ 26%]
+tests/test_agent.py::test_natural_interactions_persist_traces_and_automation_identity PASSED [ 28%]
+tests/test_agent.py::test_unchanged_observe_and_deadline_do_not_loop[False] PASSED [ 30%]
+tests/test_agent.py::test_unchanged_observe_and_deadline_do_not_loop[True] PASSED [ 32%]
+tests/test_browser.py::test_real_crawl_persists_pages_screenshots_and_robots PASSED [ 33%]
+tests/test_browser.py::test_page_limit_and_depth PASSED                  [ 35%]
+tests/test_browser.py::test_real_workflow_click_scroll_extract_back PASSED [ 37%]
+tests/test_browser.py::test_cancel_browser_session PASSED                [ 39%]
+tests/test_browser.py::test_redirect_and_timeout_fail_closed[unsafe-redirect] PASSED [ 41%]
+tests/test_browser.py::test_redirect_and_timeout_fail_closed[slow] PASSED [ 43%]
+tests/test_browser.py::test_rate_limit_exhaustion_is_bounded PASSED      [ 45%]
+tests/test_browser.py::test_browser_crash_retry_budget PASSED            [ 47%]
+tests/test_browser_compatibility.py::test_native_engine_compatibility_and_stale_targets FAILED [ 49%]
+tests/test_concurrency_audit.py::test_real_parallel_browser_context_storage_isolation PASSED [ 50%]
+tests/test_extraction.py::test_real_css_xpath_jsonld_and_dynamic_capture PASSED [ 52%]
+tests/test_extraction.py::test_real_worker_dynamic_pagination_pipeline PASSED [ 54%]
+tests/test_interaction.py::test_hover_pointer_click_navigation_and_trace PASSED [ 56%]
+tests/test_interaction.py::test_focus_keyboard_input_and_tab_navigation PASSED [ 58%]
+tests/test_interaction.py::test_sticky_target_scroll_back_lazy_and_infinite_scroll PASSED [ 60%]
+tests/test_interaction.py::test_disabled_covered_stalled_wait_and_loop_breaker PASSED [ 62%]
+tests/test_interaction.py::test_meaningful_wait_delayed_confirmation PASSED [ 64%]
+tests/test_interaction.py::test_controller_rejects_changed_link_before_navigation PASSED [ 66%]
+tests/test_interaction.py::test_keyboard_navigation_cannot_bypass_form_input_permission PASSED [ 67%]
+tests/test_interaction.py::test_controller_recovers_only_ordinary_link_before_click_dispatch[True-False] PASSED [ 69%]
+tests/test_interaction.py::test_controller_recovers_only_ordinary_link_before_click_dispatch[False-False] PASSED [ 71%]
+tests/test_interaction.py::test_controller_recovers_only_ordinary_link_before_click_dispatch[True-True] PASSED [ 73%]
+tests/test_interaction.py::test_controller_recovers_only_ordinary_link_before_click_dispatch[True-changed] PASSED [ 75%]
+tests/test_interaction.py::test_sensitive_js_click_submits_without_approval FAILED [ 77%]
+tests/test_local_qwen.py::test_real_qwen_finishes_existing_task_after_simulated_groq_limit SKIPPED [ 79%]
+tests/test_planning_browser.py::test_agent_through_policy_proxy_on_other_engines[firefox] PASSED [ 81%]
+tests/test_planning_browser.py::test_agent_through_policy_proxy_on_other_engines[webkit] PASSED [ 83%]
+tests/test_planning_browser.py::test_complex_plan_real_export_and_owned_download PASSED [ 84%]
+tests/test_planning_browser.py::test_ambiguous_dispatched_write_never_replayed PASSED [ 86%]
+tests/test_system_audit_browser.py::test_redaction_preserves_private_target_identity PASSED [ 88%]
+tests/test_system_audit_browser.py::test_semantic_disclosure_extraction_and_confirmed_empty PASSED [ 90%]
+tests/test_system_audit_browser.py::test_scheduler_executes_repeat_and_persists_real_change PASSED [ 92%]
+tests/test_system_audit_browser.py::test_real_concurrent_worker_workspaces_and_cleanup PASSED [ 94%]
+tests/test_system_audit_browser.py::test_modal_authority_follows_top_layer_not_dom_order PASSED [ 96%]
+tests/test_system_audit_browser.py::test_long_semantic_sequence_preserves_planning_constraints_and_stale_downloads PASSED [ 98%]
+tests/test_user_agent_rotation_e2e.py::test_rotation_reaches_destination_and_preserves_active_session PASSED [100%]
+
+================================== FAILURES ===================================
+_____________ test_native_engine_compatibility_and_stale_targets ______________
+tests\test_browser_compatibility.py:115: in test_native_engine_compatibility_and_stale_targets
+    asyncio.run(exercise())
+..\..\..\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests\test_browser_compatibility.py:59: in exercise
+    await page.goto(url)
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\async_api\_generated.py:8992: in goto
+    await self._impl_obj.goto(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_page.py:555: in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_frame.py:153: in goto
+    await self._channel.send(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:559: in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E   playwright._impl._errors.TimeoutError: Page.goto: Timeout 30000ms exceeded.
+E   Call log:
+E     - navigating to "http://127.0.0.1:59590/", waiting until "load"
+______________ test_sensitive_js_click_submits_without_approval _______________
+tests\test_interaction.py:237: in test_sensitive_js_click_submits_without_approval
+    result = await controller.act(action, {}, approved=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app\agent\controller.py:229: in act
+    result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app\agent\interaction.py:144: in perform
+    await target.click(timeout=self.timeout_ms)
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\async_api\_generated.py:2132: in click
+    await self._impl_obj.click(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_element_handle.py:142: in click
+    await self._channel.send(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\playwright\_impl\_connection.py:559: in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E   playwright._impl._errors.TimeoutError: ElementHandle.click: Timeout 2000ms exceeded.
+E   Call log:
+E     - attempting click action
+E       - waiting for element to be visible, enabled and stable
+E       - element is visible, enabled and stable
+E       - scrolling into view if needed
+E       - done scrolling
+E       - performing click action
+============================== warnings summary ===============================
+..\..\..\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\ADMIN\AppData\Local\Temp\adbot-audit-py312-e9856760d1094432843164d33fc7dfc0\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: C:\Users\ADMIN\Videos\AdBot\docs\system-audit\browser-final.xml -
+=========================== short test summary info ===========================
+FAILED tests/test_browser_compatibility.py::test_native_engine_compatibility_and_stale_targets - playwright._impl._errors.TimeoutError: Page.goto: Timeout 30000ms exceeded.
+Call log:
+  - navigating to "http://127.0.0.1:59590/", waiting until "load"
+FAILED tests/test_interaction.py::test_sensitive_js_click_submits_without_approval - playwright._impl._errors.TimeoutError: ElementHandle.click: Timeout 2000ms exceeded.
+Call log:
+  - attempting click action
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - performing click action
+= 2 failed, 50 passed, 1 skipped, 218 deselected, 1 warning in 489.46s (0:08:09) =

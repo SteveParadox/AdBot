@@ -1,0 +1,46 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.2, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\ADMIN\Videos\AdBot\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\ADMIN\Videos\AdBot\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, asyncio-1.2.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 270 items / 56 deselected / 214 selected
+
+tests/test_accessibility.py::test_semantic_contracts_and_native_name_parsing PASSED [  0%]
+tests/test_accessibility_recovery.py::test_expired_selection_dispatch_requires_inspection[SET_CHECKED] PASSED [  0%]
+tests/test_accessibility_recovery.py::test_expired_selection_dispatch_requires_inspection[SELECT_OPTION] PASSED [  1%]
+tests/test_agent.py::test_decision_schema_rejects_code_and_missing_parameters PASSED [  1%]
+tests/test_agent.py::test_task_api_provider_gating_and_ownership PASSED  [  2%]
+tests/test_agent.py::test_encrypted_sessions_and_memory_isolation PASSED [  2%]
+tests/test_agent.py::test_interrupted_mutation_requires_review PASSED    [  3%]
+tests/test_agent.py::test_model_malformed_json_is_rejected_and_accounted PASSED [  3%]
+tests/test_agent.py::test_model_falls_back_to_local_after_groq_network_failure PASSED [  4%]
+tests/test_agent.py::test_model_immediately_falls_back_after_any_primary_http_error PASSED [  4%]
+tests/test_agent.py::test_fallback_retries_invalid_schema_without_spending_an_agent_step PASSED [  5%]
+tests/test_agent.py::test_model_compacts_oversized_observation_before_request PASSED [  5%]
+tests/test_agent.py::test_model_request_timeout_is_capped_by_remaining_session FAILED [  6%]
+tests/test_agent.py::test_model_falls_back_after_413_without_spending_rejected_reservation PASSED [  6%]
+tests/test_agent.py::test_model_falls_back_when_primary_task_budget_is_reserved PASSED [  7%]
+tests/test_agent.py::test_token_budget_prevents_request PASSED           [  7%]
+tests/test_agent.py::test_fallback_budget_is_reserved_from_primary PASSED [  7%]
+tests/test_agent.py::test_all_clicks_skip_review[assisted] PASSED        [  8%]
+tests/test_agent.py::test_all_clicks_skip_review[autonomous] PASSED      [  8%]
+tests/test_agent.py::test_all_clicks_skip_review[supervised] PASSED      [  9%]
+tests/test_agent.py::test_step_limit_defaults_and_validation PASSED      [  9%]
+tests/test_api.py::test_auth_required PASSED                             [ 10%]
+tests/test_api.py::test_ownership PASSED                                 [ 10%]
+tests/test_api.py::test_idempotency_conflict_and_queue_cancellation PASSED [ 11%]
+tests/test_api.py::test_immutable_job_snapshot PASSED                    [ 11%]
+tests/test_api.py::test_durable_schedule_idempotence PASSED              [ 12%]
+tests/test_api.py::test_expired_worker_recovery_and_fencing PASSED       [ 12%]
+tests/test_api.py::test_simultaneous_claim_has_one_winner PASSED         [ 13%]
+tests/test_api.py::test_global_and_per_domain_capacity PASSED            [ 13%]
+tests/test_api.py::test_active_target_delete_rejected PASSED             [ 14%]
+tests/test_api.py::test_workflow_schema_and_version PASSED               [ 14%]
+tests/test_api.py::test_sse_replay_and_artifact_ownership PASSED         [ 14%]
+tests/test_api.py::test_analytics_actual_data PASSED                     [ 15%]
+tests/test_api.py::test_unsafe_targets[file:///etc/passwd] PASSED        [ 15%]
+tests/test_api.py::test_unsafe_targets[http://169.254.169.254/] PASSED   [ 16%]
+tests/test_api.py::test_unsafe_targets[http://localhost/] 

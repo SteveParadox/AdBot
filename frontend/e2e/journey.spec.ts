@@ -78,4 +78,6 @@ test("register target, launch crawl, inspect real persisted pages and screenshot
     path: "test-results/mobile-schedules.png",
     fullPage: true,
   });
+  await page.getByRole('button', {name: 'Disconnect', exact: true}).click();
+  await expect(page.getByLabel('Workspace API key')).toBeVisible();
 });

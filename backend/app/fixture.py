@@ -9,6 +9,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 app = FastAPI()
 
 
+@app.get("/agent/accessibility", response_class=HTMLResponse)
+def accessibility_lab():
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "testsupport" / "accessibility.html").read_text(encoding="utf-8")
+
+
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots():
     return "User-agent: *\nDisallow: /private\n"
@@ -181,4 +188,89 @@ def agent_interactions(request: Request):
       '<section style="height:500px"><h2>Loaded batch '+batches+'</h2><p>New relevant evidence '+batches+'</p></section>');
       document.querySelector('#lazy').setAttribute('aria-busy','false');pending=false},160)}});
     </script>"""
+    )
+
+
+@app.get("/extraction/catalog")
+def extraction_catalog(page: int = 0, price: str = "12.30", dynamic: bool = False, empty: bool = False):
+    import json
+
+    product = (
+        ""
+        if empty
+        else f'<article class="product"><h2 class="name">Orion Workstation</h2><span class="price">${price}</span><a class="product-url" href="/extraction/product/1">Details</a></article>'
+    )
+    metadata = json.dumps(
+        {
+            "@context": "https://schema.org",
+            "@type": "Product",
+            "name": "Orion Workstation",
+            "url": "http://127.0.0.1:8765/extraction/product/1",
+            "offers": {"price": price, "priceCurrency": "USD"},
+        }
+    )
+    body = (
+        (
+            '<div id="records"></div><script>setTimeout(()=>{document.querySelector("#records").innerHTML='
+            + json.dumps(product)
+            + "},200)</script>"
+        )
+        if dynamic
+        else product
+    )
+    next_link = '<a class="next" href="/extraction/catalog?page=1">Next</a>' if page == 0 else ""
+    return HTMLResponse(
+        '<html><head><title>Extraction fixture</title><script type="application/ld+json">'
+        + metadata
+        + "</script></head><body><main>"
+        + body
+        + "</main>"
+        + next_link
+        + "</body></html>"
+    )
+
+
+@app.get("/extraction/metadata/{kind}")
+def extraction_metadata(kind: str, malformed: bool = False):
+    import json
+
+    values = {
+        "jobs": {
+            "@type": "JobPosting",
+            "title": "Platform Engineer",
+            "hiringOrganization": {"name": "Public Fixture Ltd"},
+            "url": "https://example.org/jobs/1",
+            "jobLocation": {"address": {"addressLocality": "Lagos"}},
+            "jobLocationType": "TELECOMMUTE",
+            "employmentType": "FULL_TIME",
+            "datePosted": "2026-11-19",
+            "baseSalary": {"currency": "NGN", "value": {"minValue": 100, "maxValue": 200}},
+            "description": "Authorized public job fixture",
+        },
+        "articles": {
+            "@type": "Article",
+            "headline": "Fixture launch",
+            "author": {"name": "Fixture Writer"},
+            "publisher": {"name": "Fixture News"},
+            "datePublished": "2026-11-19T09:00:00Z",
+            "articleBody": "Public fixture article.",
+            "url": "https://example.org/articles/1",
+            "image": {"url": "https://example.org/image.png"},
+        },
+        "businesses": {
+            "@type": "LocalBusiness",
+            "name": "Public Fixture Shop",
+            "address": {"streetAddress": "1 Example Street"},
+            "telephone": "+234-000-0000",
+            "url": "https://example.org/company/1",
+            "openingHours": "Mo-Fr 09:00-17:00",
+        },
+    }
+    payload = values.get(kind, {"@type": "Organization", "name": "Fixture"})
+    bad = '<script type="application/ld+json">{malformed</script>' if malformed else ""
+    return HTMLResponse(
+        '<main><h1>Public structured fixture</h1></main><script type="application/ld+json">'
+        + json.dumps({"@graph": [payload]})
+        + "</script>"
+        + bad
     )

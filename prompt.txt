@@ -1,0 +1,11 @@
+Act as a senior software engineer, software architect, web systems expert, and experienced bot developer. Audit the existing implementation of **behavioral polymorphism** in this repository.
+
+Inspect the actual codebase end-to-end to verify that randomized behavior and alternative algorithms are correctly implemented, integrated, maintainable, and compatible with the existing bot architecture.
+
+Identify bugs, incomplete implementations, duplicated logic, integration gaps, concurrency issues, performance bottlenecks, configuration problems, and missing tests. Verify that behavioral variations remain consistent with the intended functionality and that existing features are preserved.
+
+**Fix confirmed issues directly in the codebase**, following existing coding conventions. Add or update tests and run the relevant test suite. Avoid unnecessary rewrites or unrelated changes.
+
+Do not assume features work merely because they exist in the code. Trace the actual execution paths, validate the implementation with evidence, and report the files changed, issues fixed, tests executed, and any remaining limitations.
+
+Keep all automation within authorized website access, applicable platform rules, and rate limits.

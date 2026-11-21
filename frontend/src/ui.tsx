@@ -1,5 +1,6 @@
 // shadcn/ui Button pattern, using Radix Slot and class-variance-authority.
 import * as React from "react";
+import { LoaderCircle, Inbox } from "lucide-react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { clsx, type ClassValue } from "clsx";
@@ -23,17 +24,16 @@ export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof button> {
   asChild?: boolean;
+  loading?: boolean;
 }
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, asChild = false, type = "button", ...props }, ref) => {
+  ({ className, variant, asChild = false, type = "button", loading = false, disabled, children, ...props }, ref) => {
     const Comp = asChild ? Slot : "button";
     return (
-      <Comp
-        className={cn(button({ variant }), className)}
-        type={type}
-        ref={ref}
-        {...props}
-      />
+      <Comp className={cn(button({ variant }), className)} type={type} ref={ref}
+        disabled={disabled || loading} aria-busy={loading || undefined} {...props}>
+        {asChild ? children : <>{loading && <LoaderCircle size={15} className="spin" aria-hidden="true"/>}{children}</>}
+      </Comp>
     );
   },
 );
@@ -57,7 +57,7 @@ export function Badge({ status }: { status: string }) {
   return <span className={"badge " + status}>{status.replace(/_/g, " ")}</span>;
 }
 export function Empty({ text }: { text: string }) {
-  return <div className="empty">{text}</div>;
+  return <div className="empty"><span className="empty-symbol"><Inbox size={24} aria-hidden="true"/></span><p>{text}</p></div>;
 }
 export function Pager({
   page,

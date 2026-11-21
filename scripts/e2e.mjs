@@ -134,7 +134,7 @@ try {
   ]);
   const test = spawn(
     process.execPath,
-    [join(root, "frontend/node_modules/@playwright/test/cli.js"), "test"],
+    [join(root, "frontend/node_modules/@playwright/test/cli.js"), "test", ...process.argv.slice(2)],
     { cwd: join(root, "frontend"), env, stdio: "inherit" },
   );
   process.exitCode = await new Promise((resolve) =>

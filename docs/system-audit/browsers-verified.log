@@ -1,0 +1,203 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.2, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\ADMIN\Videos\AdBot\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\ADMIN\Videos\AdBot\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, asyncio-1.2.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 270 items / 214 deselected / 56 selected
+
+tests/test_accessibility.py::test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[chromium] Timeout (0:01:30)!
+Thread 0x000043c4 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 320 in wait
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\queue.py", line 171 in get
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1089 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x000008e0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 817 in _poll
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 444 in select
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 1884 in _run_once
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 607 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 321 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 640 in run_until_complete
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118 in run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\_compat.py", line 23 in asyncio_run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\server.py", line 67 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 975 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x00003bf0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 943 in <genexpr>
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 943 in getsourcefile
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 1688 in getframeinfo
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 1730 in getouterframes
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 1755 in stack
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\playwright\_impl\_connection.py", line 552 in wrap_api_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\playwright\_impl\_connection.py", line 69 in send
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\playwright\_impl\_locator.py", line 550 in aria_snapshot
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\playwright\async_api\_generated.py", line 17374 in aria_snapshot
+  File "C:\Users\ADMIN\Videos\AdBot\backend\app\agent\semantic_observer.py", line 128 in inspect
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\events.py", line 80 in _run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 1922 in _run_once
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 607 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 321 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 640 in run_until_complete
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118 in run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pytest_asyncio\plugin.py", line 721 in inner
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\python.py", line 157 in pytest_pyfunc_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\python.py", line 1671 in runtest
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pytest_asyncio\plugin.py", line 474 in runtest
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 178 in pytest_runtest_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 246 in <lambda>
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 344 in from_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 245 in call_and_report
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 136 in runtestprotocol
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 117 in pytest_runtest_protocol
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 367 in pytest_runtestloop
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 343 in _main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 289 in wrap_session
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 336 in pytest_cmdline_main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\config\__init__.py", line 175 in main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\config\__init__.py", line 201 in console_main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+PASSED [  1%]
+tests/test_accessibility.py::test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[firefox] Timeout (0:01:30)!
+Thread 0x000043c4 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 320 in wait
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\queue.py", line 171 in get
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1089 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x000008e0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 817 in _poll
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 444 in select
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 1884 in _run_once
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 607 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 321 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 640 in run_until_complete
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118 in run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\_compat.py", line 23 in asyncio_run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\server.py", line 67 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 975 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x00003bf0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 817 in _poll
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 444 in select
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 1884 in _run_once
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 607 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 321 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 640 in run_until_complete
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118 in run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pytest_asyncio\plugin.py", line 721 in inner
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\python.py", line 157 in pytest_pyfunc_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\python.py", line 1671 in runtest
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pytest_asyncio\plugin.py", line 474 in runtest
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 178 in pytest_runtest_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 246 in <lambda>
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 344 in from_call
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 245 in call_and_report
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 136 in runtestprotocol
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\runner.py", line 117 in pytest_runtest_protocol
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 367 in pytest_runtestloop
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 343 in _main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 289 in wrap_session
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\main.py", line 336 in pytest_cmdline_main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_execution.py", line 147 in _multicall
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_manager.py", line 183 in _hookexec
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pluggy\_caller.py", line 197 in __call__
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\config\__init__.py", line 175 in main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\_pytest\config\__init__.py", line 201 in console_main
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+FAILED [  3%]
+tests/test_accessibility.py::test_semantic_controls_keyboard_dialogs_forms_and_stale_nodes[webkit] Timeout (0:01:30)!
+Thread 0x000043c4 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 320 in wait
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\queue.py", line 171 in get
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1089 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x000008e0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 817 in _poll
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 444 in select
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 1884 in _run_once
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 607 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 321 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 640 in run_until_complete
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118 in run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\_compat.py", line 23 in asyncio_run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\server.py", line 67 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 975 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x00003bf0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 290 in ismodule
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 992 in getmodule
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 952 in getsourcefile
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py", line 1688 in getframeinfo
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\inspect.py"Windows fatal exception: access violation
+
+Thread 0x000043c4 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 320 in wait
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\queue.py", line 171 in get
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1089 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x000008e0 (most recent call first):
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 817 in _poll
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 444 in select
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 1884 in _run_once
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 607 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\windows_events.py", line 321 in run_forever
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 640 in run_until_complete
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118 in run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\_compat.py", line 23 in asyncio_run
+  File "C:\Users\ADMIN\Videos\AdBot\.venv\Lib\site-packages\uvicorn\server.py", line 67 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 975 in run
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1038 in _bootstrap_inner
+  File "C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 995 in _bootstrap
+
+Thread 0x00003bf0 (most recent call first):
+  File "<frozen genericpath>", line 19 in exists
+  File Windows fatal exception: access violation
+

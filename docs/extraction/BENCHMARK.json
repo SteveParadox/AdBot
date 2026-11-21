@@ -1,0 +1,23 @@
+﻿{
+  "records": 1000,
+  "normalization_seconds": 0.6931023999986792,
+  "persistence_seconds": 7.878405200000998,
+  "records_per_second_persistence": 126.9292419739814,
+  "total_seconds": 11.181509699999879,
+  "process_cpu_seconds": 7.546875,
+  "peak_python_bytes": 3619315,
+  "exports": {
+    "json": {
+      "seconds": 1.266097499999887,
+      "bytes": 555400,
+      "rows": 1000
+    },
+    "csv": {
+      "seconds": 1.1583597999997437,
+      "bytes": 52796,
+      "rows": 1000
+    }
+  },
+  "errors": 0,
+  "database_bytes": 2170880
+}

@@ -8,6 +8,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 from playwright.async_api import async_playwright
+from playwright.async_api import Error as BrowserError
 from playwright.async_api import TimeoutError as NavigationTimeout
 from sqlalchemy import select
 
@@ -46,6 +47,7 @@ class Runner:
         self.user_agent = settings().user_agent_default
         with transaction() as session:
             job = owned_job(session, job_id, token)
+            self.job_type = job.job_type
             self.snapshot = job.snapshot
             self.action_index = job.action_index
             self.history = job.execution_state.get("history", [job.snapshot["base_url"]])
@@ -115,7 +117,12 @@ class Runner:
         root.mkdir(parents=True, exist_ok=True)
         name = f"{self.id}-{uid()}.png"
         # Bounded viewport captures avoid huge images on infinite-scroll pages.
-        await page.screenshot(path=str(root / name), full_page=False, timeout=self.cfg["navigation_timeout_ms"])
+        await page.screenshot(
+            path=str(root / name),
+            full_page=False,
+            mask=[page.locator("input,textarea,select,[contenteditable=true]")],
+            timeout=self.cfg["navigation_timeout_ms"],
+        )
         return name
 
     async def visit(self, page, url, frontier_id=None, navigate=True):
@@ -142,7 +149,7 @@ class Runner:
                         self.log("retry_scheduled", "Navigation timed out; retry scheduled", seconds=delay)
                         await asyncio.sleep(delay * random.uniform(0.9, 1.1))
             else:
-                response = self.last_response
+                response = self.response_for(page)
             self.policy.check(page.url)
             if response and response.status in {429, 503}:
                 raise RateLimited(response.headers.get("retry-after"))
@@ -153,6 +160,15 @@ class Runner:
                     await page.mouse.wheel(0, polymorph.get_random_scroll_amount())
                     await asyncio.sleep(polymorph.get_random_wait_time(0.05, 0.15))
             title = (await page.title())[:2000]
+            if self.snapshot.get("extraction"):
+                if response is None or response.status < 400:
+                    from .extraction.service import extract_page
+
+                    await extract_page(self, page, required=self.job_type == 'crawl')
+                else:
+                    from .extraction.persistence import issue
+
+                    issue(self.id, self.token, url, "navigation", {"http_status": response.status})
             content_hash = hashlib.sha256((await page.content()).encode()).hexdigest()
             if self.cfg["screenshots"]:
                 screenshot = await self.screenshot(page)
@@ -218,6 +234,20 @@ class Runner:
                     # Navigation failures are persisted, allowing diagnosis; each
                     # URL consumes a page slot even on failure.
                     self.log("page_failed", "Page failed without stopping crawl", url=url)
+                if self.snapshot.get("extraction") and self.cfg["discover_links"] and depth >= self.cfg["max_depth"]:
+                    from .db import ExtractionRun
+
+                    with transaction() as session:
+                        owned_job(session, self.id, self.token)
+                        seen = set(session.scalars(select(Frontier.normalized_url).where(Frontier.job_id == self.id)))
+                        for raw in links:
+                            try:
+                                candidate = self.policy.check(urljoin(url, raw))
+                            except ValueError:
+                                continue
+                            if candidate not in seen:
+                                session.get(ExtractionRun, self.id).truncated = True
+                                break
                 if self.cfg["discover_links"] and depth < self.cfg["max_depth"]:
                     with transaction() as session:
                         owned_job(session, self.id, self.token)
@@ -225,6 +255,10 @@ class Runner:
                         discovered = 0
                         for raw in links:
                             if len(seen) >= self.cfg["max_pages"] * 10:
+                                if self.snapshot.get("extraction"):
+                                    from .db import ExtractionRun
+
+                                    session.get(ExtractionRun, self.id).truncated = True
                                 break
                             try:
                                 link = self.policy.check(urljoin(url, raw))
@@ -340,10 +374,19 @@ class Runner:
                         raise RuntimeError("Back navigation failed")
                 elif action == "STOP":
                     return
+                if self.snapshot.get("extraction") and action in {
+                    "WAIT_FOR_SELECTOR",
+                    "SCROLL",
+                    "EXTRACT_TEXT",
+                    "EXTRACT_LINKS",
+                }:
+                    from .extraction.service import extract_page
+
+                    await extract_page(self, page, required=False)
                 with transaction() as session:
                     job = owned_job(session, self.id, self.token)
                     job.action_index = index + 1
-                    job.execution_state = {"history": self.history}
+                    job.execution_state = {**job.execution_state, "history": self.history}
                     emit(session, self.id, "action_completed", f"{action} completed", index=index, **details)
             await asyncio.sleep(self.cfg["delay_seconds"] * random.uniform(0.7, 1.4))
 
@@ -360,6 +403,17 @@ class Runner:
         if popup != initial:
             asyncio.create_task(popup.close())
 
+    def response_for(self, page):
+        response = self.last_response
+        return response if response is not None and response.frame == page.main_frame else None
+
+    async def handle_dialog(self, dialog):
+        try:
+            await dialog.dismiss()
+        except BrowserError:
+            # A page/context can close while its dialog event is queued.
+            pass
+
     async def execute_page(self, page, context):
         if "workflow" in self.snapshot:
             await self.workflow(page)
@@ -373,10 +427,14 @@ class Runner:
 
     async def _run_isolated(self):
         self.crawl_delay = 0
-        async with egress_proxy(self.policy, self.proxy_method_allowed, session=self.id) as proxy, async_playwright() as playwright:
+        async with (
+            egress_proxy(self.policy, self.proxy_method_allowed, session=self.id) as proxy,
+            async_playwright() as playwright,
+        ):
             from .outbound import manager
             from .coordination import assign
-            self.user_agent = assign(self,manager())
+
+            self.user_agent = assign(self, manager())
             self.proxy = proxy
             engine = getattr(playwright, self.cfg["browser"])
             options = {"headless": self.cfg["headless"], "proxy": {"server": proxy}}
@@ -420,7 +478,7 @@ class Runner:
             page.on("response", remember_response)
             page.set_default_timeout(self.cfg["navigation_timeout_ms"])
             context.on("page", lambda popup: self.handle_popup(popup, page))
-            page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
+            page.on("dialog", self.handle_dialog)
             self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
             await self.execute_page(page, context)
         finally:

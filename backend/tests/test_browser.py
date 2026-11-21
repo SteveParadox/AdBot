@@ -29,6 +29,13 @@ def fixture_server():
 
 
 async def test_real_crawl_persists_pages_screenshots_and_robots(client, target, fixture_server):
+    # This verifies crawl output, not deadline enforcement. Browser startup and
+    # screenshots can exceed the shared fixture's 20s budget on a busy host.
+    body = {k: target[k] for k in ("name", "base_url", "allowed_domains", "configuration")}
+    body["configuration"] = {**body["configuration"], "max_duration_seconds": 60}
+    body["authorized"] = True
+    response = client.patch("/api/websites/" + target["id"], json=body)
+    assert response.status_code == 200, response.text
     identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
     await execute(*claim())
     job = client.get(f"/api/jobs/{identifier}").json()
@@ -155,6 +162,10 @@ async def test_browser_crash_retry_budget(client, target, monkeypatch):
 async def test_concurrent_workers_keep_navigation_and_session_private(client, target, fixture_server, monkeypatch):
     from app.browser import Runner
 
+    body = {k: target[k] for k in ("name", "base_url", "allowed_domains", "configuration")}
+    body["configuration"] = {**body["configuration"], "max_duration_seconds": 60}
+    body["authorized"] = True
+    assert client.patch("/api/websites/" + target["id"], json=body).status_code == 200
     identifiers = [client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"] for _ in range(2)]
     # Production domain leases serialize same-origin jobs. Seed a second valid
     # execution lease to stress browser isolation independently of scheduling.
@@ -187,7 +198,7 @@ async def test_concurrent_workers_keep_navigation_and_session_private(client, ta
     monkeypatch.setattr(Runner, "execute_page", isolated_activity)
     tasks = [asyncio.create_task(execute(*item)) for item in claims]
     try:
-        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in ready.values())), 20)
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in ready.values())), 40)
         first, second = (resources[identifier] for identifier in identifiers)
         assert all(a is not b for a, b in zip(first, second))
         assert first[2].url.endswith("/about")

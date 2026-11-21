@@ -25,6 +25,8 @@ class Decision(Strict):
         "HOVER",
         "FOCUS",
         "PRESS_KEY",
+        "SELECT_OPTION",
+        "SET_CHECKED",
         "SCROLL_BACK",
         "TYPE",
         "SCROLL",
@@ -40,8 +42,11 @@ class Decision(Strict):
         "COMPLETE",
         "FAIL",
         "DOWNLOAD",
+        "EXTRACT_DATASET",
+        "EXPORT_DATASET",
     ]
     target: Target | None = None
+    subtask_id: str | None = Field(None, max_length=32)
     url: str | None = Field(None, max_length=1800)
     text: str | None = Field(
         None,
@@ -72,15 +77,24 @@ class Decision(Strict):
             "PageUp",
             "Home",
             "End",
+            "Enter",
+            "Space",
         ]
         | None
     ) = None
     input_method: Literal["auto", "keyboard"] = "auto"
     expected_text: str | None = Field(None, min_length=1, max_length=1000)
+    checked: bool | None = None
+    option: str | None = Field(
+        None, min_length=1, max_length=200, description="Exact observed native option label or value; never invented."
+    )
 
     @model_validator(mode="after")
     def parameters(self):
-        if self.decision in {"CLICK", "TYPE", "SEARCH", "DOWNLOAD", "HOVER", "FOCUS"} and self.target is None:
+        if (
+            self.decision in {"CLICK", "TYPE", "SEARCH", "DOWNLOAD", "HOVER", "FOCUS", "SELECT_OPTION", "SET_CHECKED"}
+            and self.target is None
+        ):
             raise ValueError("This action requires an observed element_id")
         if self.decision in {"TYPE", "SEARCH", "EXTRACT", "ASK_USER", "FAIL"} and not self.text:
             raise ValueError("This action requires text")
@@ -90,6 +104,10 @@ class Decision(Strict):
             raise ValueError("Tab action requires tab_id")
         if self.decision == "PRESS_KEY" and not self.key:
             raise ValueError("PRESS_KEY requires a permitted navigation key")
+        if self.decision == "SELECT_OPTION" and self.option is None:
+            raise ValueError("SELECT_OPTION requires an observed option")
+        if self.decision == "SET_CHECKED" and self.checked is None:
+            raise ValueError("SET_CHECKED requires the intended checked state")
         if self.decision == "COMPLETE" and not self.claims:
             raise ValueError("Completion requires claims with evidence citations")
         return self
@@ -104,11 +122,14 @@ class Criterion(Strict):
 
 
 class Verification(Strict):
-    checks: list[Criterion] = Field(min_length=1, max_length=20)
+    checks: list[Criterion] = Field(min_length=1, max_length=60)
     explanation: str = Field(
         max_length=2000, description="One brief sentence summarizing the checks. Do not narrate your analysis."
     )
     complete: bool = Field(description="True only if every check is met with supporting evidence; otherwise false.")
+
+
+from ..extraction.query import DatasetQuery  # noqa: E402
 
 
 class TaskInput(Strict):
@@ -125,6 +146,9 @@ class TaskInput(Strict):
     session_persistence: bool = False
     allow_form_input: bool = False
     allow_downloads: bool = False
+    dataset_id: str | None = Field(None, max_length=36)
+    output_format: Literal["answer", "json", "csv"] | None = None
+    dataset_query: DatasetQuery | None = None
 
     @model_validator(mode="after")
     def criteria(self):

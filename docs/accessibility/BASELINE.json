@@ -1,0 +1,50 @@
+{
+  "scenario": "Controlled semantic laboratory; Chromium; three repeated full observations; no LLM",
+  "samples": [
+    {
+      "milliseconds": 263.293,
+      "characters": 10731,
+      "controls": 28,
+      "roles": [
+        "button",
+        "checkbox",
+        "combobox",
+        "searchbox",
+        "switch",
+        "tab",
+        "textbox"
+      ],
+      "diagnostics": null
+    },
+    {
+      "milliseconds": 119.284,
+      "characters": 10731,
+      "controls": 28,
+      "roles": [
+        "button",
+        "checkbox",
+        "combobox",
+        "searchbox",
+        "switch",
+        "tab",
+        "textbox"
+      ],
+      "diagnostics": null
+    },
+    {
+      "milliseconds": 124.376,
+      "characters": 10731,
+      "controls": 28,
+      "roles": [
+        "button",
+        "checkbox",
+        "combobox",
+        "searchbox",
+        "switch",
+        "tab",
+        "textbox"
+      ],
+      "diagnostics": null
+    }
+  ]
+}

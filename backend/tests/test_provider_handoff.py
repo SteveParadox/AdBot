@@ -38,6 +38,36 @@ def successful(headers=None):
     )
 
 
+async def test_new_task_respects_shared_cooldown_then_retries_groq(providers, monkeypatch):
+    calls = []
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        calls.append(request.url.host)
+        if len(calls) == 1:
+            return httpx.Response(429)
+        return successful()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    previous_task = ModelClient()
+    await previous_task.request("decide", {"objective": "Previous task"}, Reply, lambda *args: (1, 1))
+    assert previous_task.fallback_active
+
+    cooling_task = ModelClient()
+    await cooling_task.request("decide", {"objective": "Cooling task"}, Reply, lambda *args: (1, 1))
+    assert calls == ["groq.test", "127.0.0.1", "127.0.0.1"]
+    from sqlalchemy import update
+    from app.db import ProviderQuota, transaction
+    with transaction() as session:
+        session.execute(update(ProviderQuota).values(cooldown_until=0))
+    calls.pop()  # Discard the separately asserted cooling-task fallback.
+    new_task = ModelClient()
+    for _ in range(2):
+        await new_task.request("decide", {"objective": "New task"}, Reply, lambda *args: (1, 1))
+    assert calls == ["groq.test", "127.0.0.1", "groq.test", "groq.test"]
+    assert not new_task.fallback_active
+
+
 @pytest.mark.parametrize("status", [400, 401, 402, 429, 500, 503])
 async def test_failure_hands_off_once_and_stays_local(providers, monkeypatch, status):
     calls = []
@@ -224,6 +254,7 @@ async def test_worker_warms_before_pickup_and_cancels_on_shutdown(providers, mon
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: callbacks.append(callback))
     monkeypatch.setattr(providers, "redis_url", "")
+    monkeypatch.setattr(providers, "resource_monitoring_enabled", False)
 
     class Routing:
         def start(self):

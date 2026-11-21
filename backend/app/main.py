@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .privacy import PrivacyMiddleware, install_redaction
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from sqlalchemy import case, func, select, text
+from sqlalchemy import case, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
@@ -29,6 +29,7 @@ from .outbound import manager
 from .network_api import router as network_router
 from .user_agents import router as user_agent_router
 from .automation_api import router as automation_router
+from .extraction.api import router as extraction_router
 
 logger = logging.getLogger("adbot.api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -80,6 +81,7 @@ async def validation_error(request, exc):
 
 
 app.include_router(automation_router)
+app.include_router(extraction_router)
 app.include_router(user_agent_router)
 app.include_router(network_router)
 app.include_router(content_router)
@@ -254,11 +256,16 @@ def job(identifier: str, owner: Owner):
 def cancel_job(identifier: str, owner: Owner):
     with transaction() as session:
         item = owned(session, Job, identifier, owner)
-        if item.status not in TERMINAL:
-            item.cancel_requested = True
-            if item.status == "queued":
-                item.status, item.completed_at = "cancelled", time.time()
+        changed = session.execute(
+            update(Job).where(Job.id == identifier, Job.owner == owner, Job.status.not_in(TERMINAL))
+            .values(cancel_requested=True,
+                    status=case((Job.status == 'queued', 'cancelled'), else_=Job.status),
+                    completed_at=case((Job.status == 'queued', time.time()), else_=Job.completed_at))
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if changed:
             emit(session, identifier, "cancellation_requested", "Cancellation requested")
+        session.refresh(item)
         return output(item)
 
 
@@ -286,6 +293,8 @@ def pause_resume(identifier, owner, pause):
 def retry_job(identifier: str, owner: Owner):
     with transaction() as session:
         item = owned(session, Job, identifier, owner)
+        if item.job_type == 'export':
+            raise HTTPException(409,'Create a new dataset export after reviewing the failure')
         if item.job_type == "agent":
             raise HTTPException(409, "Create a new agent task explicitly after reviewing its outcomes")
         if item.status not in {"failed", "cancelled"}:
@@ -370,9 +379,11 @@ async def events(
                     .limit(100)
                 ).all()
                 terminal = job.status in TERMINAL
-                for event in batch:
-                    cursor = event.id
-                    yield f"id: {cursor}\nevent: progress\ndata: {json.dumps(output(event))}\n\n"
+                messages = [(event.id, json.dumps(output(event))) for event in batch]
+            # Slow clients must not pin a pooled connection across a yield.
+            for event_id, payload in messages:
+                cursor = event_id
+                yield f"id: {cursor}\nevent: progress\ndata: {payload}\n\n"
             if terminal and not batch:
                 return
             if not batch:

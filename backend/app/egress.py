@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from .security import Policy, PolicyError
 from .outbound import manager
+from .config import settings
 
 
 @asynccontextmanager
@@ -21,8 +22,13 @@ async def egress_proxy(policy: Policy, allow_method=None, service="browser", ses
     routing.policy(service)
     routing.start()
     clients: set[asyncio.Task] = set()
+    closing = False
 
     async def handle(reader, writer):
+        # Admission contains no await: callbacks on this loop cannot race the count.
+        if closing or len(clients) >= settings().max_proxy_connections:
+            writer.close()
+            return
         task = asyncio.current_task()
         clients.add(task)
         remote = None
@@ -136,6 +142,7 @@ async def egress_proxy(policy: Policy, allow_method=None, service="browser", ses
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
+        closing = True
         server.close()
         await server.wait_closed()
         tasks = list(clients)

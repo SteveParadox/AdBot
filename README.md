@@ -1,5 +1,10 @@
 # AdBot Monitor
 
+Worker responsiveness, shared provider quotas, job diagnostics and deterministic dataset exports: [Reliability guide](docs/automation/RELIABILITY.md).
+
+Structured datasets, versioned extraction schemas, scheduled monitoring and queued
+JSON/CSV exports are documented in [Data Extraction](docs/extraction/IMPLEMENTATION.md).
+
 AdBot is a workspace for **authorized website monitoring and browser automation**: crawls, workflows,
 schedules, AI-assisted research, screenshots and live execution events. Administrators also manage public
 content, outbound proxy routing and User-Agent identities. It does not generate artificial advertising
@@ -149,6 +154,16 @@ Crawls work with AI disabled. For goal-driven browsing configure an approved pro
 Restart API and worker for environment/provider changes. Use **AI Agent** to submit an objective, review
 permissions/actions, observe captures and inspect verified/cited results. See [agent guide](docs/AGENT_GUIDE.md),
 [interaction engine](docs/INTERACTION_ENGINE.md) and [agent limitations](docs/AGENT_VERIFICATION.md).
+
+The agent now exposes a task preview, dependency plan, recovery history and checked browser profile.
+For structured artifacts, select an owned extraction dataset and JSON/CSV output in **AI Agent**.
+See the [planning and browser compatibility report](docs/agent-planning/REPORT.md) for API details,
+measured before/after results, operating instructions and remaining limits.
+
+Accessibility-aware interaction adds native role/name resolution, selection controls,
+keyboard activation, modal focus handling, and readable semantic diagnostics.
+See the [accessibility implementation and verification report](docs/accessibility/REPORT.md)
+for supported patterns, test results, operational guidance, and limits.
 
 ## 4. Content administration
 

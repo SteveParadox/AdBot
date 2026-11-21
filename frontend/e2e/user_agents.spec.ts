@@ -30,7 +30,7 @@ test("weighted identity editor preserves partial JSON and comma-separated typing
   const clients=page.getByLabel('Compatible clients (comma separated)').first();
   await clients.fill('chromium');await clients.press('End');await clients.pressSequentially(',firefox');
   await expect(clients).toHaveValue('chromium,firefox');
-  await page.getByLabel('browser rotation',{exact:true}).selectOption('weighted');
+  await page.getByRole('combobox',{name:'browser rotation',exact:true}).selectOption('weighted');
   await page.getByLabel('Rotation profile IDs (comma separated)').fill('app-default');
   const weights=page.getByLabel('Profile weights JSON');
   await weights.fill('{');

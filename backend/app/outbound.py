@@ -326,6 +326,15 @@ class Manager:
                 writer.close()
 
     async def monitor(self):
+        from sqlalchemy.exc import SQLAlchemyError
+        def interval():
+            from .automation import get_policy
+            try:
+                return get_policy().health_interval_seconds
+            except SQLAlchemyError:
+                log.warning('egress_monitor_policy_unavailable')
+                return min(30, settings().outbound_health_interval_seconds) * random.uniform(.8, 1.2)
+
         redis = None
         publisher = None
         if settings().redis_url:
@@ -338,8 +347,7 @@ class Manager:
                         await redis.set('adbot:egress:instance:'+self.instance,json.dumps(self.snapshot()),ex=settings().outbound_health_interval_seconds*3)
                     except Exception:
                         log.warning('egress_monitor_publication_failed')
-                    from .automation import get_policy
-                    await asyncio.sleep(get_policy().health_interval_seconds)
+                    await asyncio.sleep(interval())
             publisher = asyncio.create_task(heartbeat())
         slots = asyncio.Semaphore(4)
 
@@ -350,9 +358,12 @@ class Manager:
         try:
             while True:
                 if self.enabled:
-                    await asyncio.gather(*(check(e) for e in self.config.endpoints))
-                from .automation import get_policy
-                await asyncio.sleep(get_policy().health_interval_seconds)
+                    # Join every probe before retrying a cycle; one failed SQL
+                    # health publication must not orphan the other probes.
+                    results = await asyncio.gather(*(check(e) for e in self.config.endpoints), return_exceptions=True)
+                    if any(isinstance(result, BaseException) for result in results):
+                        log.warning('egress_monitor_probe_failed')
+                await asyncio.sleep(interval())
         finally:
             if publisher:
                 publisher.cancel()
