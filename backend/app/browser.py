@@ -421,13 +421,14 @@ class Runner:
             engine = getattr(playwright, self.cfg["browser"])
             options = {"headless": self.cfg["headless"], "proxy": {"server": proxy}}
             if self.cfg["browser"] == "chromium":
+                window_size = polymorph.get_random_viewport()
                 options["args"] = [
                     "--proxy-bypass-list=<-loopback>",
                     "--disable-quic",
                     "--disable-background-networking",
                     "--disable-features=WebRtcHideLocalIpsWithMdns",
                     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    f"--window-size={polymorph.get_random_viewport()['width']},{polymorph.get_random_viewport()['height']}",
+                    f"--window-size={window_size['width']},{window_size['height']}",
                 ]
             if self.cfg["browser"] == "firefox":
                 options["firefox_user_prefs"] = {
