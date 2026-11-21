@@ -1,3 +1,5 @@
+# Test environment must be configured before importing the application.
+# ruff: noqa: E402
 import os
 import tempfile
 

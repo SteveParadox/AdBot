@@ -13,7 +13,7 @@ from ..db import AgentStep, AgentTask, emit, transaction
 from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
-from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, save_memory
+from .memory import action_key, decrypt_session, encrypt_session, relevant_memories
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError
 
 
@@ -57,6 +57,15 @@ class AgentRunner(Runner):
 
     def handle_popup(self, popup, initial):
         # Controller owns popup handling and explicit tab creation for agent jobs.
+        pass
+
+    def response_for(self, page):
+        if not hasattr(self, "controller"):
+            return super().response_for(page)
+        return next((tab.get("last_response") for tab in self.controller.tabs.values() if tab["page"] == page), None)
+
+    async def handle_dialog(self, dialog):
+        # Controller attaches one handler to every agent tab, including the first.
         pass
 
     def account(self, prompt, completion, latency, reserve, reservation=None, *, session=None):
@@ -207,17 +216,20 @@ class AgentRunner(Runner):
         planning = self.memory.get("planning")
         if planning:
             if planning["specification"]["output_format"] in {"csv", "json"}:
-                with transaction() as session:
-                    from ..db import DatasetExport
+                def validate_artifact():
+                    with transaction() as session:
+                        from ..db import DatasetExport
 
-                    artifact = session.get(DatasetExport, self.id)
-                    if (
-                        not artifact
-                        or not artifact.filename
-                        or artifact.rows < 1
-                        or not (settings().artifact_dir / "exports" / artifact.filename).is_file()
-                    ):
-                        raise ValueError("Requested export has not been produced and verified")
+                        artifact = session.get(DatasetExport, self.id)
+                        if (
+                            not artifact
+                            or not artifact.filename
+                            or artifact.rows < 1
+                            or not (settings().artifact_dir / "exports" / artifact.filename).is_file()
+                        ):
+                            raise ValueError("Requested export has not been produced and verified")
+
+                await database_call(validate_artifact)
             evaluate(
                 planning,
                 {"url": self.controller.page.url},
@@ -237,31 +249,18 @@ class AgentRunner(Runner):
             "planning": self.memory.get("planning"),
             "artifact": self.memory.get("export_artifact"),
         }
-        with transaction() as session:
-            job = owned_job(session, self.id, self.token)
-            task = session.get(AgentTask, self.id)
-            task.result = result
-            if self.options["memory_enabled"]:
-                save_memory(session, job, task)
-            emit(
-                session,
-                self.id,
-                "goal_verified",
-                "Objective verified against collected evidence",
-                claims=len(decision.claims),
-            )
+        # Publication belongs to worker finalization, after the final checkpoint
+        # and browser cleanup succeed. Verification alone is not completion.
         return result
 
-    async def execute_page(self, page, context):
-        controller = Controller(self, context, page, self.memory)
-        self.controller = controller
-        await context.unroute("**/*")
-        await context.route("**/*", controller.route)
+    async def restore_tabs(self, controller):
         previous_tabs = self.memory.get("tabs", [])
         if previous_tabs:
             first = previous_tabs[0]
             await controller.navigate(first["url"])
+            controller.tabs["t1"]["purpose"] = first["purpose"]
             controller.tabs["t1"]["history"] = first.get("history") or [first["url"]]
+            restored = {first["tab_id"]: "t1"}
             for tab in previous_tabs[1 : settings().agent_max_tabs]:
                 d = Decision(
                     observation="Restore durable URL",
@@ -272,13 +271,30 @@ class AgentRunner(Runner):
                     expected_result="Restore tab",
                 )
                 await controller.act(d, self.options)
-            # Tab IDs are session-local; recovery publishes the new IDs.
+                controller.tabs[controller.active]["history"] = tab.get("history") or [tab["url"]]
+                restored[tab["tab_id"]] = controller.active
+            active = restored.get(self.memory.get("active_tab"), "t1")
+            await controller.act(Decision(
+                observation="Restore durable active tab", decision="SWITCH_TAB", tab_id=active,
+                reason="Resume the previously active tab", confidence=1, expected_result="Restore tab focus",
+            ), self.options)
         else:
             await controller.navigate(self.snapshot["base_url"])
-        with transaction() as session:
-            start = session.scalar(
-                select(func.coalesce(func.max(AgentStep.number), 0)).where(AgentStep.job_id == self.id)
-            )
+
+    async def execute_page(self, page, context):
+        controller = Controller(self, context, page, self.memory)
+        self.controller = controller
+        await context.unroute("**/*")
+        await context.route("**/*", controller.route)
+        await self.restore_tabs(controller)
+        def read_start():
+            with transaction() as session:
+                start = session.scalar(
+                    select(func.coalesce(func.max(AgentStep.number), 0)).where(AgentStep.job_id == self.id)
+                )
+            return start
+
+        start = await database_call(read_start)
         stagnant, last_fingerprint, consecutive_failures = 0, None, 0
         for number in range(start + 1, self.options["max_steps"] + 1):
             await self.gate.wait()
@@ -289,21 +305,25 @@ class AgentRunner(Runner):
             await self.prepare_plan(observation)
             if observation["url"] not in self.memory["visited_urls"]:
                 self.memory["visited_urls"].append(observation["url"])
-            with transaction() as session:
-                owned_job(session, self.id, self.token)
-                step = AgentStep(job_id=self.id, number=number, observation=observation)
-                session.add(step)
-                session.flush()
-                step_id = step.id
-                emit(
-                    session,
-                    self.id,
-                    "agent_observed",
-                    "Page observed",
-                    step_id=step_id,
-                    url=observation["url"],
-                    screenshot_path=observation["screenshot_path"],
-                )
+            def record_observation():
+                with transaction() as session:
+                    owned_job(session, self.id, self.token)
+                    step = AgentStep(job_id=self.id, number=number, observation=observation)
+                    session.add(step)
+                    session.flush()
+                    step_id = step.id
+                    emit(
+                        session,
+                        self.id,
+                        "agent_observed",
+                        "Page observed",
+                        step_id=step_id,
+                        url=observation["url"],
+                        screenshot_path=observation["screenshot_path"],
+                    )
+                return step_id
+
+            step_id = await database_call(record_observation)
             decision = None
             try:
                 with controller.engine.phase("decision"):
@@ -337,24 +357,30 @@ class AgentRunner(Runner):
                     for f in self.memory["failures"]
                 ):
                     raise ValueError("Repeated failed action on unchanged page; choose a different approach")
-                with transaction() as session:
-                    owned_job(session, self.id, self.token)
-                    step = session.get(AgentStep, step_id)
-                    step.decision = decision.model_dump()
-                    emit(
-                        session,
-                        self.id,
-                        "agent_decision",
-                        decision.reason,
-                        step_id=step_id,
-                        decision=decision.model_dump(),
-                    )
+                def record_decision():
+                    with transaction() as session:
+                        owned_job(session, self.id, self.token)
+                        step = session.get(AgentStep, step_id)
+                        step.decision = decision.model_dump()
+                        emit(
+                            session,
+                            self.id,
+                            "agent_decision",
+                            decision.reason,
+                            step_id=step_id,
+                            decision=decision.model_dump(),
+                        )
+
+                await database_call(record_decision)
                 approved = await self.review(step_id, decision, controller, observation)
                 await self.gate.wait()
                 # Mark in-flight before any interaction, for ambiguity detection.
-                with transaction() as session:
-                    owned_job(session, self.id, self.token)
-                    session.get(AgentStep, step_id).status = "executing"
+                def mark_executing():
+                    with transaction() as session:
+                        owned_job(session, self.id, self.token)
+                        session.get(AgentStep, step_id).status = "executing"
+
+                await database_call(mark_executing)
                 if decision.decision == "EXTRACT_DATASET":
                     if not self.snapshot.get("extraction"):
                         raise ValueError("Configure an owned extraction dataset before structured capture")
@@ -378,7 +404,9 @@ class AgentRunner(Runner):
                     outcome = {"summary": self.memory["summary"]}
                 else:
                     outcome = await controller.act(decision, self.options, approved)
-                after = await controller.observe()
+                # COMPLETE has no browser side effect; the current observation
+                # already grounds its evidence. Do not add a fallible browser read.
+                after = observation if decision.decision == "COMPLETE" else await controller.observe()
                 if (
                     self.snapshot.get("extraction")
                     and decision.decision != "EXTRACT_DATASET"
@@ -425,26 +453,30 @@ class AgentRunner(Runner):
                         "outcome": outcome if decision.decision != "COMPLETE" else "Verified result",
                     }
                 )
-                with transaction() as session:
-                    owned_job(session, self.id, self.token)
-                    step = session.get(AgentStep, step_id)
-                    step.status, step.outcome = "succeeded", outcome
-                    emit(
-                        session,
-                        self.id,
-                        "agent_action_completed",
-                        f"{decision.decision} observed",
-                        interaction=outcome.get("interaction"),
-                        trace=outcome["trace"],
-                        traffic_kind="automated",
-                        step_id=step_id,
-                        url=after["url"],
-                        screenshot_path=after["screenshot_path"],
-                        page_changed=outcome["page_changed"],
-                    )
                 await self.checkpoint(controller)
+                def record_success():
+                    with transaction() as session:
+                        owned_job(session, self.id, self.token)
+                        step = session.get(AgentStep, step_id)
+                        step.status, step.outcome = "succeeded", outcome
+                        emit(
+                            session,
+                            self.id,
+                            "agent_action_completed",
+                            f"{decision.decision} observed",
+                            interaction=outcome.get("interaction"),
+                            trace=outcome["trace"],
+                            traffic_kind="automated",
+                            step_id=step_id,
+                            url=after["url"],
+                            screenshot_path=after["screenshot_path"],
+                            page_changed=outcome["page_changed"],
+                        )
+
+                await database_call(record_success)
                 consecutive_failures = 0
                 if decision.decision == "COMPLETE":
+                    self.verified_result = outcome
                     return
                 from .planning import track_progress
 
@@ -461,11 +493,7 @@ class AgentRunner(Runner):
                     raise RuntimeError("Agent stopped after repeated actions without observable progress")
             except ModelDeadlineExceeded:
                 raise
-            except (ValueError, PermissionError, ModelError, BrowserError) as exc:
-                if isinstance(exc, BrowserError) and (
-                    controller.page.is_closed() or not context.browser.is_connected()
-                ):
-                    raise BrowserCrashed("Agent browser disconnected") from exc
+            except (ValueError, PermissionError, ModelError, BrowserError, BrowserCrashed) as exc:
                 decision_data = locals().get("decision")
                 key = (
                     action_key(decision_data.model_dump()) if isinstance(decision_data, Decision) else f"model:{number}"
@@ -477,9 +505,6 @@ class AgentRunner(Runner):
                         "error": controller.observer.safe_text(str(exc))[:500],
                     }
                 )
-                # Re-observe before replanning; never replay ambiguous input.
-                with controller.engine.phase("recovery"):
-                    recovered = await controller.observe()
                 from .planning import replan
 
                 ambiguous_write = bool(
@@ -487,6 +512,7 @@ class AgentRunner(Runner):
                     and decision
                     and decision.decision in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
                 )
+                original_error = controller.observer.safe_text(str(exc))[:500]
                 if ambiguous_write:
                     exc = PermissionError(
                         "Input may have modified external state; inspect the failed action before starting another task"
@@ -495,27 +521,39 @@ class AgentRunner(Runner):
                 safe_reason = (
                     PermissionError(safe_error) if isinstance(exc, PermissionError) else ValueError(safe_error)
                 )
-                category = replan(self.memory["planning"], safe_reason, recovered)
-                with transaction() as session:
-                    owned_job(session, self.id, self.token)
-                    task = session.get(AgentTask, self.id)
-                    task.pending_step_id = None
-                    step = session.get(AgentStep, step_id)
-                    step.status, step.outcome = (
-                        "failed",
-                        {
-                            "error": safe_error[:500],
-                            "replanning": True,
-                            "failure_classification": category,
-                            "uncertain_submission": ambiguous_write,
-                            "trace": controller.observer.sanitize(controller.engine.trace.copy()),
-                            "traffic_kind": "automated",
-                        },
-                    )
-                    emit(session, self.id, "agent_replanning", safe_error[:500], step_id=step_id)
-                await self.checkpoint(controller)
+                # Persist ambiguity before any browser read or cookie checkpoint:
+                # either can fail when the dispatch destroyed the page.
+                category = "uncertain_submission" if ambiguous_write else replan(self.memory["planning"], safe_reason, observation)
+                def record_failure():
+                    with transaction() as session:
+                        owned_job(session, self.id, self.token)
+                        task = session.get(AgentTask, self.id)
+                        task.pending_step_id = None
+                        step = session.get(AgentStep, step_id)
+                        step.status, step.outcome = (
+                            "failed",
+                            {
+                                "error": safe_error[:500],
+                                "cause": original_error,
+                                "replanning": not ambiguous_write,
+                                "failure_classification": category,
+                                "uncertain_submission": ambiguous_write,
+                                "trace": controller.observer.sanitize(controller.engine.trace.copy()),
+                                "traffic_kind": "automated",
+                            },
+                        )
+                        emit(session, self.id, "agent_action_failed" if ambiguous_write else "agent_replanning",
+                             safe_error[:500], step_id=step_id)
+
+                await database_call(record_failure)
                 if ambiguous_write:
                     raise RuntimeError(str(exc)) from exc
+                try:
+                    with controller.engine.phase("recovery"):
+                        await controller.observe()
+                except (BrowserError, BrowserCrashed) as recovery_error:
+                    raise BrowserCrashed("Agent browser unavailable during recovery") from recovery_error
+                await self.checkpoint(controller)
                 if category == "terminal":
                     raise RuntimeError(str(exc)) from exc
                 consecutive_failures += 1

@@ -29,6 +29,13 @@ def fixture_server():
 
 
 async def test_real_crawl_persists_pages_screenshots_and_robots(client, target, fixture_server):
+    # This verifies crawl output, not deadline enforcement. Browser startup and
+    # screenshots can exceed the shared fixture's 20s budget on a busy host.
+    body = {k: target[k] for k in ("name", "base_url", "allowed_domains", "configuration")}
+    body["configuration"] = {**body["configuration"], "max_duration_seconds": 60}
+    body["authorized"] = True
+    response = client.patch("/api/websites/" + target["id"], json=body)
+    assert response.status_code == 200, response.text
     identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
     await execute(*claim())
     job = client.get(f"/api/jobs/{identifier}").json()
@@ -150,3 +157,63 @@ async def test_browser_crash_retry_budget(client, target, monkeypatch):
     for expected in ["queued", "queued", "failed"]:
         await execute(*claim())
         assert client.get(f"/api/jobs/{identifier}").json()["status"] == expected
+
+
+async def test_concurrent_workers_keep_navigation_and_session_private(client, target, fixture_server, monkeypatch):
+    from app.browser import Runner
+
+    body = {k: target[k] for k in ("name", "base_url", "allowed_domains", "configuration")}
+    body["configuration"] = {**body["configuration"], "max_duration_seconds": 60}
+    body["authorized"] = True
+    assert client.patch("/api/websites/" + target["id"], json=body).status_code == 200
+    identifiers = [client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"] for _ in range(2)]
+    # Production domain leases serialize same-origin jobs. Seed a second valid
+    # execution lease to stress browser isolation independently of scheduling.
+    from app.db import Job, transaction, uid
+    claims = [claim()]
+    token = uid()
+    with transaction() as session:
+        job = session.get(Job, identifiers[1])
+        job.status, job.lease_token = "running", token
+        job.started_at, job.lease_until = time.time(), time.time() + 120
+    claims.append((identifiers[1], token))
+    ready = {identifier: asyncio.Event() for identifier in identifiers}
+    release = asyncio.Event()
+    resources = {}
+
+    async def isolated_activity(self, page, context):
+        await page.goto(target["base_url"])
+        # Both jobs write the same origin/key with different values.
+        await context.add_cookies([{"name": "owner", "value": self.id, "url": target["base_url"]}])
+        await page.evaluate("value => localStorage.setItem('owner', value)", self.id)
+        if self.id == identifiers[0]:
+            await page.goto(target["base_url"] + "about")
+        resources[self.id] = (context.browser, context, page)
+        ready[self.id].set()
+        await release.wait()
+        assert (await context.cookies())[0]["value"] == self.id
+        assert await page.evaluate("localStorage.getItem('owner')") == self.id
+        assert page.url == target["base_url"]
+
+    monkeypatch.setattr(Runner, "execute_page", isolated_activity)
+    tasks = [asyncio.create_task(execute(*item)) for item in claims]
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in ready.values())), 40)
+        first, second = (resources[identifier] for identifier in identifiers)
+        assert all(a is not b for a, b in zip(first, second))
+        assert first[2].url.endswith("/about")
+        assert second[2].url == target["base_url"]
+        tasks[0].cancel()
+        await asyncio.wait_for(tasks[0], 10)
+        assert not first[0].is_connected()
+        assert second[0].is_connected()
+        release.set()
+        await asyncio.wait_for(tasks[1], 10)
+        assert not second[0].is_connected()
+        assert client.get(f"/api/jobs/{identifiers[0]}").json()["status"] == "cancelled"
+        assert client.get(f"/api/jobs/{identifiers[1]}").json()["status"] == "completed"
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

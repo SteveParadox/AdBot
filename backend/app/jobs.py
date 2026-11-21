@@ -216,14 +216,15 @@ def recover_expired():
                 )
                 unsafe = bool(
                     last
-                    and last.status == "executing"
+                    and (last.status == "executing" or (last.outcome or {}).get("uncertain_submission"))
                     and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
                 )
                 task = session.get(AgentTask, job.id)
                 task.pending_step_id = None
                 if last and last.status in {"executing", "waiting_user"}:
                     last.status = "interrupted"
-                    last.outcome = {"error": "Worker lease expired before a durable action outcome"}
+                    last.outcome = {"error": "Worker lease expired before a durable action outcome",
+                                    "uncertain_submission": unsafe}
             job.status = (
                 "cancelled" if job.cancel_requested else "failed" if unsafe or job.retry_count >= recovery_limit else "queued"
             )
@@ -233,6 +234,8 @@ def recover_expired():
                 job.error_message = (
                     "Worker lease expired; manual review required" if unsafe else "Worker recovery limit reached"
                 )
+                from .failures import diagnose
+                job.execution_state = {**job.execution_state, "failure": diagnose(session, job, job.error_message)}
             session.execute(
                 update(Frontier)
                 .where(Frontier.job_id == job.id, Frontier.crawl_status == "visiting")

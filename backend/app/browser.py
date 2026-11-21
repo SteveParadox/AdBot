@@ -8,6 +8,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 from playwright.async_api import async_playwright
+from playwright.async_api import Error as BrowserError
 from playwright.async_api import TimeoutError as NavigationTimeout
 from sqlalchemy import select
 
@@ -17,6 +18,7 @@ from .egress import egress_proxy
 from .jobs import owned_job
 from .security import Policy, PolicyError
 from . import polymorph
+from .browser_ownership import exclusive_owner
 
 
 USER_AGENT = "Adbot/1.0.0"  # Legacy import compatibility; live requests use the session identity.
@@ -147,7 +149,7 @@ class Runner:
                         self.log("retry_scheduled", "Navigation timed out; retry scheduled", seconds=delay)
                         await asyncio.sleep(delay * random.uniform(0.9, 1.1))
             else:
-                response = self.last_response
+                response = self.response_for(page)
             self.policy.check(page.url)
             if response and response.status in {429, 503}:
                 raise RateLimited(response.headers.get("retry-after"))
@@ -401,6 +403,17 @@ class Runner:
         if popup != initial:
             asyncio.create_task(popup.close())
 
+    def response_for(self, page):
+        response = self.last_response
+        return response if response is not None and response.frame == page.main_frame else None
+
+    async def handle_dialog(self, dialog):
+        try:
+            await dialog.dismiss()
+        except BrowserError:
+            # A page/context can close while its dialog event is queued.
+            pass
+
     async def execute_page(self, page, context):
         if "workflow" in self.snapshot:
             await self.workflow(page)
@@ -408,6 +421,11 @@ class Runner:
             await self.crawl(page)
 
     async def run(self):
+        # Claim before the first await: a rejected run must not mutate runner state.
+        with exclusive_owner(self, self, "Runner"):
+            await self._run_isolated()
+
+    async def _run_isolated(self):
         self.crawl_delay = 0
         async with (
             egress_proxy(self.policy, self.proxy_method_allowed, session=self.id) as proxy,
@@ -436,32 +454,36 @@ class Runner:
                     "media.peerconnection.enabled": False,
                 }
             browser = await engine.launch(**options)
-            try:
-                mobile = self.cfg["viewport"] == "mobile"
-                vp = polymorph.get_random_viewport() if not mobile else {"width": 390, "height": 844}
-                context = await browser.new_context(
-                    viewport={"width": vp["width"] if not mobile else 390, "height": vp["height"] if not mobile else 844},
-                    user_agent=self.user_agent,
-                    service_workers="block",
-                    **self.context_options(),
-                )
-                await context.route("**/*", self.route)
-                await context.route_web_socket("**/*", lambda ws: ws.close())
-                page = await context.new_page()
-                self.last_response = None
+            with exclusive_owner(browser, self, "Browser"):
+                await self._execute_browser(browser)
 
-                def remember_response(response):
-                    if response.request.is_navigation_request() and response.frame == page.main_frame:
-                        self.last_response = response
+    async def _execute_browser(self, browser):
+        try:
+            mobile = self.cfg["viewport"] == "mobile"
+            vp = polymorph.get_random_viewport() if not mobile else {"width": 390, "height": 844}
+            context = await browser.new_context(
+                viewport={"width": vp["width"] if not mobile else 390, "height": vp["height"] if not mobile else 844},
+                user_agent=self.user_agent,
+                service_workers="block",
+                **self.context_options(),
+            )
+            await context.route("**/*", self.route)
+            await context.route_web_socket("**/*", lambda ws: ws.close())
+            page = await context.new_page()
+            self.last_response = None
 
-                page.on("response", remember_response)
-                page.set_default_timeout(self.cfg["navigation_timeout_ms"])
-                context.on("page", lambda popup: self.handle_popup(popup, page))
-                page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
-                self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
-                await self.execute_page(page, context)
-            finally:
-                await asyncio.wait_for(browser.close(), 10)
+            def remember_response(response):
+                if response.request.is_navigation_request() and response.frame == page.main_frame:
+                    self.last_response = response
+
+            page.on("response", remember_response)
+            page.set_default_timeout(self.cfg["navigation_timeout_ms"])
+            context.on("page", lambda popup: self.handle_popup(popup, page))
+            page.on("dialog", self.handle_dialog)
+            self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
+            await self.execute_page(page, context)
+        finally:
+            await asyncio.wait_for(browser.close(), 10)
 
 
 class RateLimited(Exception):
