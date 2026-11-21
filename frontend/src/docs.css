@@ -1,4 +1,4 @@
-.docs-shell{min-height:100vh;background:#f8fafc;color:#202633;font-size:1rem;line-height:1.75}
+.docs-shell{--docs-body-size:max(1rem,16px);min-height:100vh;background:#f8fafc;color:#202633;font-size:var(--docs-body-size);line-height:1.75}
 .docs-shell a{color:#315cc6;text-decoration:none}.docs-shell a:hover{text-decoration:underline}.docs-shell :focus-visible{outline:3px solid #4169d1;outline-offset:4px}
 .docs-header{height:auto;min-height:76px;padding:16px max(24px,calc((100vw - 1320px)/2));display:flex;align-items:center;justify-content:space-between;gap:20px;background:white;border-bottom:1px solid #e1e6ee;position:static}
 .docs-brand{display:flex;align-items:center;gap:10px;font-size:1.3rem;font-weight:750;color:#202633!important}.docs-brand span{font-size:.9rem;font-weight:500;color:#69758b;border-left:1px solid #dce1eb;padding-left:12px}
@@ -14,10 +14,18 @@
 
 /* Keep the standalone guide independent of workspace element styles. */
 .docs-shell .docs-header{font-size:1rem;color:#202633}
-.docs-shell .docs-sidebar{inset:auto;z-index:auto}
+.docs-shell .docs-sidebar{inset:0 auto auto auto;z-index:auto}
 .docs-shell .docs-sidebar nav{display:block;overflow:visible;margin:0}
 .docs-shell .docs-toc{display:flex;flex-direction:row;overflow:visible;margin-top:0}
 .docs-shell .docs-pagination{display:grid;overflow:visible}
 .docs-shell main.docs-article{margin:0;padding:48px 64px 32px;max-width:1000px}
 @media(max-width:800px){.docs-shell main.docs-article{padding:32px 24px}}
 @media(max-width:600px){.docs-shell .docs-sidebar nav{max-height:240px;overflow:auto}.docs-shell main.docs-article{padding:28px 20px}}
+
+.docs-shell .docs-search input,.docs-shell .docs-nav-group a,.docs-shell .docs-toc,
+.docs-shell .docs-cards span,.docs-shell .docs-footer,.docs-shell .docs-pagination small,
+.docs-shell .docs-nav-group h2,.docs-shell .docs-result-count{font-size:max(.9375rem,14px)}
+.docs-shell{overflow-wrap:anywhere}
+.docs-shell .docs-pagination{min-width:0}
+.docs-entry{flex-shrink:0;white-space:nowrap}
+@media(prefers-reduced-motion:reduce){html:has(.docs-shell){scroll-behavior:auto}}

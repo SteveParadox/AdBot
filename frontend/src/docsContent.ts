@@ -310,6 +310,31 @@ export const docs: DocPage[] = [
           "Invalid structured output, provider quotas, unavailable models and exhausted budgets can stop a task. An operator may configure an approved local fallback. No local model is bundled or downloaded automatically; inspect failure details before increasing limits."
         ],
         "steps": []
+      },
+      {
+        "id": "autonomy-modes",
+        "title": "Choose an autonomy mode",
+        "paragraphs": [
+          "Supervised mode offers live progress and intervention. Autonomous mode enables clicks and browsing. Assisted mode keeps clicks autonomous while other actions may require review. Clicks do not automatically require sensitive-action approval; other permissions and server policies still apply. Read any pending review before responding."
+        ],
+        "steps": []
+      },
+      {
+        "id": "optional-capabilities",
+        "title": "Forms, downloads and visual reasoning",
+        "paragraphs": [
+          "Enable Allow form input and search only when the task needs it. Allow bounded downloads opts into permitted downloads within server limits. Vision-capable model is available only when the operator enables visual reasoning and configures a compatible model. Disabled options require operator configuration; selecting a mode does not enable them."
+        ],
+        "steps": []
+      },
+      {
+        "id": "memory-and-sessions",
+        "title": "Reusable memory and encrypted sessions",
+        "paragraphs": [
+          "Reuse successful task memory uses prior successful, cited results scoped to this workspace and target; historical hints are checked against current pages. Inspect stored hints under Reusable task memory and use Forget memory to delete an entry.",
+          "Encrypted browser session is available only when enabled by the operator. It can preserve sensitive browser state, so use it only for the intended target and keep the server encryption key protected. Task memory and browser-session persistence serve different purposes."
+        ],
+        "steps": []
       }
     ]
   },
@@ -734,6 +759,14 @@ export const docs: DocPage[] = [
 
 export function matchDocsPath(path: string): boolean { return path === "/docs" || path.startsWith("/docs/"); }
 export function findDoc(path: string): DocPage | undefined {
-  const slug = path.replace(/^\/docs\/?/, "").replace(/\/$/, "") || "introduction";
-  return docs.find(page => page.slug === slug);
+  const match = /^\/docs(?:\/([^/]+))?\/?$/.exec(path);
+  if (!match) return undefined;
+  return docs.find(page => page.slug === (match[1] || "introduction"));
+}
+
+export function searchDocs(search: string): DocPage[] {
+  const query = search.trim().toLocaleLowerCase();
+  return docs.filter(page => [page.title, page.description,
+    ...page.sections.flatMap(section => [section.title, ...section.paragraphs, ...section.steps]),
+  ].join(" ").toLocaleLowerCase().includes(query));
 }

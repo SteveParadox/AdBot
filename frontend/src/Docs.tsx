@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { BookOpen, Radar, Search } from "lucide-react";
-import { docs, findDoc } from "./docsContent";
+import { docs, findDoc, searchDocs } from "./docsContent";
 import "./docs.css";
 
 export default function Docs({ path = window.location.pathname }: { path?: string }) {
@@ -8,7 +8,7 @@ export default function Docs({ path = window.location.pathname }: { path?: strin
   const page = findDoc(path);
   const index = docs.findIndex(item => item.slug === page?.slug);
   const query = search.trim().toLocaleLowerCase();
-  const results = docs.filter(item => [item.title, item.description, ...item.sections.flatMap(section => [section.title, ...section.paragraphs, ...section.steps])].join(" ").toLocaleLowerCase().includes(query));
+  const results = searchDocs(search);
   useEffect(() => { document.title = `${page?.title ?? "Guide not found"} | AdBot Docs`; }, [page]);
   return <div className="docs-shell">
     <a className="docs-skip" href="#docs-main">Skip to documentation</a>
