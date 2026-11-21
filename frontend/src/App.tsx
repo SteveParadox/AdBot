@@ -3,6 +3,7 @@ import { JobFailure } from "./JobFailure";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  BookOpen,
   Activity,
   Search,
   Grid2X2,
@@ -212,6 +213,7 @@ export default function App() {
               Connect workspace <ArrowUpRight size={16} />
             </Button>
           </form>
+          <a className="docs-entry" href="/docs"><BookOpen size={18}/>Read the documentation</a>
           <small>
             Use the key configured on your AdBot server. Your key stays in this
             browser session.
@@ -263,6 +265,7 @@ export default function App() {
               )}
             </button>
           ))}
+          <a className="docs-entry" href="/docs"><BookOpen size={18}/>Documentation</a>
         </nav>
         <div className="sidebar-bottom">
           <div className="safety">
