@@ -17,6 +17,7 @@ from .egress import egress_proxy
 from .jobs import owned_job
 from .security import Policy, PolicyError
 from . import polymorph
+from .browser_ownership import exclusive_owner
 
 
 USER_AGENT = "Adbot/1.0.0"  # Legacy import compatibility; live requests use the session identity.
@@ -366,6 +367,11 @@ class Runner:
             await self.crawl(page)
 
     async def run(self):
+        # Claim before the first await: a rejected run must not mutate runner state.
+        with exclusive_owner(self, self, "Runner"):
+            await self._run_isolated()
+
+    async def _run_isolated(self):
         self.crawl_delay = 0
         async with egress_proxy(self.policy, self.proxy_method_allowed, session=self.id) as proxy, async_playwright() as playwright:
             from .outbound import manager
@@ -389,32 +395,36 @@ class Runner:
                     "media.peerconnection.enabled": False,
                 }
             browser = await engine.launch(**options)
-            try:
-                mobile = self.cfg["viewport"] == "mobile"
-                vp = polymorph.get_random_viewport() if not mobile else {"width": 390, "height": 844}
-                context = await browser.new_context(
-                    viewport={"width": vp["width"] if not mobile else 390, "height": vp["height"] if not mobile else 844},
-                    user_agent=self.user_agent,
-                    service_workers="block",
-                    **self.context_options(),
-                )
-                await context.route("**/*", self.route)
-                await context.route_web_socket("**/*", lambda ws: ws.close())
-                page = await context.new_page()
-                self.last_response = None
+            with exclusive_owner(browser, self, "Browser"):
+                await self._execute_browser(browser)
 
-                def remember_response(response):
-                    if response.request.is_navigation_request() and response.frame == page.main_frame:
-                        self.last_response = response
+    async def _execute_browser(self, browser):
+        try:
+            mobile = self.cfg["viewport"] == "mobile"
+            vp = polymorph.get_random_viewport() if not mobile else {"width": 390, "height": 844}
+            context = await browser.new_context(
+                viewport={"width": vp["width"] if not mobile else 390, "height": vp["height"] if not mobile else 844},
+                user_agent=self.user_agent,
+                service_workers="block",
+                **self.context_options(),
+            )
+            await context.route("**/*", self.route)
+            await context.route_web_socket("**/*", lambda ws: ws.close())
+            page = await context.new_page()
+            self.last_response = None
 
-                page.on("response", remember_response)
-                page.set_default_timeout(self.cfg["navigation_timeout_ms"])
-                context.on("page", lambda popup: self.handle_popup(popup, page))
-                page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
-                self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
-                await self.execute_page(page, context)
-            finally:
-                await asyncio.wait_for(browser.close(),10)
+            def remember_response(response):
+                if response.request.is_navigation_request() and response.frame == page.main_frame:
+                    self.last_response = response
+
+            page.on("response", remember_response)
+            page.set_default_timeout(self.cfg["navigation_timeout_ms"])
+            context.on("page", lambda popup: self.handle_popup(popup, page))
+            page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
+            self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
+            await self.execute_page(page, context)
+        finally:
+            await asyncio.wait_for(browser.close(), 10)
 
 
 class RateLimited(Exception):
