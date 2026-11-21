@@ -8,6 +8,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 from playwright.async_api import async_playwright
+from playwright.async_api import Error as BrowserError
 from playwright.async_api import TimeoutError as NavigationTimeout
 from sqlalchemy import select
 
@@ -147,7 +148,7 @@ class Runner:
                         self.log("retry_scheduled", "Navigation timed out; retry scheduled", seconds=delay)
                         await asyncio.sleep(delay * random.uniform(0.9, 1.1))
             else:
-                response = self.last_response
+                response = self.response_for(page)
             self.policy.check(page.url)
             if response and response.status in {429, 503}:
                 raise RateLimited(response.headers.get("retry-after"))
@@ -401,6 +402,17 @@ class Runner:
         if popup != initial:
             asyncio.create_task(popup.close())
 
+    def response_for(self, page):
+        response = self.last_response
+        return response if response is not None and response.frame == page.main_frame else None
+
+    async def handle_dialog(self, dialog):
+        try:
+            await dialog.dismiss()
+        except BrowserError:
+            # A page/context can close while its dialog event is queued.
+            pass
+
     async def execute_page(self, page, context):
         if "workflow" in self.snapshot:
             await self.workflow(page)
@@ -456,7 +468,7 @@ class Runner:
                 page.on("response", remember_response)
                 page.set_default_timeout(self.cfg["navigation_timeout_ms"])
                 context.on("page", lambda popup: self.handle_popup(popup, page))
-                page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
+                page.on("dialog", self.handle_dialog)
                 self.log("browser_launched", "Isolated browser context launched", engine=self.cfg["browser"])
                 await self.execute_page(page, context)
             finally:

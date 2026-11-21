@@ -14,7 +14,7 @@ from .resources import ResourceMonitor, pressured
 from .privacy import install_redaction
 from .outbound import manager
 from .db import AgentStep, AgentTask, Frontier, Job, Lease, emit, transaction
-from .jobs import claim, heartbeat, owned_job, recover_expired
+from .jobs import acquire, claim, heartbeat, owned_job, recover_expired
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 install_redaction()
@@ -36,6 +36,10 @@ async def _execute(job_id, token):
     def initialize():
         with transaction() as session:
             kind = owned_job(session, job_id, token).job_type
+            # Claiming a job and starting its runner are separate boundaries.
+            # Duplicate delivery of the same token must not launch two browsers.
+            if not acquire(session, "execution:" + job_id, token, time.time()):
+                return None
         try:
             if kind == 'export':
                 from .extraction.exporter import ExportRunner
@@ -51,6 +55,9 @@ async def _execute(job_id, token):
                 job = owned_job(session, job_id, token)
                 job.status, job.completed_at = "failed", time.time()
                 job.error_message = "Job initialization failed; inspect configuration and encrypted session key"
+                job.lease_until = 0
+                from .failures import diagnose
+                job.execution_state = {**job.execution_state, "failure": diagnose(session, job, job.error_message)}
                 emit(session, job_id, "failed", job.error_message)
                 session.execute(update(Lease).where(Lease.token == token).values(expires_at=0))
             return None
@@ -122,7 +129,7 @@ async def _execute(job_id, token):
         watcher.cancel()
         await asyncio.gather(browser_task, watcher, return_exceptions=True)
         def finalize():
-            nonlocal status
+            nonlocal status, error
             with transaction() as session:
                 job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 if status and job and job.lease_token == token and job.lease_until > time.time():
@@ -141,7 +148,7 @@ async def _execute(job_id, token):
                             )
                             safe = not (
                                 last
-                                and last.status == "executing"
+                                and (last.status == "executing" or (last.outcome or {}).get("uncertain_submission"))
                                 and last.decision.get("decision") in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
                             )
                             if safe and last and last.status in {"observed", "executing"}:
@@ -162,6 +169,21 @@ async def _execute(job_id, token):
                     if error:
                         job.execution_state = {**job.execution_state, "failure": {**job.execution_state["failure"], "automatic_retry_scheduled": status == "queued" and not job.cancel_requested}}
                     job.status = "cancelled" if job.cancel_requested else status
+                    if kind == "agent" and job.status == "completed":
+                        result = getattr(runner, "verified_result", None)
+                        if result is None:
+                            job.status = "failed"
+                            status, error = "failed", "Agent stopped without a durable verified result"
+                            from .failures import diagnose
+                            job.execution_state = {**job.execution_state, "failure": diagnose(session, job, error)}
+                        else:
+                            task = session.get(AgentTask, job_id)
+                            task.result = result
+                            if task.options["memory_enabled"]:
+                                from .agent.memory import save_memory
+                                save_memory(session, job, task)
+                            emit(session, job_id, "goal_verified", "Objective verified against collected evidence",
+                                 claims=len(result["claims"]))
                     job.completed_at = None if job.status == "queued" else time.time()
                     if not error and job.status == "completed":
                         job.execution_state = {k: v for k, v in job.execution_state.items() if k != "failure"}
@@ -175,8 +197,19 @@ async def _execute(job_id, token):
                             select(AgentStep).where(AgentStep.job_id == job_id).order_by(AgentStep.number.desc()).limit(1)
                         )
                         if step and step.status in {"observed", "waiting_user", "executing"}:
+                            uncertain = step.status == "executing" and (step.decision or {}).get("decision") in {
+                                "CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"
+                            }
                             step.status = job.status if job.status != "completed" else "failed"
-                            step.outcome = {"error": error or "Task stopped before a durable step outcome"}
+                            step.outcome = {"error": error or "Task stopped before a durable step outcome",
+                                            "uncertain_submission": uncertain}
+                            if uncertain and not error:
+                                from .failures import diagnose
+                                job.execution_state = {
+                                    **job.execution_state,
+                                    "failure": diagnose(session, job, "Task stopped during input; external outcome is uncertain"),
+                                }
+                    status = job.status
                     emit(session, job_id, job.status, f"Job {job.status}", error=error)
                     if job.snapshot.get('extraction'):
                         from .extraction.persistence import finish

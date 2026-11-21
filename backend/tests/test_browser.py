@@ -29,6 +29,13 @@ def fixture_server():
 
 
 async def test_real_crawl_persists_pages_screenshots_and_robots(client, target, fixture_server):
+    # This verifies crawl output, not deadline enforcement. Browser startup and
+    # screenshots can exceed the shared fixture's 20s budget on a busy host.
+    body = {k: target[k] for k in ("name", "base_url", "allowed_domains", "configuration")}
+    body["configuration"] = {**body["configuration"], "max_duration_seconds": 60}
+    body["authorized"] = True
+    response = client.patch("/api/websites/" + target["id"], json=body)
+    assert response.status_code == 200, response.text
     identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
     await execute(*claim())
     job = client.get(f"/api/jobs/{identifier}").json()

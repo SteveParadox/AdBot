@@ -3,8 +3,10 @@ import time
 from urllib.parse import urlsplit, urljoin
 import httpx
 from playwright.async_api import TimeoutError as PlaywrightTimeout
+from playwright.async_api import Error as BrowserError
 
 from ..config import settings
+from ..browser import BrowserCrashed
 from ..db import uid
 from ..security import PolicyError
 from .observe import Observer
@@ -24,19 +26,47 @@ class Controller:
         self.mutation = None
         self.egress_grant = None
         self.creating = False
+        self.crashed_pages = set()
         context.on("page", self.popup)
-        page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
+        self.watch_page(page)
+
+    def watch_page(self, page):
+        page.on("crash", lambda _: self.crashed_pages.add(page))
+        page.on("dialog", self.dismiss_dialog)
         page.on("response", self.remember_response)
 
+    async def dismiss_dialog(self, dialog):
+        try:
+            await dialog.dismiss()
+        except BrowserError:
+            # The context may have closed before this event could be handled.
+            pass
+
+    def check_page(self, page=None):
+        page = page if page is not None else self.page
+        if page.is_closed() or page in self.crashed_pages or not self.context.browser.is_connected():
+            raise BrowserCrashed("Agent browser page closed, crashed or disconnected")
+
+    def prune_tabs(self):
+        for key, tab in list(self.tabs.items()):
+            if key != self.active and tab["page"].is_closed():
+                self.crashed_pages.discard(tab["page"])
+                del self.tabs[key]
+
     def remember_response(self, response):
-        if response.request.is_navigation_request() and response.frame == self.page.main_frame:
-            self.runner.last_response = response
+        if response.request.is_navigation_request():
+            for tab in self.tabs.values():
+                if response.frame == tab["page"].main_frame:
+                    tab["last_response"] = response
+                    break
 
     def popup(self, page):
         if not self.creating:
             asyncio.create_task(page.close())
 
     async def observe(self):
+        self.check_page()
+        self.prune_tabs()
         planning = self.memory.get("planning", {})
         active = next(
             (n for n in planning.get("plan", {}).get("subtasks", []) if n["id"] == planning.get("active_subtask")), {}
@@ -120,6 +150,8 @@ class Controller:
         }
 
     async def act(self, decision, options, approved=False):
+        self.check_page()
+        self.prune_tabs()
         action = decision.decision
         result = {}
         before_url = self.page.url
@@ -284,6 +316,7 @@ class Controller:
             if len(self.tabs) >= settings().agent_max_tabs:
                 raise ValueError("Tab budget exhausted; close a tab first")
             await self.runner.permitted(decision.url)
+            previous_id, previous_page = self.active, self.page
             self.creating = True
             try:
                 self.page = await self.context.new_page()
@@ -291,19 +324,30 @@ class Controller:
                 self.creating = False
             self.active = uid()[:8]
             self.tabs[self.active] = {"page": self.page, "purpose": decision.reason, "history": []}
-            self.page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
-            self.page.on("response", self.remember_response)
-            await self.navigate(decision.url)
+            self.watch_page(self.page)
+            try:
+                await self.navigate(decision.url)
+            except BaseException:
+                failed_page = self.page
+                del self.tabs[self.active]
+                self.active, self.page = previous_id, previous_page
+                try:
+                    await failed_page.close()
+                except Exception:
+                    pass  # Preserve the navigation/cancellation error.
+                raise
         elif action == "SWITCH_TAB":
             if decision.tab_id not in self.tabs:
                 raise ValueError("Unknown tab")
+            self.check_page(self.tabs[decision.tab_id]["page"])
             self.active = decision.tab_id
             self.page = self.tabs[self.active]["page"]
             await self.page.bring_to_front()
         elif action == "CLOSE_TAB":
             if decision.tab_id not in self.tabs or len(self.tabs) == 1:
                 raise ValueError("Cannot close the last or an unknown tab")
-            await self.tabs.pop(decision.tab_id)["page"].close()
+            await self.tabs[decision.tab_id]["page"].close()
+            del self.tabs[decision.tab_id]
             if self.active == decision.tab_id:
                 self.active = next(iter(self.tabs))
                 self.page = self.tabs[self.active]["page"]
