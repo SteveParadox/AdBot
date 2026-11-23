@@ -2,9 +2,12 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
+import Docs from "./Docs";
+import { matchDocsPath } from "./docsContent";
 import { ApiError } from "./api";
 import "./style.css";
 import "./workspace.css";
+import "./docs.css";
 
 const client = new QueryClient({
   defaultOptions: { queries: {
@@ -17,7 +20,7 @@ const client = new QueryClient({
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={client}>
-      <App />
+      {matchDocsPath(window.location.pathname) ? <Docs /> : <App />}
     </QueryClientProvider>
   </React.StrictMode>,
 );

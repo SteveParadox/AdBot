@@ -1,5 +1,7 @@
 # AdBot Monitor
 
+Open **`/docs` on the frontend** for searchable, clickable user documentation, including feature guides, administration, setup and troubleshooting. Guides have shareable `/docs/<guide>` URLs and are accessible before login. This is separate from the backend development Swagger endpoints.
+
 Worker responsiveness, shared provider quotas, job diagnostics and deterministic dataset exports: [Reliability guide](docs/automation/RELIABILITY.md).
 
 Structured datasets, versioned extraction schemas, scheduled monitoring and queued
