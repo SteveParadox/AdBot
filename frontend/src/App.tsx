@@ -1,3 +1,5 @@
+import { useWorkspaceEvents } from "./useWorkspaceEvents";
+import { useJobEvents } from "./useJobEvents";
 import { WorkspaceSearch } from "./WorkspaceSearch";
 import { JobFailure } from "./JobFailure";
 import { useEffect, useRef, useState, type FormEvent } from "react";
@@ -35,10 +37,8 @@ import {
 import {
   api,
   defaults,
-  parseEvents,
   type Collection,
   type Config,
-  type Event,
   type Job,
   type Overview,
   type Schedule,
@@ -97,13 +97,13 @@ export default function App() {
   }, []);
   useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(""), 6000); return () => clearTimeout(timer); }, [notice]);
   const client = useQueryClient();
+  useWorkspaceEvents(token);
   const run: Run = async (action, success) => {
     setBusy(true);
     setError("");
     setNotice("");
     try {
       await action();
-      await client.invalidateQueries();
       success?.();
       setNotice("Saved successfully");
     } catch (e) {
@@ -1112,11 +1112,9 @@ function JobDetail({
   busy: boolean;
   back: () => void;
 }) {
-  const client = useQueryClient();
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
-  const [live, setLive] = useState<Event[]>([]);
   const [image, setImage] = useState<string | null>(null);
   const job = useQuery({
     queryKey: ["job", id, token],
@@ -1130,58 +1128,7 @@ function JobDetail({
         token,
       ),
   });
-  const logs = useQuery({
-    queryKey: ["logs", id, token],
-    queryFn: () => api<Collection<Event>>(`/jobs/${id}/logs?limit=200`, token),
-  });
-  const isTerminal = terminal(job.data?.status || "queued");
-  useEffect(() => {
-    const controller = new AbortController();
-    let last = 0;
-    setLive([]);
-    async function connect() {
-      while (!controller.signal.aborted) {
-        try {
-          const response = await fetch(`/api/jobs/${id}/events`, {
-            headers: {
-              Authorization: "Bearer " + token,
-              "Last-Event-ID": String(last),
-            },
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error("Stream unavailable");
-          const reader = response.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (true) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            const parsed = parseEvents(buffer);
-            buffer = parsed.remaining;
-            if (parsed.events.length) {
-              last = parsed.events.at(-1)!.id;
-              setLive((old) => [...old, ...parsed.events].slice(-200));
-              // Streamed progress and HTTP snapshots must describe the same
-              // job. Refresh its status, pages and log cache after each batch;
-              // otherwise a completion event can appear beside queued data.
-              await Promise.all(
-                ["job", "pages", "logs"].map((key) =>
-                  client.invalidateQueries({ queryKey: [key, id] }),
-                ),
-              );
-            }
-          }
-          if (isTerminal) return;
-        } catch {
-          if (controller.signal.aborted) return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-    }
-    connect();
-    return () => controller.abort();
-  }, [id, token, isTerminal, client]);
+  const liveEvents = useJobEvents(id, token, job.data?.status, ["job", "pages"], 200);
   useEffect(
     () => () => {
       if (image) URL.revokeObjectURL(image);
@@ -1196,13 +1143,7 @@ function JobDetail({
     );
   if (!job.data) return <Empty text="Loading job…" />;
   const j = job.data;
-  const events = Array.from(
-    new Map(
-      [...(logs.data?.items || []), ...live].map((e) => [e.id, e]),
-    ).values(),
-  )
-    .sort((a, b) => a.id - b.id)
-    .slice(-200);
+  const events = liveEvents;
   const latest = events.at(-1);
   const target = sites.find((s) => s.id === j.website_id);
   return (

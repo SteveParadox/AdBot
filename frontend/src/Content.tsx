@@ -7,7 +7,7 @@ import { Button, Field } from "./ui";
 export type ContentData = { navigation_label?: string; title?: string; description?: string; image?: string; image_alt?: string; link?: string; button?: string; canonical?: string };
 type Section = { revision: string; key: string; draft: ContentData; status: "draft" | "published" | "archived"; position: number };
 export function useContent() {
-  const query = useQuery({ queryKey: ["content"], queryFn: () => api<{items: (ContentData & {key: string})[]}>("/content", ""), staleTime: 30000, refetchInterval: 30000 });
+  const query = useQuery({ queryKey: ["content"], queryFn: () => api<{items: (ContentData & {key: string})[]}>("/content", ""), staleTime: Infinity, refetchInterval: false });
   const sections = Object.fromEntries((query.data?.items || []).map(s => [s.key, s]));
   useEffect(() => {
     const seo: ContentData = sections.seo || {title: "AdBot \u00b7 Website monitoring", description: "Authorized website automation and monitoring workspace"};

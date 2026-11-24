@@ -1,12 +1,11 @@
+import { useJobEvents } from "./useJobEvents";
 import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
 import {
   api,
-  parseEvents,
   type Collection,
-  type Event,
   type Job,
   type Website,
 } from "./api";
@@ -100,69 +99,6 @@ type Metrics = {
 };
 const finished = (status: string) =>
   ["completed", "failed", "cancelled"].includes(status);
-
-function useAgentEvents(id: string, token: string, done: boolean) {
-  const [events, setEvents] = useState<Event[]>([]);
-  const client = useQueryClient();
-  useEffect(() => {
-    setEvents([]);
-    const controller = new AbortController();
-    let cursor = 0;
-    let lastRefresh = 0;
-    async function stream() {
-      while (!controller.signal.aborted) {
-        try {
-          const response = await fetch(`/api/jobs/${id}/events`, {
-            headers: {
-              Authorization: "Bearer " + token,
-              "Last-Event-ID": String(cursor),
-            },
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error("Stream unavailable");
-          const reader = response.body!.getReader(),
-            decoder = new TextDecoder();
-          let buffer = "";
-          while (true) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            const parsed = parseEvents(buffer);
-            buffer = parsed.remaining;
-            if (parsed.events.length) {
-              cursor = parsed.events.at(-1)!.id;
-              setEvents((old) => [...old, ...parsed.events].slice(-100));
-              if (
-                Date.now() - lastRefresh > 2000 ||
-                parsed.events.some((e) =>
-                  [
-                    "completed",
-                    "failed",
-                    "cancelled",
-                    "review_requested",
-                  ].includes(e.event_type),
-                )
-              ) {
-                lastRefresh = Date.now();
-                void client.invalidateQueries({ queryKey: ["agent-task", id] });
-                void client.invalidateQueries({
-                  queryKey: ["agent-steps", id],
-                });
-              }
-            }
-          }
-          if (done) return;
-        } catch {
-          if (controller.signal.aborted) return;
-        }
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-    }
-    void stream();
-    return () => controller.abort();
-  }, [id, token, done, client]);
-  return events;
-}
 
 export default function AgentPanel({
   token,
@@ -614,7 +550,7 @@ function AgentDetail({
     queryFn: () =>
       api<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token),
   });
-  const events = useAgentEvents(id, token, finished(task.data?.status || ""));
+  const events = useJobEvents(id, token, task.data?.status, ["agent-task", "agent-steps"], 100);
   const latest = steps.data?.items.at(-1),
     pending = steps.data?.items.find(
       (s) => s.id === task.data?.pending_step_id,

@@ -104,7 +104,8 @@ async def headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
-    logger.info(
+    logger.log(
+        logging.DEBUG if request.method == "GET" and response.status_code < 400 else logging.INFO,
         json.dumps(
             {
                 "event": "request",
@@ -338,17 +339,54 @@ def pages(
 
 
 @app.get("/api/jobs/{identifier}/logs")
-def logs(identifier: str, owner: Owner, after: int = 0, limit: Limit = 100):
+def logs(identifier: str, owner: Owner, after: int = 0, limit: Limit = 100, tail: bool = False):
     with Session() as session:
         owned(session, Job, identifier, owner)
-        return collection(
+        result = collection(
             session,
             select(AutomationEvent)
             .where(AutomationEvent.job_id == identifier, AutomationEvent.id > after)
-            .order_by(AutomationEvent.id),
+            .order_by(AutomationEvent.id.desc() if tail else AutomationEvent.id),
             0,
             limit,
         )
+        if tail:
+            result["items"].reverse()
+        return result
+
+
+@app.get("/api/events")
+async def workspace_events(request: Request, owner: Owner,
+                           last_event_id: Annotated[str | None, Header()] = None):
+    try:
+        cursor = max(0, int(last_event_id or "0"))
+    except ValueError:
+        raise HTTPException(422, "Last-Event-ID must be an integer") from None
+    with Session() as session:
+        latest = session.scalar(select(func.max(AutomationEvent.id)).join(Job).where(Job.owner == owner)) or 0
+    if last_event_id is None:
+        cursor = latest
+
+    async def stream():
+        nonlocal cursor
+        # Reconcile snapshots on first connection and after any missed interval.
+        yield f'data: {json.dumps({"id": cursor, "event_type": "sync", "details": {}})}\n\n'
+        deadline = time.monotonic() + 55
+        while time.monotonic() < deadline and not await request.is_disconnected():
+            with Session() as session:
+                batch = session.scalars(select(AutomationEvent).join(Job).where(
+                    Job.owner == owner, AutomationEvent.id > cursor,
+                ).order_by(AutomationEvent.id).limit(100)).all()
+                messages = [(event.id, json.dumps(output(event))) for event in batch]
+            for event_id, payload in messages:
+                cursor = event_id
+                yield f"id: {cursor}\ndata: {payload}\n\n"
+            if not messages:
+                yield ": heartbeat\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.get("/api/jobs/{identifier}/events")

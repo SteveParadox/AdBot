@@ -122,7 +122,28 @@ export type Overview = {
 // Share a cooldown across endpoints in this tab so polling cannot keep hitting a
 // workspace that the server has already rate limited. Never persist credentials.
 const cooldowns = new Map<string, number>();
-export async function api<T>(
+const pendingReads = new Map<string, Promise<unknown>>();
+type MutationListener = (path: string, token: string) => Promise<unknown>;
+const mutationListeners = new Set<MutationListener>();
+export function onApiMutation(listener: MutationListener) {
+  mutationListeners.add(listener);
+  return () => { mutationListeners.delete(listener); };
+}
+
+export function api<T>(
+  path: string, token: string, method = "GET", data?: unknown,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
+  if (method !== "GET") return request<T>(path, token, method, data, extraHeaders);
+  const key = JSON.stringify([token, path, Object.entries(extraHeaders || {}).sort()]);
+  const pending = pendingReads.get(key);
+  if (pending) return pending as Promise<T>;
+  const promise = request<T>(path, token, method, data, extraHeaders).finally(() => { pendingReads.delete(key); });
+  pendingReads.set(key, promise);
+  return promise;
+}
+
+async function request<T>(
   path: string,
   token: string,
   method = "GET",
@@ -158,7 +179,12 @@ export async function api<T>(
         : JSON.stringify(body.detail), response.status,
     );
   }
-  return response.status === 204 ? (undefined as T) : response.json();
+  const result = response.status === 204 ? (undefined as T) : await response.json();
+  if (method !== "GET") {
+    // Cache refresh failure must not turn a successful write into a failed write.
+    await Promise.allSettled([...mutationListeners].map(listener => listener(path, token)));
+  }
+  return result;
 }
 
 export function parseEvents(buffer: string) {

@@ -8,7 +8,7 @@ type Policy={enabled:boolean;paused:boolean;emergency_stop:boolean;concurrency:n
 type Event={id:number;code:string;severity:string;details:{approved_policy?:Policy;[key:string]:unknown};created_at:number};
 type Snapshot={revision:number;policy:Policy;counts:Record<string,number>;workers:{id:string;role:string;state:Record<string,unknown>;expires_at:number}[];sessions:number;last_success:number|null;events:Event[];policy_history:Event[];jobs:{id:string;status:string;kind:string;priority:number;depends_on:string|null}[]};
 export default function AutomationCenter({token}:{token:string}){
- const query=useQuery({queryKey:["automation",token],queryFn:()=>api<Snapshot>("/admin/automation",token),refetchInterval:5000,retry:false});
+ const query=useQuery({queryKey:["automation",token],queryFn:()=>api<Snapshot>("/admin/automation",token),refetchInterval:30000,retry:false});
  const [draft,setDraft]=useState<{text:string;revision:number}|null>(null);const [error,setError]=useState("");const [busy,setBusy]=useState(false);
  async function save(policy:Policy,revision=query.data?.revision,clearDraft=false){if(revision===undefined)return;setBusy(true);setError("");try{await api("/admin/automation",token,"POST",{revision,policy});if(clearDraft)setDraft(null);await query.refetch();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
  async function jobAction(id:string,action:string){setBusy(true);setError("");try{await api(action==="release"?`/admin/automation/jobs/${id}/release`:`/jobs/${id}/${action}`,token,"POST");await query.refetch();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}

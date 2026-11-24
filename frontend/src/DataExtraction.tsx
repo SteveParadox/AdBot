@@ -16,7 +16,7 @@ export default function DataExtraction({token,sites}:{token:string;sites:Website
  const key=['extraction',token];
  const templates=useQuery({queryKey:[...key,'templates'],queryFn:()=>api<{items:{id:string;definition:Definition}[]}>('/extraction/templates',token)});
  const schemas=useQuery({queryKey:[...key,'schemas'],queryFn:()=>api<Collection<Schema>>('/extraction/schemas',token)});
- const datasets=useQuery({queryKey:[...key,'datasets'],queryFn:()=>api<Collection<Dataset>>('/extraction/datasets',token),refetchInterval:5000});
+ const datasets=useQuery({queryKey:[...key,'datasets'],queryFn:()=>api<Collection<Dataset>>('/extraction/datasets',token)});
  const [draft,setDraft]=useState(JSON.stringify(empty,null,2));
  const [parent,setParent]=useState(''); const [fieldName,setFieldName]=useState('');
  const [name,setName]=useState(''); const [site,setSite]=useState(''); const [schema,setSchema]=useState('');
@@ -30,10 +30,10 @@ export default function DataExtraction({token,sites}:{token:string;sites:Website
  const [details,setDetails]=useState<unknown>(null);
  const datasetId=selected||datasets.data?.items[0]?.id||'';
  const dataset=datasets.data?.items.find(d=>d.id===datasetId);
- const records=useQuery({queryKey:[...key,'records',datasetId,offset,q,status],queryFn:()=>api<Collection<RecordRow>>(`/extraction/datasets/${datasetId}/records?offset=${offset}&limit=20&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`,token),enabled:!!datasetId&&panel==='records',refetchInterval:5000});
- const changes=useQuery({queryKey:[...key,'changes',datasetId,offset],queryFn:()=>api<Collection<{id:number;kind:string;details:unknown;created_at:number}>>(`/extraction/datasets/${datasetId}/changes?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='changes',refetchInterval:5000});
- const runs=useQuery({queryKey:[...key,'runs',datasetId,offset],queryFn:()=>api<Collection<Run>>(`/extraction/datasets/${datasetId}/runs?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='runs',refetchInterval:5000});
- const exports=useQuery({queryKey:[...key,'exports',datasetId],queryFn:()=>api<Collection<Export>>(`/extraction/datasets/${datasetId}/exports?limit=100`,token),enabled:!!datasetId&&panel==='exports',refetchInterval:5000});
+ const records=useQuery({queryKey:[...key,'records',datasetId,offset,q,status],queryFn:()=>api<Collection<RecordRow>>(`/extraction/datasets/${datasetId}/records?offset=${offset}&limit=20&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`,token),enabled:!!datasetId&&panel==='records'});
+ const changes=useQuery({queryKey:[...key,'changes',datasetId,offset],queryFn:()=>api<Collection<{id:number;kind:string;details:unknown;created_at:number}>>(`/extraction/datasets/${datasetId}/changes?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='changes'});
+ const runs=useQuery({queryKey:[...key,'runs',datasetId,offset],queryFn:()=>api<Collection<Run>>(`/extraction/datasets/${datasetId}/runs?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='runs'});
+ const exports=useQuery({queryKey:[...key,'exports',datasetId],queryFn:()=>api<Collection<Export>>(`/extraction/datasets/${datasetId}/exports?limit=100`,token),enabled:!!datasetId&&panel==='exports'});
  async function perform(action:()=>Promise<unknown>,success='Saved') {setBusy(true);setError('');setMessage('');try{await action();setMessage(success);await cache.invalidateQueries({queryKey:key});}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
  const definition=parseDefinition(draft);
  function updateField(field:string,values:Partial<Rule>) {if(!definition)return;setDraft(JSON.stringify({...definition,fields:{...definition.fields,[field]:{...definition.fields[field],...values}}},null,2));}

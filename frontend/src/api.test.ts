@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { api, parseEvents } from "./api";
+import { api, onApiMutation, parseEvents } from "./api";
 
 describe("SSE reconnect input", () => {
   it("buffers incomplete events across network chunks", () => {
@@ -38,4 +38,54 @@ it("honors Retry-After across endpoints and resumes when the cooldown expires",a
   await expect(api("/workflows","cooldown-test-key")).resolves.toEqual({ok:true});
   expect(fetch).toHaveBeenCalledTimes(2);
  }finally{globalThis.fetch=original;vi.useRealTimers();}
+});
+
+
+it("deduplicates concurrent reads but isolates credentials, headers and mutations", async () => {
+  const original = globalThis.fetch;
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ok:true})));
+  globalThis.fetch = fetch;
+  try {
+    const first = api("/dedup", "owner-a");
+    const second = api("/dedup", "owner-a");
+    expect(first).toBe(second);
+    await Promise.all([first, second, api("/dedup", "owner-b"), api("/dedup", "owner-a", "GET", undefined, {"X-Test":"different"})]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    await api("/dedup", "owner-a");
+    expect(fetch).toHaveBeenCalledTimes(4);
+    await Promise.all([api("/dedup", "owner-a", "POST", {}), api("/dedup", "owner-a", "POST", {})]);
+    expect(fetch).toHaveBeenCalledTimes(6);
+  } finally { globalThis.fetch = original; }
+});
+
+it("releases failed reads so retries can recover", async () => {
+  const original = globalThis.fetch;
+  const fetch = vi.fn().mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ok:true})));
+  globalThis.fetch = fetch;
+  try {
+    const first = api("/retry-dedup", "owner-a");
+    const second = api("/retry-dedup", "owner-a");
+    await expect(first).rejects.toThrow("offline");
+    await expect(second).rejects.toThrow("offline");
+    await expect(api("/retry-dedup", "owner-a")).resolves.toEqual({ok:true});
+    expect(fetch).toHaveBeenCalledTimes(2);
+  } finally { globalThis.fetch = original; }
+});
+
+
+it("notifies cache listeners only after successful mutations", async () => {
+  const original = globalThis.fetch;
+  const listener = vi.fn(async () => undefined);
+  const unsubscribe = onApiMutation(listener);
+  globalThis.fetch = vi.fn().mockResolvedValueOnce(new Response("{}"))
+    .mockResolvedValueOnce(new Response("{}", {status:500}))
+    .mockResolvedValueOnce(new Response("{}"));
+  try {
+    await api("/workflows", "mutation-owner", "POST", {});
+    expect(listener).toHaveBeenCalledWith("/workflows", "mutation-owner");
+    await expect(api("/workflows", "mutation-owner", "POST", {})).rejects.toThrow();
+    await api("/workflows", "mutation-owner");
+    expect(listener).toHaveBeenCalledTimes(1);
+  } finally { unsubscribe(); globalThis.fetch = original; }
 });
