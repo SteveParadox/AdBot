@@ -11,8 +11,11 @@ os.environ["ADBOT_REDIS_URL"] = os.environ.get("ADBOT_TEST_REDIS_URL", "")
 os.environ["ADBOT_ENVIRONMENT"] = "development"
 os.environ["ADBOT_AI_OLLAMA_NATIVE"] = "false"
 os.environ["ADBOT_AI_PROVIDER"] = "disabled"
+# Windows omits empty environment values when launching child processes.
+os.environ["ADBOT_AI_PROVIDER_ORDER"] = " "
 os.environ["ADBOT_AI_FALLBACK_PROVIDER"] = "disabled"
-for credential in ('AI_API_KEY', 'GROQ_API_KEY', 'AI_FALLBACK_API_KEY'):
+for credential in ('AI_API_KEY', 'GROQ_API_KEY', 'AI_FALLBACK_API_KEY', 'GROQ_SECONDARY_API_KEY',
+                   'OPENROUTER_API_KEY', 'GOOGLE_API_KEY', 'NVIDIA_API_KEY'):
     # Only dedicated test credentials may reach fixture model endpoints.
     os.environ['ADBOT_' + credential] = os.environ.get(
         'ADBOT_TEST_' + credential, 'fixture-model-key-not-a-real-provider-key'

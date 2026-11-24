@@ -1,0 +1,61 @@
+{
+  "commit": "09139bb",
+  "captured_at": "2026-11-24T14:14:53.246Z",
+  "method": "Actual React app in Chromium, mocked authenticated API and deterministic 60-second browser clock. HTTP counts include initial reads; stream opens counted separately. Not production latency or CPU measurements.",
+  "scenarios": {
+    "idle": {
+      "duration_virtual_seconds": 62.1,
+      "http_requests": 8,
+      "stream_opens": 2,
+      "json_response_bytes": 600,
+      "requests_by_endpoint": {
+        "/api/content": 1,
+        "/api/events": 2,
+        "/api/websites": 1,
+        "/api/jobs": 3,
+        "/api/analytics/overview": 2,
+        "/api/workflows": 1
+      }
+    },
+    "active-task": {
+      "duration_virtual_seconds": 62.1,
+      "http_requests": 133,
+      "stream_opens": 3,
+      "json_response_bytes": 28201,
+      "requests_by_endpoint": {
+        "/api/content": 1,
+        "/api/events": 2,
+        "/api/websites": 1,
+        "/api/jobs": 30,
+        "/api/analytics/overview": 2,
+        "/api/workflows": 1,
+        "/api/agent/config": 1,
+        "/api/agent/metrics": 5,
+        "/api/agent/tasks": 30,
+        "/api/agent/memories": 1,
+        "/api/agent/tasks/task-1": 30,
+        "/api/agent/tasks/task-1/steps": 30,
+        "/api/jobs/task-1/logs": 1,
+        "/api/jobs/task-1/events": 1
+      }
+    },
+    "unrelated-task-in-extraction": {
+      "duration_virtual_seconds": 62.1,
+      "http_requests": 160,
+      "stream_opens": 2,
+      "json_response_bytes": 7199,
+      "requests_by_endpoint": {
+        "/api/content": 1,
+        "/api/events": 2,
+        "/api/websites": 1,
+        "/api/jobs": 31,
+        "/api/analytics/overview": 2,
+        "/api/workflows": 1,
+        "/api/extraction/templates": 31,
+        "/api/extraction/schemas": 31,
+        "/api/extraction/datasets": 31,
+        "/api/extraction/datasets/dataset-1/records": 31
+      }
+    }
+  }
+}

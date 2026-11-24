@@ -144,3 +144,33 @@ Use a future timezone-aware `run_at`. Cron uses five fields and IANA timezone
 names. `PATCH {"enabled":false}` pauses; `PATCH {"enabled":true}` resumes and
 recomputes the next recurring occurrence. Disabled one-time schedules can be
 rescheduled by supplying a new future `run_at`.
+
+
+## Traffic synchronization and diagnostics
+
+`GET /api/events` requires the existing Bearer workspace key. It stays open with
+heartbeat comments and owner-filtered event batches. `Last-Event-ID` resumes job
+events; `X-Resource-Cursor` independently resumes resource-change notices. The
+sync control frame contains a process `server_epoch`, both cursors and reset/
+reconciliation flags. Resource-change control frames can reuse the current job
+event ID; consumers must not deduplicate those frames solely by job cursor.
+
+Job events add optional `resource` snapshots (job, task patch, referenced steps,
+and dataset ID). `snapshot_batch=true` marks a batch whose latest per-job event
+carries its snapshot. When snapshots exceed the payload budget, that marker is
+false and clients should fetch affected resources. All original event fields and
+the `/api/jobs/{id}/events` endpoint remain available. Paths ending in `/deleted`
+in resource-change notices are tombstone identifiers, not additional REST routes.
+
+`GET /api/jobs/{id}/logs?tail=true&limit=200` returns the latest bounded log page in
+ascending ID order. The default retains forward-cursor behavior. Agent step
+collections also accept `after_id` for incremental insertion reads; existing
+offset/limit semantics remain.
+
+`GET /api/admin/traffic` returns authenticated per-workspace, per-process request
+and SQL counters, endpoint-template counts, sampled response latency and active
+workspace stream count. `X-Request-ID` correlates response headers with structured
+logs. No payloads, tokens or query strings are included in these diagnostics.
+
+See [the implementation report](traffic-optimization/REPORT.md) for deployment,
+replay limits, fallback behavior, observability scope and benchmark methodology.

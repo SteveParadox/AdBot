@@ -146,6 +146,8 @@ is allowed; arbitrary private networks remain blocked. Fixture mode is forbidden
 Crawls work with AI disabled. For goal-driven browsing configure an approved provider/model on the server:
 
 - `groq`: uses `ADBOT_GROQ_BASE_URL`, `ADBOT_GROQ_API_KEY`, `ADBOT_AI_MODEL`.
+- `openrouter`, `google` (AI Studio), `nvidia`, and `groq_secondary` use their named API key/base URL settings.
+- `ADBOT_AI_PROVIDER_ORDER` enables immediate ordered cloud failover; see the [provider guide](docs/network/PROVIDER_FAILOVER.md).
 - `openai_compatible` or `local`: uses `ADBOT_AI_BASE_URL`, `ADBOT_AI_API_KEY`, `ADBOT_AI_MODEL`.
 - Remote providers require HTTPS. Obtain valid model identifiers and scoped credentials from your provider.
 - Groq can explicitly fall back to a local model using the `ADBOT_AI_FALLBACK_*` settings. With outbound
@@ -459,4 +461,4 @@ selected browser engines and backup restoration. SOCKS/remote DNS are unsupporte
 under compromise are not intercepted. No anonymity guarantee is made. Truthful lawful business
 information, legitimate ownership records and dependency attribution must remain intact.
 
-Groq/Qwen backup configuration, early-quota handoff, warm-up and local verification: [failover guide](docs/network/GROQ_QWEN_FAILOVER.md).
+Cloud provider configuration, immediate failover and verification: [failover guide](docs/network/PROVIDER_FAILOVER.md).

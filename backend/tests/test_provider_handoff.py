@@ -20,7 +20,7 @@ def providers(monkeypatch):
         ai_model="primary",
         ai_fallback_provider="local",
         ai_fallback_base_url="http://127.0.0.1:11434/v1",
-        ai_fallback_model="qwen3:4b",
+        ai_fallback_model="fixture-local-model",
         ai_retries=0,
     ).items():
         monkeypatch.setattr(cfg, key, value)
@@ -79,7 +79,7 @@ async def test_failure_hands_off_once_and_stays_local(providers, monkeypatch, st
             assert request.extensions["timeout"]["read"] == 10
             return httpx.Response(status, headers={"retry-after": "3600"})
         body = json.loads(request.content)
-        assert "/no_think" in body["messages"][0]["content"]
+        assert body["model"] == "fixture-local-model"
         return successful()
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))

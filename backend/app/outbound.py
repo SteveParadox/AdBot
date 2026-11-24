@@ -419,7 +419,7 @@ async def model_clients(providers, user_agent_override=None, authorized_override
         clients = []
         for i,(base,_,_) in enumerate(providers):
             from .user_agents import resolve
-            service = 'ai_local' if cfg.ai_provider == 'local' or i > 0 else 'ai'
+            service = 'ai_local' if cfg.model_provider_is_local(i) else 'ai'
             options = dict(kwargs)
             headers = httpx.Headers(options.pop('headers', None))
             headers['User-Agent'] = resolve(service,override=user_agent_override,authorized=authorized_override,client='httpx')
@@ -427,7 +427,7 @@ async def model_clients(providers, user_agent_override=None, authorized_override
             if not manager().enabled:
                 clients.append(await stack.enter_async_context(httpx.AsyncClient(**options)))
                 continue
-            local = cfg.ai_provider == 'local' or i > 0
+            local = cfg.model_provider_is_local(i)
             service = 'ai_local' if local else 'ai'
             token = uuid.uuid4().hex
             # Server-configured local providers may use approved private addresses, but cannot

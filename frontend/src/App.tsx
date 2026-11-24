@@ -34,7 +34,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
+import { queryApi,
   api,
   defaults,
   type Collection,
@@ -114,22 +114,22 @@ export default function App() {
   };
   const sites = useQuery({
     queryKey: ["websites", token],
-    queryFn: () => api<Collection<Website>>("/websites?limit=200", token),
+    queryFn: ({signal}) => queryApi<Collection<Website>>("/websites?limit=200", token, signal),
     enabled: !!token,
   });
   const jobs = useQuery({
     queryKey: ["recent-jobs", token],
-    queryFn: () => api<Collection<Job>>("/jobs?limit=8", token),
+    queryFn: ({signal}) => queryApi<Collection<Job>>("/jobs?limit=8", token, signal),
     enabled: !!token,
   });
   const overview = useQuery({
     queryKey: ["overview", token],
-    queryFn: () => api<Overview>("/analytics/overview", token),
+    queryFn: ({signal}) => queryApi<Overview>("/analytics/overview", token, signal),
     enabled: !!token,
   });
   const workflows = useQuery({
     queryKey: ["workflows", token],
-    queryFn: () => api<Collection<Workflow>>("/workflows?limit=200", token),
+    queryFn: ({signal}) => queryApi<Collection<Workflow>>("/workflows?limit=200", token, signal),
     enabled: !!token,
   });
   const [selected, setSelected] = useState<string | null>(null);
@@ -142,6 +142,7 @@ export default function App() {
   function navigate(destination: Tab) { setTab(destination); setSelected(null); setCreateWebsite(false); }
   function addWebsite() { navigate("Websites"); setCreateWebsite(true); setWebsiteCreateRequest(value => value + 1); }
   async function refreshWorkspace() {
+    window.dispatchEvent(new Event("adbot:refresh-stream"));
     setRefreshing(true);
     setError("");
     setNotice("");
@@ -155,6 +156,13 @@ export default function App() {
     setSelected(null);
     client.clear();
   };
+  useEffect(() => {
+    const expired = () => {
+      sessionStorage.removeItem("adbot-token"); setToken(""); setSelected(null); client.clear();
+    };
+    window.addEventListener("adbot:auth-expired", expired);
+    return () => window.removeEventListener("adbot:auth-expired", expired);
+  }, [client]);
   async function login(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -990,10 +998,10 @@ function Jobs({
   const [status, setStatus] = useState("");
   const jobs = useQuery({
     queryKey: ["jobs", token, page, status],
-    queryFn: () =>
-      api<Collection<Job>>(
+    queryFn: ({signal}) =>
+      queryApi<Collection<Job>>(
         `/jobs?limit=25&offset=${page * 25}${status ? "&status=" + status : ""}`,
-        token,
+        token, signal,
       ),
   });
   function start(e: FormEvent) {
@@ -1118,14 +1126,14 @@ function JobDetail({
   const [image, setImage] = useState<string | null>(null);
   const job = useQuery({
     queryKey: ["job", id, token],
-    queryFn: () => api<Job>("/jobs/" + id, token),
+    queryFn: ({signal}) => queryApi<Job>("/jobs/" + id, token, signal),
   });
   const pages = useQuery({
     queryKey: ["pages", id, page, search, status, token],
-    queryFn: () =>
-      api<Collection<Visit>>(
+    queryFn: ({signal}) =>
+      queryApi<Collection<Visit>>(
         `/jobs/${id}/pages?offset=${page * 25}&limit=25&q=${encodeURIComponent(search)}${status ? "&http_status=" + status : ""}`,
-        token,
+        token, signal,
       ),
   });
   const liveEvents = useJobEvents(id, token, job.data?.status, ["job", "pages"], 200);
@@ -1742,7 +1750,7 @@ function Schedules({
   const [editing, setEditing] = useState<string | null>(null);
   const schedules = useQuery({
     queryKey: ["schedules", token],
-    queryFn: () => api<Collection<Schedule>>("/schedules?limit=200", token),
+    queryFn: ({signal}) => queryApi<Collection<Schedule>>("/schedules?limit=200", token, signal),
   });
   function save(e: FormEvent) {
     e.preventDefault();

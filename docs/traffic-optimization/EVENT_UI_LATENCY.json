@@ -1,0 +1,16 @@
+{
+  "samples": [
+    {
+      "wall_ms": 477,
+      "events": 300,
+      "method": "Driver-observed synthetic event-to-render wall time, not production latency"
+    },
+    {
+      "wall_ms": 428,
+      "events": 300,
+      "method": "Driver-observed synthetic event-to-render wall time, not production latency"
+    }
+  ],
+  "baseline": "not measured; no instrument existed",
+  "scope": "synthetic Chromium fixture, driver-observed event-to-render wall time"
+}

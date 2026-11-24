@@ -3,7 +3,7 @@ import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
-import {
+import { queryApi,
   api,
   type Collection,
   type Job,
@@ -132,8 +132,8 @@ export default function AgentPanel({
   const [outputFormat, setOutputFormat] = useState("");
   const [preview, setPreview] = useState<Planning | null>(null);
   const datasets = useQuery({
-    queryKey: ["agent-datasets", token, website],
-    queryFn: () => api<Collection<{ id: string; name: string; website_id: string }>>("/extraction/datasets?limit=100", token),
+    queryKey: ["extraction", token, "datasets"],
+    queryFn: ({signal}) => queryApi<Collection<{ id: string; name: string; website_id: string }>>("/extraction/datasets", token, signal),
     enabled: Boolean(website),
   });
   const taskOptions = {
@@ -143,26 +143,26 @@ export default function AgentPanel({
   };
   const config = useQuery({
     queryKey: ["agent-config", token],
-    queryFn: () => api<Config>("/agent/config", token),
+    queryFn: ({signal}) => queryApi<Config>("/agent/config", token, signal),
   });
   const metrics = useQuery({
     queryKey: ["agent-metrics", token],
-    queryFn: () => api<Metrics>("/agent/metrics", token),
+    queryFn: ({signal}) => queryApi<Metrics>("/agent/metrics", token, signal),
   });
   useEffect(() => {
     if (config.data) setMaxSteps((n) => Math.min(n, config.data!.max_steps));
   }, [config.data?.max_steps]);
   const tasks = useQuery({
     queryKey: ["agent-tasks", token, page],
-    queryFn: () =>
-      api<Collection<Task>>(`/agent/tasks?limit=25&offset=${page * 25}`, token),
+    queryFn: ({signal}) =>
+      queryApi<Collection<Task>>(`/agent/tasks?limit=25&offset=${page * 25}`, token, signal),
   });
   const memories = useQuery({
     queryKey: ["agent-memories", token],
-    queryFn: () =>
-      api<Collection<{ id: string; objective: string; content: unknown }>>(
+    queryFn: ({signal}) =>
+      queryApi<Collection<{ id: string; objective: string; content: unknown }>>(
         "/agent/memories",
-        token,
+        token, signal,
       ),
   });
   function submit(e: FormEvent) {
@@ -543,12 +543,12 @@ function AgentDetail({
 }) {
   const task = useQuery({
     queryKey: ["agent-task", id, token],
-    queryFn: () => api<Task>("/agent/tasks/" + id, token),
+    queryFn: ({signal}) => queryApi<Task>("/agent/tasks/" + id, token, signal),
   });
   const steps = useQuery({
     queryKey: ["agent-steps", id, token],
-    queryFn: () =>
-      api<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token),
+    queryFn: ({signal}) =>
+      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token, signal),
   });
   const events = useJobEvents(id, token, task.data?.status, ["agent-task", "agent-steps"], 100);
   const latest = steps.data?.items.at(-1),

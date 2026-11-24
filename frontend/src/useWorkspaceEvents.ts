@@ -1,28 +1,50 @@
-import { onApiMutation } from "./api";
-import { mutationKeys, invalidateFresh } from "./queryClient";
-import { useEffect, useRef } from "react";
+import { holdInitialQueries } from "./queryBarrier";
+import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEventStream } from "./useEventStream";
+import { onApiMutation } from "./api";
+import { invalidateFresh, mutationKeys, setRealtimeState } from "./queryClient";
+import { subscribeEventStream } from "./useEventStream";
+import { createWorkspaceEventHandler } from "./workspaceEvents";
 
 export function useWorkspaceEvents(token: string) {
   const client = useQueryClient();
-  useEffect(() => onApiMutation(async (path, ownerToken) => {
-    if (ownerToken !== token) return;
-    await Promise.all(mutationKeys(path).map(queryKey => invalidateFresh(client, queryKey)));
-  }), [client, token]);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const dirty = useRef(new Set<string>());
-  useEffect(() => () => { clearTimeout(timer.current); timer.current = undefined; dirty.current.clear(); }, [token]);
-  useEventStream("/events", token, Boolean(token), (events) => {
-    for (const event of events) {
-      for (const key of ["agent-tasks", "recent-jobs", "jobs", "extraction", "agent-datasets"]) dirty.current.add(key);
-      if (["completed", "failed", "cancelled", "sync"].includes(event.event_type)) dirty.current.add("agent-memories");
-    }
-    if (timer.current !== undefined) return;
-    timer.current = setTimeout(() => {
-      timer.current = undefined;
-      for (const key of dirty.current) void invalidateFresh(client, [key]);
-      dirty.current.clear();
-    }, 2000);
-  });
+  useEffect(() => {
+    if (!token) return;
+    const handler = createWorkspaceEventHandler(client, token);
+    const barrier = holdInitialQueries(token);
+    let opened = false, initialGap = false;
+    let disposed = false, channel: BroadcastChannel | undefined;
+    // Coordinate modification notices only. No credentials or resource contents cross tabs.
+    if (typeof BroadcastChannel !== "undefined" && crypto.subtle) void crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)).then(hash => {
+      if (disposed) return;
+      channel = new BroadcastChannel("adbot-changes-" + Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join(""));
+      channel.onmessage = event => {
+        if (typeof event.data?.path === "string" && event.data.path.length < 240) {
+          if (typeof event.data.requestId === "string") handler.acknowledge(event.data.requestId);
+          for (const key of mutationKeys(event.data.path, token, client)) void invalidateFresh(client, key);
+        }
+      };
+    });
+    const unsubscribeMutations = onApiMutation(async (path, ownerToken, requestId) => {
+      if (ownerToken !== token || disposed) return;
+      if (requestId) handler.acknowledge(requestId);
+      channel?.postMessage({path, requestId});
+      await Promise.all(mutationKeys(path, token, client).map(key => invalidateFresh(client, key)));
+    });
+    const unsubscribeStream = subscribeEventStream("/events", token, events => {
+      handler.receive(events.map(event => {
+        if (initialGap && event.event_type === "sync") {
+          initialGap = false;
+          return {...event, details: {...event.details, reconcile: true, snapshot_gap: true}};
+        }
+        return event;
+      }));
+    }, state => {
+      if (state === "open") {opened = true; barrier.release();}
+      if (state === "backoff" || state === "exhausted") {if (!opened) initialGap = true; barrier.release();}
+      setRealtimeState(client, state);
+      if (state === "unauthorized") window.dispatchEvent(new CustomEvent("adbot:auth-expired"));
+    });
+    return () => {disposed = true; barrier.dispose(); handler.dispose(); channel?.close(); unsubscribeMutations(); unsubscribeStream();};
+  }, [client, token]);
 }

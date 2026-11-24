@@ -284,3 +284,16 @@ async def test_owner_limit_uses_atomic_expiry_and_safe_outage(monkeypatch):
         await authenticate(request, 'Bearer ' + KEY)
     assert outage.value.status_code == 503
     assert outage.value.detail == 'Service temporarily unavailable'
+
+
+def test_uvicorn_startup_color_template_is_rendered_after_redaction():
+    from uvicorn.logging import DefaultFormatter
+    from app.privacy import Redact
+    record = logging.LogRecord("uvicorn.error", logging.INFO, "", 0,
+                               "Uvicorn running on %s://%s:%d", ("http", "127.0.0.1", 8000), None)
+    record.color_message = "Uvicorn running on %s://%s:%d"
+    Redact().filter(record)
+    rendered = DefaultFormatter("%(levelprefix)s %(message)s", use_colors=True).format(record)
+    assert "http://127.0.0.1:8000" in rendered
+    assert "%s" not in rendered
+    assert "%d" not in rendered

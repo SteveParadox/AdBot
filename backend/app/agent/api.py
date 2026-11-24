@@ -179,7 +179,10 @@ def tasks(owner: Owner, offset: Offset = 0, limit: Limit = 25):
         query = select(Job).where(Job.owner == owner, Job.job_type == "agent").order_by(Job.created_at.desc())
         rows = session.scalars(query.offset(offset).limit(limit)).all()
         total = session.scalar(select(func.count()).select_from(query.subquery()))
-        return {"items": [task_output(j, session.get(AgentTask, j.id)) for j in rows], "total": total}
+        task_rows = {task.job_id: task for task in session.scalars(
+            select(AgentTask).where(AgentTask.job_id.in_([job.id for job in rows]))
+        )} if rows else {}
+        return {"items": [task_output(job, task_rows[job.id]) for job in rows], "total": total}
 
 
 @router.get("/tasks/{identifier}")
@@ -189,11 +192,11 @@ def task(identifier: str, owner: Owner):
 
 
 @router.get("/tasks/{identifier}/steps")
-def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100):
+def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0):
     with Session() as session:
         task_for(session, identifier, owner)
         return collection(
-            session, select(AgentStep).where(AgentStep.job_id == identifier).order_by(AgentStep.number), offset, limit
+            session, select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id).order_by(AgentStep.number), offset, limit
         )
 
 

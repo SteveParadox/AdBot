@@ -13,7 +13,7 @@ from .concurrency import IOExecutor, active_io, database_call
 from .resources import ResourceMonitor, pressured
 from .privacy import install_redaction
 from .outbound import manager
-from .db import AgentStep, AgentTask, Frontier, Job, Lease, emit, transaction
+from .db import Session, AgentStep, AgentTask, Frontier, Job, Lease, emit, transaction
 from .jobs import acquire, claim, heartbeat, owned_job, recover_expired
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -80,26 +80,33 @@ async def _execute(job_id, token):
                     raise InterruptedError("Worker lease lost")
                 last_beat = time.monotonic()
             def control_state():
-                with transaction() as session:
+                with Session() as session:
                     job = owned_job(session, job_id, token)
                     from .automation import get_policy
-                    control=get_policy(session)
+                    control = get_policy(session)
                     if job.cancel_requested or control.emergency_stop or kind in control.disabled or job.website_id in control.disabled_websites:
-                        return "cancel"
+                        return "cancel", job.status
                     if job.pause_requested or control.paused:
-                        paused = True
-                        job.status = "paused"
+                        desired = "paused"
+                    elif kind == "agent":
+                        desired = "waiting_user" if session.get(AgentTask, job_id).pending_step_id else "running"
                     else:
-                        paused = False
-                        if kind == "agent":
-                            job.status = "waiting_user" if session.get(AgentTask, job_id).pending_step_id else "running"
-                        else:
-                            job.status = "running"
-                return "pause" if paused else "run"
-            control = await database_call(control_state)
+                        desired = "running"
+                    return desired, job.status
+            control, previous_status = await database_call(control_state)
             if control == "cancel":
                 raise asyncio.CancelledError()
-            runner.gate.clear() if control == "pause" else runner.gate.set()
+            # The observable paused state is an acknowledgement that the gate is
+            # already closed. Never publish it from the IO thread beforehand.
+            runner.gate.clear() if control == "paused" else runner.gate.set()
+            if previous_status != control:
+                def publish_control():
+                    with transaction() as session:
+                        job = owned_job(session, job_id, token)
+                        if job.status == previous_status:
+                            job.status = control
+                            emit(session, job_id, control, "Execution state updated")
+                await database_call(publish_control)
             await asyncio.sleep(0.25)
 
     watcher = asyncio.create_task(watch())

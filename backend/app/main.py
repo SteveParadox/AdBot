@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -32,6 +33,7 @@ from .automation_api import router as automation_router
 from .extraction.api import router as extraction_router
 
 logger = logging.getLogger("adbot.api")
+_stream_epoch = uuid.uuid4().hex
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 install_redaction()
 
@@ -70,7 +72,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().cors_origins.split(","),
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID", "If-Match"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID", "X-Resource-Cursor", "If-Match"],
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=[h.strip() for h in settings().allowed_hosts.split(",")])
 
@@ -90,6 +92,11 @@ app.include_router(agent_router)
 
 @app.middleware("http")
 async def headers(request, call_next):
+    from .traffic import request_counters
+    counters = {"sql_queries": 0, "method": request.method, "path": request.url.path}
+    request_counters.set(counters)
+    request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
+    counters["request_id"] = request_id
     started = time.monotonic()
     # Bound JSON input independently of Pydantic validation. Streaming requests
     # cannot bypass this check by omitting Content-Length.
@@ -101,6 +108,17 @@ async def headers(request, call_next):
                 return JSONResponse({"detail": "Request body too large"}, status_code=413)
         request._body = bytes(body)
     response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    owner = getattr(request.state, "owner", None)
+    route = getattr(request.scope.get("route"), "path", "unmatched")
+    from .traffic import record
+    if owner and not counters.get("change_published") and request.method in {"POST", "PATCH", "PUT", "DELETE"} and response.status_code < 300:
+        from .realtime import publish_change
+        try:
+            await asyncio.to_thread(publish_change, owner, request.url.path, request_id, request.method)
+        except Exception as exc:
+            logger.error(json.dumps({"event": "change_notification_failed", "request_id": request_id, "error_type": type(exc).__name__}))
+    record(owner, route, response.status_code, (time.monotonic() - started) * 1000, counters["sql_queries"])
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -109,6 +127,9 @@ async def headers(request, call_next):
         json.dumps(
             {
                 "event": "request",
+                "timestamp": time.time(),
+                "request_id": request_id,
+                "sql_queries": counters["sql_queries"],
                 "method": request.method,
                 "route": getattr(request.scope.get("route"), "path", "unmatched"),
                 "status": response.status_code,
@@ -355,37 +376,72 @@ def logs(identifier: str, owner: Owner, after: int = 0, limit: Limit = 100, tail
         return result
 
 
+@app.get("/api/admin/traffic")
+def traffic_snapshot(owner: Owner):
+    from .traffic import snapshot
+    return snapshot(owner)
+
+
 @app.get("/api/events")
 async def workspace_events(request: Request, owner: Owner,
                            last_event_id: Annotated[str | None, Header()] = None):
+    from .db import ResourceChange
+    from .realtime import read_batch
+    headers = getattr(request, "headers", {})
     try:
         cursor = max(0, int(last_event_id or "0"))
+        change_cursor = max(0, int(headers.get("X-Resource-Cursor", "0")))
     except ValueError:
-        raise HTTPException(422, "Last-Event-ID must be an integer") from None
+        raise HTTPException(422, "Event cursors must be integers") from None
     with Session() as session:
         latest = session.scalar(select(func.max(AutomationEvent.id)).join(Job).where(Job.owner == owner)) or 0
-    if last_event_id is None:
+        change_latest = session.scalar(select(func.max(ResourceChange.id)).where(ResourceChange.owner.in_([owner, "*"]))) or 0
+        oldest_change = session.scalar(select(func.min(ResourceChange.id)).where(ResourceChange.owner.in_([owner, "*"])))
+    if "X-Resource-Cursor" not in headers:
+        change_cursor = change_latest
+    retention_gap = last_event_id is not None and oldest_change is not None and change_cursor < oldest_change
+    reset = cursor > latest or change_cursor > change_latest or retention_gap
+    if last_event_id is None or reset:
         cursor = latest
+        change_cursor = change_latest
 
     async def stream():
-        nonlocal cursor
-        # Reconcile snapshots on first connection and after any missed interval.
-        yield f'data: {json.dumps({"id": cursor, "event_type": "sync", "details": {}})}\n\n'
-        deadline = time.monotonic() + 55
-        while time.monotonic() < deadline and not await request.is_disconnected():
-            with Session() as session:
-                batch = session.scalars(select(AutomationEvent).join(Job).where(
-                    Job.owner == owner, AutomationEvent.id > cursor,
-                ).order_by(AutomationEvent.id).limit(100)).all()
-                messages = [(event.id, json.dumps(output(event))) for event in batch]
-            for event_id, payload in messages:
-                cursor = event_id
-                yield f"id: {cursor}\ndata: {payload}\n\n"
-            if not messages:
+        nonlocal cursor, change_cursor
+        from .db import engine
+        reconcile_at = time.monotonic() + 60
+        yield f'data: {json.dumps({"id": cursor, "event_type": "sync", "details": {"reconcile": last_event_id is not None, "reset": reset}, "change_cursor": change_cursor, "server_epoch": _stream_epoch})}\n\n'
+        # Persistent connections; heartbeats and client watchdogs detect failures.
+        # Compatibility endpoint below retains its existing 55-second behavior.
+        while not await request.is_disconnected():
+            # PostgreSQL sequence allocation precedes commit. A slow transaction
+            # can commit an older ID after a newer cursor was sent. Repair active
+            # snapshots over this same socket; SQLite's single writer orders commits.
+            if engine.dialect.name == "postgresql" and time.monotonic() >= reconcile_at:
+                reconciliation = {"id": cursor, "event_type": "sync", "details": {"reconcile": True, "snapshot_gap": True}, "change_cursor": change_cursor}
+                yield f"data: {json.dumps(reconciliation)}\n\n"
+                reconcile_at = time.monotonic() + 60
+            messages, changes = await asyncio.to_thread(read_batch, owner, cursor, change_cursor)
+            for payload in messages:
+                cursor = payload["id"]
+                yield f"id: {cursor}\ndata: {json.dumps(payload)}\n\n"
+            if changes:
+                change_cursor = changes[-1]["id"]
+                payload = {"id": cursor, "event_type": "resources_changed", "details": {"paths": list(dict.fromkeys(row["path"] for row in changes)), "changes": changes}, "change_cursor": change_cursor}
+                yield f"data: {json.dumps(payload)}\n\n"
+            if not messages and not changes:
                 yield ": heartbeat\n\n"
             await asyncio.sleep(1)
 
-    return StreamingResponse(stream(), media_type="text/event-stream",
+    async def tracked_stream():
+        from .traffic import stream_opened, stream_closed
+        stream_opened(owner)
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            stream_closed(owner)
+
+    return StreamingResponse(tracked_stream(), media_type="text/event-stream",
                              headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 

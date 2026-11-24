@@ -105,35 +105,28 @@ target-site information; they are deliberately available only to the owning key.
 
 ### Dashboard refresh and cache policy
 
-The shared TanStack Query client caches configuration and saved resources until
-explicit invalidation or cache eviction. Successful API writes invalidate only
-related cache prefixes. Concurrent identical GET requests share one promise,
-scoped by credential, URL, and headers; writes are never deduplicated.
+See [the traffic architecture and verification report](traffic-optimization/REPORT.md)
+for the audit, research, event contracts, bounds and measured results.
 
-| Resource | Update strategy |
-| --- | --- |
-| Agent task status and execution steps | Per-job SSE; snapshot refreshes coalesced over 2 seconds, immediate on completion or review |
-| Agent task list | Workspace SSE, coalesced over 2 seconds |
-| Agent metrics | 15 seconds |
-| Analytics | 60 seconds |
-| Jobs and automation overview | Workspace events plus 30-second refresh |
-| Configuration, websites, workflows, memories, content, datasets | Mutation invalidation; job events also refresh extraction results and task memories |
-| Schedules and network health | 30 seconds |
+A single bearer-authenticated workspace SSE connection per visible tab patches
+cached job/task rows, execution steps and logs. Initial authenticated snapshots
+follow the stream cursor; degraded startup releases reads and later reconciles.
+TanStack Query owns authorization-scoped caches and cancellation. Identical GETs
+share a transport; obsolete consumers cancel independently. Metadata invalidates
+on modification, while related extraction events refresh only affected outputs.
+Task-specific HTTP fallback runs at 30 seconds only while streaming is degraded,
+and stops for terminal details. Metrics refresh at 15 seconds and analytics at
+60 seconds. Hidden tabs stop intervals and close streams. A backend worker remains
+independent of frontend visibility.
 
-The authenticated `/api/events` feed filters events by job owner and supports
-`Last-Event-ID`. A sync frame reconciles snapshots after connecting. Existing
-per-job streams provide detailed progress; terminal task details have no polling
-or reconnect loop. Log snapshots support `tail=true` to retrieve the latest
-entries, then new events merge by ID without repeatedly downloading logs.
+SQL resource-change notices commit atomically with API database writes. Replay,
+process epochs, retention-gap resets and bounded recovery restore consistency.
+PostgreSQL additionally emits a 60-second safety reconciliation because sequence
+IDs can commit out of order. SQLite uses its single-writer ordering. The server
+polls both durable logs with one idle SQL statement and holds no database session
+across a network yield. No new broker dependency is required.
 
-Streams disconnect while the document is hidden and resume with their cursor.
-Query polling pauses in background tabs. Retryable stream failures back off;
-rate limits honor `Retry-After`; authentication failures stop automatic retries.
-Both SSE endpoints read the durable event table, so separate API and worker
-processes do not depend on an in-process event bus. The workspace feed checks
-for new rows once per second; this reduces HTTP polling but is not a database
-push notification mechanism. Successful GET request diagnostics use DEBUG;
-writes and unsuccessful requests retain INFO logging.
-
-Changes made outside this dashboard that do not emit job events require the
-workspace Refresh action (or a new cache load) to update cached configuration.
+Deployment requires Alembic `021a00000001` before starting the new backend. The
+legacy per-job SSE endpoint remains compatible; the new frontend consumes the
+workspace stream. Configuration writes that bypass API notices still require an
+explicit workspace refresh. Full task-memory snapshots are refreshed on demand.

@@ -17,6 +17,7 @@ def main():
             ADBOT_DATABASE_URL="sqlite:///" + str(root / "test.db"),
             ADBOT_API_KEYS="benchmark-agent-key-000000000000000000",
             ADBOT_AI_PROVIDER="local",
+            ADBOT_AI_PROVIDER_ORDER=" ",
             ADBOT_AI_API_KEY="benchmark-fixture-not-a-live-provider-key",
             ADBOT_AI_MODEL="semantic-fixture",
             ADBOT_AI_BASE_URL="http://127.0.0.1:8766/v1",

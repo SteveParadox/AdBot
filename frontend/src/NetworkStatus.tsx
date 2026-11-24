@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./api";
+import { queryApi, api } from "./api";
 type Endpoint={id:string;status:string;successes?:number;failures?:number;latency_ms?:number|null};
 type Snapshot={scope:string;instances:{instance:string;enabled:boolean;failovers:number;services:Record<string,{mode:string;strategy:string;stable:boolean}>;endpoints:Endpoint[]}[]};
 export function NetworkStatus({token}: {token:string}) {
- const status=useQuery({queryKey:["network-status",token],queryFn:()=>api<Snapshot>("/admin/network",token),refetchInterval:30000,retry:false});
+ const status=useQuery({queryKey:["network-status",token],queryFn:({signal}) =>queryApi<Snapshot>("/admin/network",token, signal),refetchInterval:30000,retry:false});
  return <section className="panel admin-surface network-admin"><div className="admin-intro"><span className="admin-kicker">CONNECTIVITY</span><h2>Network routing</h2><p>Live health for your approved outbound routes. Credentials stay on the server.</p></div>
  {status.isPending?<p role="status">Loading network status...</p>:status.error?<p className="admin-alert" role="alert">{status.error.message}</p>:<>
  <p className="network-scope">{status.data?.scope==="shared-heartbeats"?"Shared monitoring across instances":"Monitoring this instance"} | Refreshes every 30 seconds</p>

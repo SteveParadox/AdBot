@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type Collection } from "./api";
+import { useQuery } from "@tanstack/react-query";
+import { queryApi, api, ApiError, type Collection } from "./api";
 import { UserAgentAdmin } from "./UserAgentAdmin";
 import { NetworkStatus } from "./NetworkStatus";
 import { Button, Field } from "./ui";
 export type ContentData = { navigation_label?: string; title?: string; description?: string; image?: string; image_alt?: string; link?: string; button?: string; canonical?: string };
 type Section = { revision: string; key: string; draft: ContentData; status: "draft" | "published" | "archived"; position: number };
 export function useContent() {
-  const query = useQuery({ queryKey: ["content"], queryFn: () => api<{items: (ContentData & {key: string})[]}>("/content", ""), staleTime: Infinity, refetchInterval: false });
+  const query = useQuery({ queryKey: ["content"], queryFn: ({signal}) => queryApi<{items: (ContentData & {key: string})[]}>("/content", "", signal), staleTime: Infinity, refetchInterval: false });
   const sections = Object.fromEntries((query.data?.items || []).map(s => [s.key, s]));
   useEffect(() => {
     const seo: ContentData = sections.seo || {title: "AdBot \u00b7 Website monitoring", description: "Authorized website automation and monitoring workspace"};
@@ -46,8 +46,7 @@ export function ContentBlock({data}: {data: ContentData}) {
   </section>;
 }
 export function ContentAdmin({token}: {token: string}) {
-  const client = useQueryClient();
-  const query = useQuery({queryKey:["admin-content",token], queryFn:()=>api<Collection<Section>>("/admin/content?limit=200",token), retry:false});
+  const query = useQuery({queryKey:["admin-content",token], queryFn:({signal}) =>queryApi<Collection<Section>>("/admin/content?limit=200",token, signal), retry:false});
   const [revision,setRevision] = useState<string|null>(null);
   const [conflict,setConflict] = useState(false);
   const [latest,setLatest] = useState<Section|null>(null);
@@ -60,7 +59,7 @@ export function ContentAdmin({token}: {token: string}) {
       const saved = await api<Section>("/admin/content/"+encodeURIComponent(key),token,remove?"DELETE":"POST",remove?undefined:{draft,status,position,revision},remove&&revision?{"If-Match":revision}:undefined);
       setRevision(remove?null:saved.revision); setConflict(false); setLatest(null);
       if(remove){setKey("");setDraft({});setStatus("draft");setPosition(0);}
-      await client.invalidateQueries({queryKey:["content"]}); await query.refetch(); setNotice(remove?"Deleted":"Saved");
+      setNotice(remove?"Deleted":"Saved");
     } catch(e) {setError((e as Error).message);if(!(e instanceof ApiError) || ![409,428].includes(e.status)) return;setConflict(true);
       try { setLatest(await api<Section>("/admin/content/"+encodeURIComponent(key),token)); } catch {setLatest(null);}
     } finally {setBusy(false);}

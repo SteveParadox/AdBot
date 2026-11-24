@@ -14,13 +14,14 @@ from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories
-from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError
+from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError, ModelProvidersUnavailable
 
 
 class AgentRunner(Runner):
     def __init__(self, job_id, token):
         super().__init__(job_id, token)
         self.model = ModelClient()
+        self.model.on_provider_event = self.report_provider_failure
         with transaction() as session:
             job = owned_job(session, self.id, self.token)
             task = session.get(AgentTask, self.id)
@@ -77,19 +78,22 @@ class AgentRunner(Runner):
         if reserve:
             provider_index = (reservation or {}).get("provider_index", 0)
             task_budget = self.options["max_tokens"]
-            if provider_index == 0 and settings().ai_fallback_provider != "disabled":
+            if provider_index == 0 and len(settings().model_providers()) > 1:
                 task_budget = max(0, task_budget - settings().agent_fallback_tokens)
             if task.prompt_tokens + task.completion_tokens + prompt + completion > task_budget:
                 raise ModelBudgetExceeded("Model token budget exhausted before request")
-            if provider_index == 1 and not getattr(self, "fallback_notified", False):
+            if getattr(self, "fallback_notified", 0) != provider_index:
+                cfg = settings()
+                provider = cfg.ai_provider_order.split(",")[provider_index].strip() if cfg.ai_provider_order else "local"
                 emit(
                     session,
                     self.id,
                     "model_fallback",
-                    "Local model selected for this task",
-                    model=settings().ai_fallback_model,
+                    f"Using {provider} for this task",
+                    provider=provider,
+                    model=settings().model_providers()[provider_index][2],
                 )
-                self.fallback_notified = True
+                self.fallback_notified = provider_index
             task.model_calls += 1
             task.prompt_tokens += prompt
             task.completion_tokens += completion
@@ -98,18 +102,59 @@ class AgentRunner(Runner):
         task.completion_tokens += completion - reservation[1]
         task.model_latency_ms += latency
 
+    async def provider_notice(self, kind, message, **details):
+        def save_notice():
+            with transaction() as session:
+                owned_job(session, self.id, self.token)
+                emit(session, self.id, kind, message, **details)
+        await database_call(save_notice)
+
+    async def report_provider_failure(self, event):
+        await self.provider_notice(
+            "model_provider_unavailable",
+            f"{event['provider']}: {event['reason']}",
+            **event,
+        )
+
     async def ask_model(self, kind, payload, schema, observation=None):
         image = (
             settings().artifact_dir / observation["screenshot_path"]
             if observation and self.options["visual_reasoning"]
             else None
         )
-        remaining = self.deadline - time.time() - 5
-        if remaining <= 0:
-            raise ModelDeadlineExceeded("Task time budget exhausted before model request")
         async def account_async(*args):
             return await database_call(self.account, *args)
-        return await self.model.request(kind, payload, schema, account_async, image, timeout_cap_seconds=remaining)
+
+        while True:
+            remaining = self.deadline - time.time() - 5
+            if remaining <= 0:
+                raise ModelDeadlineExceeded("Task time budget exhausted before model request")
+            if hasattr(self, "gate"):
+                try:
+                    async with asyncio.timeout(remaining):
+                        await self.gate.wait()
+                except TimeoutError:
+                    raise ModelDeadlineExceeded("Task time budget exhausted while paused before model request") from None
+                remaining = self.deadline - time.time() - 5
+                if remaining <= 0:
+                    raise ModelDeadlineExceeded("Task time budget exhausted while paused before model request")
+            try:
+                return await self.model.request(kind, payload, schema, account_async, image, timeout_cap_seconds=remaining)
+            except ModelProvidersUnavailable as exc:
+                if exc.retry_after is None:
+                    raise
+                remaining = self.deadline - time.time() - 5
+                if exc.retry_after >= remaining:
+                    raise ModelDeadlineExceeded("Model providers cannot recover within the remaining task time budget") from exc
+                await self.provider_notice(
+                    "model_waiting",
+                    f"Model providers temporarily unavailable; retrying in {exc.retry_after:.1f}s",
+                    retry_after=exc.retry_after,
+                    providers=exc.failures,
+                )
+                # This is inference recovery before dispatch, not a browser action.
+                # Preserve the same payload, schema, observation and action budget.
+                await asyncio.sleep(exc.retry_after)
 
     async def checkpoint(self, controller):
         self.memory["tabs"] = [
@@ -491,7 +536,7 @@ class AgentRunner(Runner):
                 last_fingerprint = progress
                 if stagnant >= 5:
                     raise RuntimeError("Agent stopped after repeated actions without observable progress")
-            except ModelDeadlineExceeded:
+            except (ModelDeadlineExceeded, ModelProvidersUnavailable):
                 raise
             except (ValueError, PermissionError, ModelError, BrowserError, BrowserCrashed) as exc:
                 decision_data = locals().get("decision")
@@ -689,7 +734,7 @@ class AgentRunner(Runner):
                         TaskPlan,
                     )
                     accept_model_plan(state, draft, self.options["max_steps"])
-                except ModelDeadlineExceeded:
+                except (ModelDeadlineExceeded, ModelProvidersUnavailable):
                     raise
                 except (ValueError, ModelError):
                     state["warnings"].append(

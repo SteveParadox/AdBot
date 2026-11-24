@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./api";
+import { queryApi, api } from "./api";
 import { Button, Field } from "./ui";
 type Profile={id:string;name:string;value:string;description:string;category:string;enabled:boolean;created_at:number;updated_at:number;clients?:string[]};
 type Policy={weights?:Record<string,number>;fallback?:string;enabled?:boolean;updated_at?:number;value?:string|null;profile?:string|null;rotation?:string;profiles?:string[];interval_seconds?:number};
@@ -11,7 +11,7 @@ function CsvInput({values,onChange}:{values:string[];onChange:(values:string[])=
  return <input value={text} onChange={e=>{setText(e.target.value);onChange(e.target.value.split(",").map(v=>v.trim()).filter(Boolean));}}/>;
 }
 export function UserAgentAdmin({token}:{token:string}) {
- const query=useQuery({queryKey:["user-agents",token],queryFn:()=>api<Config>("/admin/user-agents",token),refetchInterval:false,refetchOnWindowFocus:false,staleTime:Infinity,retry:false});
+ const query=useQuery({queryKey:["user-agents",token],queryFn:({signal}) =>queryApi<Config>("/admin/user-agents",token, signal),refetchInterval:false,refetchOnWindowFocus:false,staleTime:Infinity,retry:false});
  const [draft,setDraft]=useState<Config|null>(null); const [error,setError]=useState(""); const [notice,setNotice]=useState(""); const [busy,setBusy]=useState(false);
  const [weightText,setWeightText]=useState<Record<string,string>>({});
  useEffect(()=>{if(query.data){setDraft(structuredClone(query.data));setWeightText({});}},[query.data]);

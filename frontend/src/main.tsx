@@ -1,3 +1,4 @@
+import { count, trafficSnapshot } from "./traffic";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -10,10 +11,13 @@ import "./workspace.css";
 import "./docs.css";
 
 const client = createQueryClient();
+Object.defineProperty(window, "adbotTraffic", {value: trafficSnapshot});
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={client}>
-      {matchDocsPath(window.location.pathname) ? <Docs /> : <App />}
+      <React.Profiler id="workspace" onRender={(_id, _phase, duration) => {count("render_commits"); count("render_duration_ms_total", duration);}}>
+        {matchDocsPath(window.location.pathname) ? <Docs /> : <App />}
+      </React.Profiler>
     </QueryClientProvider>
   </React.StrictMode>,
 );

@@ -1,0 +1,750 @@
+{
+  "baseline_commit": "09139bb",
+  "frontend_network_and_lifecycle_sites": [
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 3,
+      "code": "import { useEffect, useState, type FormEvent } from \"react\";"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 4,
+      "code": "import { useQuery } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 134,
+      "code": "const datasets = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 136,
+      "code": "queryFn: () => api<Collection<{ id: string; name: string; website_id: string }>>(\"/extraction/datasets?limit=100\", token),"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 144,
+      "code": "const config = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 146,
+      "code": "queryFn: () => api<Config>(\"/agent/config\", token),"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 148,
+      "code": "const metrics = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 150,
+      "code": "queryFn: () => api<Metrics>(\"/agent/metrics\", token),"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 152,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 155,
+      "code": "const tasks = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 158,
+      "code": "api<Collection<Task>>(`/agent/tasks?limit=25&offset=${page * 25}`, token),"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 160,
+      "code": "const memories = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 163,
+      "code": "api<Collection<{ id: string; objective: string; content: unknown }>>("
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 174,
+      "code": "const site = await api<Website>(\"/websites\", token, \"POST\", {"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 188,
+      "code": "const result = await api<Task>("
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 427,
+      "code": "setPreview(await api<Planning>(\"/agent/preview\", token, \"POST\", { ...taskOptions, dataset_query: datasetQuery.trim() === \"{}\" ? null : JSON.parse(datasetQuery), website_id: website }));"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 516,
+      "code": "run(() => api(\"/agent/memories/\" + m.id, token, \"DELETE\"))"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 544,
+      "code": "const task = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 546,
+      "code": "queryFn: () => api<Task>(\"/agent/tasks/\" + id, token),"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 548,
+      "code": "const steps = useQuery({"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 551,
+      "code": "api<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token),"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 566,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 570,
+      "code": "fetch(\"/api/artifacts/\" + capture, {"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 620,
+      "code": "api("
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 634,
+      "code": "run(() => api(`/jobs/${id}/cancel`, token, \"POST\"))"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 689,
+      "code": "api(`/agent/tasks/${id}/review`, token, \"POST\", {"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 706,
+      "code": "api(`/agent/tasks/${id}/review`, token, \"POST\", {"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 770,
+      "code": "const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: \"Bearer \" + token } });"
+    },
+    {
+      "file": "frontend/src/AgentPanel.tsx",
+      "line": 774,
+      "code": "setTimeout(() => URL.revokeObjectURL(url), 1000);"
+    },
+    {
+      "file": "frontend/src/api.ts",
+      "line": 133,
+      "code": "export function api<T>("
+    },
+    {
+      "file": "frontend/src/api.ts",
+      "line": 157,
+      "code": "const response = await fetch(\"/api\" + path, {"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 5,
+      "code": "import { useEffect, useRef, useState, type FormEvent } from \"react\";"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 6,
+      "code": "import { useQuery, useQueryClient } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 92,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 94,
+      "code": "window.addEventListener(\"online\", update);"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 95,
+      "code": "window.addEventListener(\"offline\", update);"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 98,
+      "code": "useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(\"\"), 6000); return () => clearTimeout(timer); }, [notice]);"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 99,
+      "code": "const client = useQueryClient();"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 115,
+      "code": "const sites = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 117,
+      "code": "queryFn: () => api<Collection<Website>>(\"/websites?limit=200\", token),"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 120,
+      "code": "const jobs = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 122,
+      "code": "queryFn: () => api<Collection<Job>>(\"/jobs?limit=8\", token),"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 125,
+      "code": "const overview = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 127,
+      "code": "queryFn: () => api<Overview>(\"/analytics/overview\", token),"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 130,
+      "code": "const workflows = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 132,
+      "code": "queryFn: () => api<Collection<Workflow>>(\"/workflows?limit=200\", token),"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 137,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 148,
+      "code": "try { await client.invalidateQueries({ type: \"active\" }, { throwOnError: true }); setNotice(\"Workspace refreshed\"); }"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 163,
+      "code": "await api(\"/websites?limit=1\", input);"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 193,
+      "code": "{content.error && <p role=\"alert\">Website content is temporarily unavailable. <button onClick={() => void content.refetch()}>Retry</button></p>}"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 338,
+      "code": "client.invalidateQueries();"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 700,
+      "code": "api("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 938,
+      "code": "api("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 956,
+      "code": "run(() => api(\"/websites/\" + site.id, token, \"DELETE\"));"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 991,
+      "code": "const jobs = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 994,
+      "code": "api<Collection<Job>>("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1002,
+      "code": "const job = await api<Job>("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1119,
+      "code": "const job = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1121,
+      "code": "queryFn: () => api<Job>(\"/jobs/\" + id, token),"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1123,
+      "code": "const pages = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1126,
+      "code": "api<Collection<Visit>>("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1132,
+      "code": "useEffect("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1170,
+      "code": "api("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1184,
+      "code": "run(() => api(`/jobs/${id}/cancel`, token, \"POST\"))"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1195,
+      "code": "run(() => api(`/jobs/${id}/retry`, token, \"POST\"))"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1318,
+      "code": "const r = await fetch("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1366,
+      "code": "const r = await fetch("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1443,
+      "code": "api("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1704,
+      "code": "run(() => api(\"/workflows/\" + w.id, token, \"DELETE\"))"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1743,
+      "code": "const schedules = useQuery({"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1745,
+      "code": "queryFn: () => api<Collection<Schedule>>(\"/schedules?limit=200\", token),"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1767,
+      "code": "api("
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1933,
+      "code": "api(\"/schedules/\" + s.id, token, \"PATCH\", {"
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "line": 1945,
+      "code": "run(() => api(\"/schedules/\" + s.id, token, \"DELETE\"))"
+    },
+    {
+      "file": "frontend/src/AutomationCenter.tsx",
+      "line": 2,
+      "code": "import { useQuery } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/AutomationCenter.tsx",
+      "line": 11,
+      "code": "const query=useQuery({queryKey:[\"automation\",token],queryFn:()=>api<Snapshot>(\"/admin/automation\",token),refetchInterval:30000,retry:false});"
+    },
+    {
+      "file": "frontend/src/AutomationCenter.tsx",
+      "line": 13,
+      "code": "async function save(policy:Policy,revision=query.data?.revision,clearDraft=false){if(revision===undefined)return;setBusy(true);setError(\"\");try{await api(\"/admin/automation\",token,\"POST\",{revision,policy});if(clearDraft)setDraft(null);await query.refetch();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}"
+    },
+    {
+      "file": "frontend/src/AutomationCenter.tsx",
+      "line": 14,
+      "code": "async function jobAction(id:string,action:string){setBusy(true);setError(\"\");try{await api(action===\"release\"?`/admin/automation/jobs/${id}/release`:`/jobs/${id}/${action}`,token,\"POST\");await query.refetch();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 1,
+      "code": "import { useEffect, useState } from \"react\";"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 2,
+      "code": "import { useQuery, useQueryClient } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 10,
+      "code": "const query = useQuery({ queryKey: [\"content\"], queryFn: () => api<{items: (ContentData & {key: string})[]}>(\"/content\", \"\"), staleTime: Infinity, refetchInterval: false });"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 12,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 49,
+      "code": "const client = useQueryClient();"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 50,
+      "code": "const query = useQuery({queryKey:[\"admin-content\",token], queryFn:()=>api<Collection<Section>>(\"/admin/content?limit=200\",token), retry:false});"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 60,
+      "code": "const saved = await api<Section>(\"/admin/content/\"+encodeURIComponent(key),token,remove?\"DELETE\":\"POST\",remove?undefined:{draft,status,position,revision},remove&&revision?{\"If-Match\":revision}:undefined);"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 63,
+      "code": "await client.invalidateQueries({queryKey:[\"content\"]}); await query.refetch(); setNotice(remove?\"Deleted\":\"Saved\");"
+    },
+    {
+      "file": "frontend/src/Content.tsx",
+      "line": 65,
+      "code": "try { setLatest(await api<Section>(\"/admin/content/\"+encodeURIComponent(key),token)); } catch {setLatest(null);}"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 2,
+      "code": "import { useQuery, useQueryClient } from '@tanstack/react-query';"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 15,
+      "code": "const cache=useQueryClient();"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 17,
+      "code": "const templates=useQuery({queryKey:[...key,'templates'],queryFn:()=>api<{items:{id:string;definition:Definition}[]}>('/extraction/templates',token)});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 18,
+      "code": "const schemas=useQuery({queryKey:[...key,'schemas'],queryFn:()=>api<Collection<Schema>>('/extraction/schemas',token)});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 19,
+      "code": "const datasets=useQuery({queryKey:[...key,'datasets'],queryFn:()=>api<Collection<Dataset>>('/extraction/datasets',token)});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 33,
+      "code": "const records=useQuery({queryKey:[...key,'records',datasetId,offset,q,status],queryFn:()=>api<Collection<RecordRow>>(`/extraction/datasets/${datasetId}/records?offset=${offset}&limit=20&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`,token),enabled:!!datasetId&&panel==='records'});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 34,
+      "code": "const changes=useQuery({queryKey:[...key,'changes',datasetId,offset],queryFn:()=>api<Collection<{id:number;kind:string;details:unknown;created_at:number}>>(`/extraction/datasets/${datasetId}/changes?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='changes'});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 35,
+      "code": "const runs=useQuery({queryKey:[...key,'runs',datasetId,offset],queryFn:()=>api<Collection<Run>>(`/extraction/datasets/${datasetId}/runs?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='runs'});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 36,
+      "code": "const exports=useQuery({queryKey:[...key,'exports',datasetId],queryFn:()=>api<Collection<Export>>(`/extraction/datasets/${datasetId}/exports?limit=100`,token),enabled:!!datasetId&&panel==='exports'});"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 37,
+      "code": "async function perform(action:()=>Promise<unknown>,success='Saved') {setBusy(true);setError('');setMessage('');try{await action();setMessage(success);await cache.invalidateQueries({queryKey:key});}catch(e){setError((e as Error).message);}finally{setBusy(false);}}"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 41,
+      "code": "async function download(item:Export){const response=await fetch(`/api/extraction/exports/${item.job_id}/download`,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new Error('Export unavailable or expired');const url=URL.createObjectURL(await response.blob());try{const link=document.createElement('a');link.href=url;link.download=`dataset-${datasetId}.${item.format}`;link.click();}finally{setTimeout(()=>URL.revokeObjectURL(url),1000);}}"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 51,
+      "code": "<div className=\"automation-actions\"><Button disabled={busy} onClick={()=>void perform(()=>api('/extraction/schemas/validate',token,'POST',{definition:JSON.parse(draft)}),'Schema is valid')}>Validate schema</Button><Button disabled={busy} onClick={()=>void perform(async()=>{const row=await api<Schema>(parent?`/extraction/schemas/${parent}/versions`:'/extraction/schemas',token,'POST',{definition:JSON.parse(draft)});setParent(row.id);setSchema(row.id);},parent?'New immutable version created':'Schema created')}>{parent?'Save new version':'Create schema'}</Button><Button disabled={busy} onClick={()=>{setParent('');setMessage('Save as a new schema to duplicate this template or version');}}>Duplicate as new</Button>{parent&&<Button disabled={busy} onClick={()=>void perform(()=>api(`/extraction/schemas/${parent}/active?active=${!schemas.data?.items.find(s=>s.id===parent)?.active}`,token,'POST'))}>Toggle active</Button>}</div></details>"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 52,
+      "code": "<details><summary>{editing?'Edit dataset':'Create dataset'}</summary><Field label=\"Dataset name\"><input value={name} onChange={e=>setName(e.target.value)}/></Field><Field label=\"Authorized website\"><select value={site} onChange={e=>setSite(e.target.value)}><option value=\"\">Select website</option>{sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></Field><Field label=\"Dataset schema\"><select value={schema} onChange={e=>setSchema(e.target.value)}><option value=\"\">Select schema</option>{schemas.data?.items.filter(s=>s.active).map(s=><option key={s.id} value={s.id}>{s.name} v{s.version}</option>)}</select></Field><Field label=\"Dataset options JSON\"><textarea rows={8} value={options} onChange={e=>setOptions(e.target.value)}/></Field><p>Optional settings include ready_selector, pagination_selector, max_scrolls, ai_fallback, duplicate_policy, confirm_missing and retention_days. Missing-record confirmation is off by default.</p><Button disabled={busy||!site||!schema||!name} onClick={()=>void perform(async()=>{const d=await api<Dataset>(editing?`/extraction/datasets/${editing}`:'/extraction/datasets',token,editing?'PATCH':'POST',{name,website_id:site,schema_id:schema,options:JSON.parse(options),...(editing?{expected_version:editingVersion}:{})});setSelected(d.id);newDataset();})}>Save dataset</Button></details>"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 54,
+      "code": "{dataset&&<><div className=\"automation-actions\"><Button disabled={busy} onClick={()=>void perform(()=>api(`/extraction/datasets/${datasetId}/run`,token,'POST'),'Extraction queued')}>Run extraction</Button><Button disabled={busy} onClick={()=>{setEditing(dataset.id);setEditingVersion(dataset.version);setName(dataset.name);setSite(dataset.website_id);setSchema(dataset.schema_id);setOptions(JSON.stringify(dataset.options,null,2));setMessage('Dataset loaded into the edit form');}}>Edit dataset</Button><Button disabled={busy} onClick={()=>void perform(()=>api(`/extraction/datasets/${datasetId}/bind`,token,'POST'),'Future website crawls, workflows and agents will extract into this dataset')}>Attach to website automation</Button><Button variant=\"destructive\" disabled={busy} onClick={()=>void perform(async()=>{await api(`/extraction/datasets/${datasetId}`,token,'DELETE');setSelected('');},'Dataset deleted')}>Delete dataset and exports</Button></div>"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 55,
+      "code": "<details><summary>Schedule repeated extraction</summary><Field label=\"Cron schedule (UTC)\"><input value={cron} onChange={e=>setCron(e.target.value)}/></Field><Button disabled={busy} onClick={()=>void perform(()=>api(`/extraction/datasets/${datasetId}/schedules`,token,'POST',{website_id:dataset.website_id,cron_expression:cron,timezone:'UTC'}),'Schedule created; manage it in Schedules')}>Create schedule</Button></details>"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 57,
+      "code": "{panel==='records'&&<><Field label=\"Search records\"><input value={search} onChange={e=>setSearch(e.target.value)}/></Field><Button onClick={()=>{setQ(search);setOffset(0);}}>Search</Button><Field label=\"Record state\"><select value={status} onChange={e=>{setStatus(e.target.value);setOffset(0);}}>{['','active','missing','removed'].map(v=><option key={v} value={v}>{v||'All states'}</option>)}</select></Field><div className=\"extraction-table\"><table><thead><tr><th>Record</th><th>Validation</th><th>State</th><th>Source</th><th>History</th></tr></thead><tbody>{records.data?.items.map(r=><tr key={r.id}><td><details><summary>{String(Object.values(r.data).find(v=>typeof v==='string')||r.id)}</summary><pre>{JSON.stringify(r.data,null,2)}</pre></details></td><td>{r.validation_status}</td><td>{r.status}</td><td><a href={r.provenance.source_url} target=\"_blank\" rel=\"noreferrer\">Source</a> (schema v{r.provenance.schema_version})</td><td><Button onClick={()=>void perform(async()=>setDetails(await api(`/extraction/datasets/${datasetId}/records/${r.id}/revisions`,token)),'History loaded')}>Inspect history</Button></td></tr>)}</tbody></table></div>{records.data?.total===0&&<p>No records yet. Run extraction and inspect diagnostics if none are found.</p>}</>}"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 59,
+      "code": "{panel==='runs'&&<ul>{runs.data?.items.map(r=><li key={r.job_id}>{r.status}: {r.valid_count} accepted / {r.invalid_count} invalid; retries {r.retry_count}. {r.error_message}<pre>{JSON.stringify(r.usage)}</pre><Button onClick={()=>void perform(async()=>setDetails(await api(`/extraction/runs/${r.job_id}/issues`,token)),'Diagnostics loaded')}>Inspect errors</Button>{!['completed','partial','failed','cancelled'].includes(r.status)&&<Button onClick={()=>void perform(()=>api(`/jobs/${r.job_id}/cancel`,token,'POST'),'Cancellation requested')}>Cancel run</Button>}</li>)}</ul>}"
+    },
+    {
+      "file": "frontend/src/DataExtraction.tsx",
+      "line": 60,
+      "code": "{panel==='exports'&&<><Field label=\"Export format\"><select value={exportFormat} onChange={e=>setExportFormat(e.target.value)}><option>json</option><option>csv</option></select></Field><Field label=\"CSV columns (comma separated; nested fields use dots)\"><input value={columns} onChange={e=>setColumns(e.target.value)}/></Field><Field label=\"Export filters, sort and limit (JSON)\"><textarea value={exportQuery} onChange={e=>setExportQuery(e.target.value)}/></Field><p className=\"hint\">Example: {'{\"sort\":[{\"field\":\"price\",\"direction\":\"asc\"}],\"limit\":10}'}. Uses captured records; numeric fields sort numerically.</p><Button disabled={busy} onClick={()=>void perform(()=>api(`/extraction/datasets/${datasetId}/exports`,token,'POST',{format:exportFormat,query:exportQuery.trim()==='{}'?null:JSON.parse(exportQuery),columns:columns.split(',').map(s=>s.trim()).filter(Boolean)}),'Export queued')}>Queue export</Button><ul>{exports.data?.items.map(e=><li key={e.job_id}>{e.format} \u2014 {e.status}; {e.rows} records, {e.bytes} bytes; expires {new Date(e.expires_at*1000).toLocaleString()} <Button disabled={busy||e.status!=='completed'} onClick={()=>void perform(()=>download(e),'Download started')}>Download</Button></li>)}</ul></>}"
+    },
+    {
+      "file": "frontend/src/Docs.tsx",
+      "line": 1,
+      "code": "import { useEffect, useState } from \"react\";"
+    },
+    {
+      "file": "frontend/src/Docs.tsx",
+      "line": 12,
+      "code": "useEffect(() => { document.title = `${page?.title ?? \"Guide not found\"} | AdBot Docs`; }, [page]);"
+    },
+    {
+      "file": "frontend/src/NetworkStatus.tsx",
+      "line": 1,
+      "code": "import { useQuery } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/NetworkStatus.tsx",
+      "line": 6,
+      "code": "const status=useQuery({queryKey:[\"network-status\",token],queryFn:()=>api<Snapshot>(\"/admin/network\",token),refetchInterval:30000,retry:false});"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 7,
+      "code": "refetchInterval: false,"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 8,
+      "code": "refetchIntervalInBackground: false,"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 9,
+      "code": "refetchOnWindowFocus: false,"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 13,
+      "code": "client.setQueryDefaults([key], { staleTime: 15000, refetchInterval: 30000 });"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 15,
+      "code": "client.setQueryDefaults([\"agent-metrics\"], { staleTime: 15000, refetchInterval: 15000 });"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 16,
+      "code": "client.setQueryDefaults([\"overview\"], { staleTime: 30000, refetchInterval: 60000 });"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 41,
+      "code": "await client.invalidateQueries({queryKey}, {cancelRefetch:false});"
+    },
+    {
+      "file": "frontend/src/queryClient.ts",
+      "line": 42,
+      "code": "if (fetching) await client.invalidateQueries({queryKey}, {cancelRefetch:false});"
+    },
+    {
+      "file": "frontend/src/useEventStream.ts",
+      "line": 1,
+      "code": "import { useEffect, useRef } from \"react\";"
+    },
+    {
+      "file": "frontend/src/useEventStream.ts",
+      "line": 9,
+      "code": "useEffect(() => enabled && token ? startEventStream(path, token, events => callback.current(events)) : undefined,"
+    },
+    {
+      "file": "frontend/src/useEventStream.ts",
+      "line": 14,
+      "code": "let stopped = false, cursor: number | undefined, timer: ReturnType<typeof setTimeout>;"
+    },
+    {
+      "file": "frontend/src/useEventStream.ts",
+      "line": 22,
+      "code": "const response = await fetch(\"/api\" + path, {"
+    },
+    {
+      "file": "frontend/src/useEventStream.ts",
+      "line": 50,
+      "code": "timer = setTimeout(() => void connect(), delay);"
+    },
+    {
+      "file": "frontend/src/useEventStream.ts",
+      "line": 60,
+      "code": "document.addEventListener(\"visibilitychange\", visibility);"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 2,
+      "code": "import { useEffect, useRef, useState } from \"react\";"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 3,
+      "code": "import { useQuery, useQueryClient } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 14,
+      "code": "const client = useQueryClient();"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 16,
+      "code": "const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 17,
+      "code": "const history = useQuery({ queryKey: [\"logs\", id, token],"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 18,
+      "code": "queryFn: () => api<Collection<Event>>(`/jobs/${id}/logs?limit=200&tail=true`, token) });"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 19,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 29,
+      "code": "client.setQueryData<Collection<Event>>([\"logs\", id, token], old => {"
+    },
+    {
+      "file": "frontend/src/useJobEvents.ts",
+      "line": 37,
+      "code": "timer.current = setTimeout(refresh, 2000);"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 1,
+      "code": "import { useEffect, useState } from \"react\";"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 2,
+      "code": "import { useQuery } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 10,
+      "code": "useEffect(()=>setText(serialized),[serialized]);"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 14,
+      "code": "const query=useQuery({queryKey:[\"user-agents\",token],queryFn:()=>api<Config>(\"/admin/user-agents\",token),refetchInterval:false,refetchOnWindowFocus:false,staleTime:Infinity,retry:false});"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 17,
+      "code": "useEffect(()=>{if(query.data){setDraft(structuredClone(query.data));setWeightText({});}},[query.data]);"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 20,
+      "code": "async function save(){if(!draft)return;setBusy(true);setError(\"\");setNotice(\"\");try{const services={...draft.services};for(const [name,text] of Object.entries(weightText)){const weights:unknown=JSON.parse(text);if(!weights||typeof weights!==\"object\"||Array.isArray(weights)||Object.values(weights).some(v=>typeof v!==\"number\"||!Number.isFinite(v)||v<=0||v>1000))throw new Error(\"Weights must be a JSON object with positive numbers up to 1000\");services[name]={...services[name],weights:weights as Record<string,number>};}await api(\"/admin/user-agents\",token,\"POST\",{revision:draft.revision,global_value:draft.global_value,profiles:draft.profiles,services});await query.refetch();setNotice(\"User-Agent configuration saved\");}catch(e){setError((e as Error).message);}finally{setBusy(false);}}"
+    },
+    {
+      "file": "frontend/src/UserAgentAdmin.tsx",
+      "line": 50,
+      "code": "<div className=\"identity-save-bar\"><Button disabled={busy} onClick={()=>void save()}>Save User-Agent settings</Button><Button disabled={busy} onClick={()=>void query.refetch()}>Reload saved settings</Button><span>Revision {draft.revision} | Changes apply to new sessions</span></div>"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 3,
+      "code": "import { useEffect, useRef } from \"react\";"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 4,
+      "code": "import { useQueryClient } from \"@tanstack/react-query\";"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 8,
+      "code": "const client = useQueryClient();"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 9,
+      "code": "useEffect(() => onApiMutation(async (path, ownerToken) => {"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 13,
+      "code": "const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 15,
+      "code": "useEffect(() => () => { clearTimeout(timer.current); timer.current = undefined; dirty.current.clear(); }, [token]);"
+    },
+    {
+      "file": "frontend/src/useWorkspaceEvents.ts",
+      "line": 22,
+      "code": "timer.current = setTimeout(() => {"
+    },
+    {
+      "file": "frontend/src/WorkspaceSearch.tsx",
+      "line": 1,
+      "code": "import { useEffect, useId, useRef, useState } from \"react\";"
+    },
+    {
+      "file": "frontend/src/WorkspaceSearch.tsx",
+      "line": 13,
+      "code": "useEffect(() => {"
+    },
+    {
+      "file": "frontend/src/WorkspaceSearch.tsx",
+      "line": 20,
+      "code": "document.addEventListener(\"keydown\", shortcut);"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const backendRoot = resolve(process.env.ADBOT_E2E_BACKEND_ROOT || join(root, "backend"));
 const temp = mkdtempSync(join(tmpdir(), "adbot-e2e-"));
 const python = join(
   root,
@@ -28,6 +29,8 @@ const env = {
   ADBOT_RATE_PER_MINUTE: "10000",
   ADBOT_AUTHORIZED_DOMAINS: "",
   ADBOT_AI_PROVIDER: "local",
+  // Preserve an explicit blank override in Windows child-process environments.
+  ADBOT_AI_PROVIDER_ORDER: " ",
   ADBOT_AI_OLLAMA_NATIVE: "false",
   ADBOT_AI_API_KEY: "fixture-only-not-a-live-provider-key",
   ADBOT_AI_FALLBACK_PROVIDER: "disabled",
@@ -77,11 +80,11 @@ try {
     });
   }
   const migration = spawnSync(python, ["-m", "alembic", "upgrade", "head"], {
-    cwd: join(root, "backend"),
+    cwd: backendRoot,
     env,
     encoding: "utf8",
   });
-  if (migration.status !== 0) throw new Error(migration.stderr);
+  if (migration.status !== 0) throw new Error(migration.stderr || migration.stdout || `Migration exited with status ${migration.status}`);
   start(
     python,
     [
@@ -93,15 +96,15 @@ try {
       "--port",
       "8765",
     ],
-    join(root, "backend"),
+    backendRoot,
   );
   start(
     python,
     ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", apiPort, "--no-proxy-headers", "--no-server-header", "--no-access-log"],
-    join(root, "backend"),
+    backendRoot,
   );
-  start(python, ["-m", "app.worker"], join(root, "backend"));
-  start(python, ["-m", "app.scheduler"], join(root, "backend"));
+  start(python, ["-m", "app.worker"], backendRoot);
+  start(python, ["-m", "app.scheduler"], backendRoot);
   start(
     python,
     [
@@ -113,7 +116,7 @@ try {
       "--port",
       "8766",
     ],
-    join(root, "backend"),
+    backendRoot,
   );
   start(
     process.execPath,

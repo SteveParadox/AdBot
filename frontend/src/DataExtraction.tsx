@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type Collection, type Website } from './api';
+import { useQuery } from '@tanstack/react-query';
+import { queryApi, api, type Collection, type Website } from './api';
 import { Button, Field } from './ui';
 
 import { parseDefinition, type Definition, type Rule } from './extractionSchema';
@@ -12,11 +12,10 @@ type Export = {job_id:string;format:string;status:string;rows:number;bytes:numbe
 const empty:Definition = {name:'Custom extraction',version:1,fields:{name:{type:'string',method:'css',selector:'h1',required:true}},identity_fields:['name']};
 
 export default function DataExtraction({token,sites}:{token:string;sites:Website[]}) {
- const cache=useQueryClient();
  const key=['extraction',token];
- const templates=useQuery({queryKey:[...key,'templates'],queryFn:()=>api<{items:{id:string;definition:Definition}[]}>('/extraction/templates',token)});
- const schemas=useQuery({queryKey:[...key,'schemas'],queryFn:()=>api<Collection<Schema>>('/extraction/schemas',token)});
- const datasets=useQuery({queryKey:[...key,'datasets'],queryFn:()=>api<Collection<Dataset>>('/extraction/datasets',token)});
+ const templates=useQuery({queryKey:[...key,'templates'],queryFn:({signal}) =>queryApi<{items:{id:string;definition:Definition}[]}>('/extraction/templates',token, signal)});
+ const schemas=useQuery({queryKey:[...key,'schemas'],queryFn:({signal}) =>queryApi<Collection<Schema>>('/extraction/schemas',token, signal)});
+ const datasets=useQuery({queryKey:[...key,'datasets'],queryFn:({signal}) =>queryApi<Collection<Dataset>>('/extraction/datasets',token, signal)});
  const [draft,setDraft]=useState(JSON.stringify(empty,null,2));
  const [parent,setParent]=useState(''); const [fieldName,setFieldName]=useState('');
  const [name,setName]=useState(''); const [site,setSite]=useState(''); const [schema,setSchema]=useState('');
@@ -28,13 +27,13 @@ export default function DataExtraction({token,sites}:{token:string;sites:Website
  const [exportFormat,setExportFormat]=useState('json'); const [columns,setColumns]=useState('');
  const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const [message,setMessage]=useState('');
  const [details,setDetails]=useState<unknown>(null);
- const datasetId=selected||datasets.data?.items[0]?.id||'';
+ const datasetId=(datasets.data?.items.some(item=>item.id===selected)?selected:datasets.data?.items[0]?.id)||'';
  const dataset=datasets.data?.items.find(d=>d.id===datasetId);
- const records=useQuery({queryKey:[...key,'records',datasetId,offset,q,status],queryFn:()=>api<Collection<RecordRow>>(`/extraction/datasets/${datasetId}/records?offset=${offset}&limit=20&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`,token),enabled:!!datasetId&&panel==='records'});
- const changes=useQuery({queryKey:[...key,'changes',datasetId,offset],queryFn:()=>api<Collection<{id:number;kind:string;details:unknown;created_at:number}>>(`/extraction/datasets/${datasetId}/changes?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='changes'});
- const runs=useQuery({queryKey:[...key,'runs',datasetId,offset],queryFn:()=>api<Collection<Run>>(`/extraction/datasets/${datasetId}/runs?offset=${offset}&limit=20`,token),enabled:!!datasetId&&panel==='runs'});
- const exports=useQuery({queryKey:[...key,'exports',datasetId],queryFn:()=>api<Collection<Export>>(`/extraction/datasets/${datasetId}/exports?limit=100`,token),enabled:!!datasetId&&panel==='exports'});
- async function perform(action:()=>Promise<unknown>,success='Saved') {setBusy(true);setError('');setMessage('');try{await action();setMessage(success);await cache.invalidateQueries({queryKey:key});}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+ const records=useQuery({queryKey:[...key,'records',datasetId,offset,q,status],queryFn:({signal}) =>queryApi<Collection<RecordRow>>(`/extraction/datasets/${datasetId}/records?offset=${offset}&limit=20&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`,token, signal),enabled:!!datasetId&&panel==='records'});
+ const changes=useQuery({queryKey:[...key,'changes',datasetId,offset],queryFn:({signal}) =>queryApi<Collection<{id:number;kind:string;details:unknown;created_at:number}>>(`/extraction/datasets/${datasetId}/changes?offset=${offset}&limit=20`,token, signal),enabled:!!datasetId&&panel==='changes'});
+ const runs=useQuery({queryKey:[...key,'runs',datasetId,offset],queryFn:({signal}) =>queryApi<Collection<Run>>(`/extraction/datasets/${datasetId}/runs?offset=${offset}&limit=20`,token, signal),enabled:!!datasetId&&panel==='runs'});
+ const exports=useQuery({queryKey:[...key,'exports',datasetId],queryFn:({signal}) =>queryApi<Collection<Export>>(`/extraction/datasets/${datasetId}/exports?limit=100`,token, signal),enabled:!!datasetId&&panel==='exports'});
+ async function perform(action:()=>Promise<unknown>,success='Saved') {setBusy(true);setError('');setMessage('');try{await action();setMessage(success);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
  const definition=parseDefinition(draft);
  function updateField(field:string,values:Partial<Rule>) {if(!definition)return;setDraft(JSON.stringify({...definition,fields:{...definition.fields,[field]:{...definition.fields[field],...values}}},null,2));}
  function newDataset(){setEditing('');setName('');setOptions('{}');}

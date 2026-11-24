@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,11 +50,26 @@ class Settings(BaseSettings):
     artifact_dir: Path = Path("./data/screenshots")
     retention_days: int = Field(30, ge=1)
     rate_per_minute: int = Field(120, ge=1)
-    ai_provider: Literal["disabled", "groq", "openai_compatible", "local"] = "disabled"
+    ai_provider: Literal["disabled", "groq", "groq_secondary", "openrouter", "google", "nvidia", "openai_compatible", "local"] = "disabled"
     ai_base_url: str = "https://api.openai.com/v1"
     ai_api_key: SecretStr = SecretStr("")
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_api_key: SecretStr = SecretStr("")
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_secondary_api_key: SecretStr = SecretStr("")
+    groq_secondary_model: str = "openai/gpt-oss-120b"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_api_key: SecretStr = SecretStr("")
+    openrouter_model: str = "openai/gpt-oss-120b"
+    google_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    google_api_key: SecretStr = SecretStr("")
+    google_model: str = "gemini-3.8-flash"
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_api_key: SecretStr = SecretStr("")
+    nvidia_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    # Empty retains the single-provider / optional local fallback configuration.
+    ai_provider_order: str = ""
+    ai_failure_cooldown_seconds: int = Field(30, ge=1, le=3600)
     ai_model: str = ""
     ai_timeout_seconds: int = Field(30, ge=1, le=120)
     ai_ollama_native: bool = False
@@ -72,6 +87,7 @@ class Settings(BaseSettings):
     ai_max_output_tokens: int = Field(800, ge=256, le=8000)
     ai_max_request_chars: int = Field(18000, ge=4000, le=100000)
     ai_json_mode: bool = True
+    ai_reasoning_effort: Literal["low", "medium", "high"] = "low"
     agent_max_steps: int = Field(500, ge=1, le=500)
     agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
     agent_max_tabs: int = Field(4, ge=1, le=10)
@@ -80,6 +96,39 @@ class Settings(BaseSettings):
     agent_visual_reasoning: bool = False
     browser_session_persistence: bool = False
     session_encryption_key: SecretStr = SecretStr("")
+
+    @field_validator("ai_provider_order", mode="before")
+    @classmethod
+    def normalize_provider_order(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    def provider_endpoint(self, name):
+        if name == "groq":
+            return self.groq_base_url, self.groq_api_key, self.ai_model if name == self.ai_provider else self.groq_model
+        if name == "groq_secondary":
+            return (self.groq_base_url, self.groq_secondary_api_key,
+                    self.ai_model if name == self.ai_provider else self.groq_secondary_model)
+        if name in {"openrouter", "google", "nvidia"}:
+            return (getattr(self, name + "_base_url"), getattr(self, name + "_api_key"),
+                    self.ai_model if name == self.ai_provider else getattr(self, name + "_model"))
+        if name in {"openai_compatible", "local"}:
+            return self.ai_base_url, self.ai_api_key, self.ai_model
+        raise ValueError("Unknown AI provider in ADBOT_AI_PROVIDER_ORDER")
+
+    def model_providers(self):
+        if self.ai_provider == "disabled":
+            return []
+        if self.ai_provider_order:
+            return [self.provider_endpoint(name.strip()) for name in self.ai_provider_order.split(",")]
+        providers = [self.provider_endpoint(self.ai_provider)]
+        if self.ai_fallback_provider == "local":
+            providers.append((self.ai_fallback_base_url, self.ai_fallback_api_key, self.ai_fallback_model))
+        return providers
+
+    def model_provider_is_local(self, index):
+        if self.ai_provider_order:
+            return self.ai_provider_order.split(",")[index].strip() == "local"
+        return self.ai_provider == "local" or (index > 0 and self.ai_fallback_provider == "local")
 
     @model_validator(mode="after")
     def secure(self):
@@ -111,7 +160,7 @@ class Settings(BaseSettings):
         if self.ai_provider != "disabled":
             if not self.ai_model:
                 raise ValueError("Set ADBOT_AI_MODEL when enabling an AI provider")
-            endpoint = self.groq_base_url if self.ai_provider == "groq" else self.ai_base_url
+            endpoint, key, _ = self.provider_endpoint(self.ai_provider)
             parsed = urlsplit(endpoint)
             if (
                 parsed.scheme not in {"https", "http"}
@@ -123,9 +172,23 @@ class Settings(BaseSettings):
                 raise ValueError("Invalid AI endpoint")
             if self.ai_provider != "local" and parsed.scheme != "https":
                 raise ValueError("Remote AI providers require HTTPS")
-            key = self.groq_api_key if self.ai_provider == "groq" else self.ai_api_key
             if self.ai_provider != "local" and not key.get_secret_value():
                 raise ValueError("Configure the selected provider API key")
+        if self.ai_provider_order and self.ai_provider != "disabled":
+            names = [name.strip() for name in self.ai_provider_order.split(",")]
+            if names[0] != self.ai_provider or len(names) != len(set(names)):
+                raise ValueError("AI provider order must start with AI_PROVIDER and contain no duplicates")
+            if self.ai_fallback_provider != "disabled":
+                raise ValueError("Use AI_PROVIDER_ORDER or the legacy local fallback, not both")
+            for index, (endpoint, key, model) in enumerate(self.model_providers()):
+                parsed = urlsplit(endpoint)
+                if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
+                        or parsed.password or parsed.query or parsed.fragment):
+                    raise ValueError("Invalid AI provider chain endpoint")
+                if not model:
+                    raise ValueError("Configure a model for each AI provider")
+                if not self.model_provider_is_local(index) and (parsed.scheme != "https" or not key.get_secret_value()):
+                    raise ValueError("Remote AI provider chain entries require HTTPS and an API key")
         if self.ai_fallback_provider != "disabled":
             if self.ai_provider != "groq":
                 raise ValueError("AI fallback is supported only with Groq as the primary provider")

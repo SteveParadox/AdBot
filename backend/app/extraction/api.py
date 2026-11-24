@@ -287,8 +287,9 @@ def runs(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100):
             offset,
             limit,
         )
+        jobs = {job.id: job for job in session.scalars(select(Job).where(Job.id.in_([row["job_id"] for row in values["items"]])))}
         for row in values["items"]:
-            job = session.get(Job, row["job_id"])
+            job = jobs[row["job_id"]]
             row["job_status"] = job.status
             row["status"] = (
                 "partial"
@@ -357,8 +358,9 @@ def exports(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 10
             offset,
             limit,
         )
+        jobs = {job.id: job for job in session.scalars(select(Job).where(Job.id.in_([item["job_id"] for item in values["items"]])))}
         for item in values["items"]:
-            item["status"] = session.get(Job, item["job_id"]).status
+            item["status"] = jobs[item["job_id"]].status
         return values
 
 

@@ -1,0 +1,19 @@
+{
+  "captured_at_utc": "2026-11-24T14:57:50Z",
+  "method": "Isolated temporary SQLite, 4 owners x 25 tasks; 50 sequential warm GETs and 40 GETs across four threads. TestClient latency includes response validation and JSON decoding. CPU is this Python process, memory is tracemalloc peak during sequential reads, not system RSS.",
+  "sequential_requests": 50,
+  "sql_queries": 1350,
+  "sql_queries_per_request": 27.0,
+  "response_bytes": 1030600,
+  "api_latency_ms": {
+    "p50": 50.869,
+    "p95": 54.913,
+    "p99": 56.971
+  },
+  "process_cpu_ms": 2468.75,
+  "python_heap_peak_bytes": 805902,
+  "concurrent_requests": 40,
+  "concurrent_wall_ms": 655.054,
+  "concurrent_sql_queries": 1080,
+  "authorization_isolation": "all four owner-specific response ID sets verified"
+}

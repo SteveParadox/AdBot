@@ -1,0 +1,101 @@
+{
+  "recorded_at_utc": "2026-11-24T15:42:44.698416+00:00",
+  "frontend_unit": {
+    "command": "npm test",
+    "passed": 59,
+    "files": 11
+  },
+  "frontend_build": {
+    "command": "npm run build",
+    "status": "passed",
+    "note": "TypeScript project build and Vite production bundle completed."
+  },
+  "backend_full_snapshot": {
+    "command": "python -m pytest -m \"not browser\" -q",
+    "passed": 305,
+    "skipped": 1,
+    "browser_deselected": 63,
+    "fixture_failures": 3,
+    "duration_seconds": 323.64,
+    "fixture_failure_reason": "QA snapshot initially omitted tracked docker configuration files used by static deployment-guard tests; application tests passed."
+  },
+  "backend_fixture_recheck": {
+    "passed": 3,
+    "duration_seconds": 1.7,
+    "tests": [
+      "tests/test_outbound.py::test_tunnel_configuration",
+      "tests/test_privacy.py::test_deployment_guards",
+      "tests/test_privacy.py::test_missing_assets_cannot_fall_back_to_cached_html"
+    ],
+    "fix": "Copied the existing tracked deployment fixtures into the QA root; no application source change or test expectation change."
+  },
+  "backend_combined_verified": {
+    "passed": 308,
+    "skipped": 1,
+    "note": "305 passing full-run cases plus the three successfully rerun static guard cases; not represented as a single zero-failure full-run transcript."
+  },
+  "browser_regression": {
+    "passed": 18,
+    "failed": 0,
+    "flaky": 0,
+    "duration_ms": 87230.84300000001,
+    "command": "npm run test:e2e -- traffic.spec.ts agent.spec.ts extraction.spec.ts journey.spec.ts content.spec.ts workspace.spec.ts automation.spec.ts --reporter=list,json",
+    "backend_source": "isolated QA snapshot; explicit local fixture provider order; no developer .env copied"
+  },
+  "lint": {
+    "command": "ruff check app tests testsupport",
+    "status": "passed on QA source snapshot"
+  },
+  "migration": {
+    "commands": [
+      "python -m alembic upgrade head",
+      "python -m alembic check"
+    ],
+    "status": "passed against an isolated temporary SQLite database",
+    "head": "021a00000001",
+    "check_output": "No new upgrade operations detected."
+  },
+  "event_ui_latency": [
+    {
+      "wall_ms": 477,
+      "events": 300,
+      "method": "Driver-observed synthetic event-to-render wall time, not production latency"
+    },
+    {
+      "wall_ms": 428,
+      "events": 300,
+      "method": "Driver-observed synthetic event-to-render wall time, not production latency"
+    }
+  ],
+  "limitations": [
+    "Live PostgreSQL/Redis load and production proxies not exercised",
+    "Backend browser-marked pytest tests not included; real Chromium E2E cases exercised application flows",
+    "Concurrent provider edits preserved and excluded from traffic implementation scope",
+    "Metrics are controlled fixtures, not production capacity guarantees"
+  ],
+  "intermediate_issues_resolved": [
+    "Explicit AgentStep-to-Job join was required because its FK targets AgentTask",
+    "Pause gate acknowledgment preceded by gate closure; transition events now emitted",
+    "Source changes during early development tests triggered HMR; later runs froze application source",
+    "Concurrent provider-order changes broke subprocess fixtures; source snapshot and fixture settings isolate QA"
+  ],
+  "browser_final_focused": {
+    "passed": 8,
+    "failed": 0,
+    "flaky": 0,
+    "duration_ms": 9099.508999999998,
+    "command": "npm run test:e2e -- traffic.spec.ts --reporter=list,json",
+    "note": "Latest shared dataset cache, queue diagnostics, startup, replay, terminal, visibility, outage, expiry and cross-tab checks."
+  },
+  "unique_browser_scenarios": 19,
+  "all_final_checks_passed": true,
+  "backend_latest_targeted": {
+    "command": "python -m pytest tests/test_refresh_events.py -q",
+    "status": "passed",
+    "note": "Latest oversized-snapshot routing hints and explicit file-write publication duplication regression; one new test beyond the frozen full suite.",
+    "passed": 16,
+    "duration_seconds": 14.51,
+    "lint": "passed"
+  },
+  "distinct_backend_cases_verified": 309
+}

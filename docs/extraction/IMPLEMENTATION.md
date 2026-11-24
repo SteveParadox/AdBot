@@ -109,8 +109,8 @@ Field transformations are allowlisted (`lower`, `upper`, `currency_code`).
 
 Deterministic extraction works with AI disabled. Fields explicitly using method
 `ai`, or missing fields with dataset `ai_fallback: true`, use the existing provider
-configuration. In this workspace Groq remains primary and Qwen is the configured
-fallback; this feature does not change provider credentials or preference.
+configuration. In this workspace Groq leads the configured cloud provider chain; see
+[provider failover](../network/PROVIDER_FAILOVER.md); this feature does not change provider credentials or preference.
 
 Natural-language `ai_instructions` accompanies the selected field schema and
 bounded observed content. Each candidate must include an exact quote from its
@@ -270,8 +270,8 @@ job pause/resume/cancel remains in the existing Jobs/Automation controls.
    `{"ready_selector":".product","pagination_selector":"a.next"}`. Navigation
    remains subject to website max_pages/max_depth/time limits.
 7. Run extraction. Inspect records, errors and source evidence. For ordinary-language
-   enrichment set ai_instructions and explicit ai methods or ai_fallback; Groq-first
-   provider configuration remains the operator's existing configuration.
+   enrichment set ai_instructions and explicit ai methods or ai_fallback; requests
+   use the operator's configured provider chain.
 8. Create a fixed cron schedule (dashboard uses UTC), or attach to website automation
    for future workflows/agents. Review intentional scope before enabling removals.
 9. Queue JSON/CSV exports and download when completed. Artifacts expire; queue a new

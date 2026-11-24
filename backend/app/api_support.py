@@ -21,6 +21,11 @@ async def authenticate(request: Request, authorization: Annotated[str | None, He
     if not any(hmac.compare_digest(token, k.strip()) for k in settings().api_keys.split(",")):
         raise HTTPException(401, "Valid Bearer API key required", headers={"WWW-Authenticate": "Bearer"})
     owner = hashlib.sha256(token.encode()).hexdigest()
+    request.state.owner = owner
+    from .traffic import request_counters
+    counters = request_counters.get()
+    if counters is not None:
+        counters["owner"] = owner
     redis = getattr(request.app.state, "redis", None)
     if redis:
         key = f"adbot:rate:{owner}:{int(time.time() // 60)}"

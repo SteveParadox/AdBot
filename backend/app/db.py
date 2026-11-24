@@ -2,8 +2,8 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from sqlalchemy import CheckConstraint, JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, event
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy import Index, CheckConstraint, JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, event
+from sqlalchemy.orm import Session as OrmSession, DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
 
@@ -110,12 +110,22 @@ class Schedule(Base):
 
 class AutomationEvent(Base):
     __tablename__ = "automation_events"
+    __table_args__ = (Index("ix_automation_events_job_cursor", "job_id", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("automation_jobs.id", ondelete="CASCADE"), index=True)
     event_type: Mapped[str] = mapped_column(String(40))
     message: Mapped[str] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     timestamp: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ResourceChange(Base):
+    __tablename__ = "resource_changes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String(64), index=True)
+    path: Mapped[str] = mapped_column(String(240))
+    request_id: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
 
 
 class Lease(Base):
@@ -402,3 +412,37 @@ def transaction():
 
 def emit(session, job_id, kind, message, **details):
     session.add(AutomationEvent(job_id=job_id, event_type=kind, message=message, details=details))
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def count_request_queries(_connection, _cursor, _statement, _parameters, _context, _many):
+    from .traffic import request_counters
+    counters = request_counters.get()
+    if counters is not None:
+        counters["sql_queries"] += 1
+
+
+_notice_cleanup_at = 0.0
+
+
+@event.listens_for(OrmSession, "before_commit")
+def publish_transaction_notice(session):
+    """Commit cache notices atomically with API writes, including ORM bulk updates."""
+    global _notice_cleanup_at
+    from .traffic import request_counters
+    from .realtime import resource_path
+    context = request_counters.get()
+    if not context or not context.get("owner") or context.get("method") not in {"POST", "PATCH", "PUT", "DELETE"}:
+        return
+    path = resource_path(context.get("path", ""), context.get("method", "POST"))
+    transaction_id = session.get_transaction()
+    if not path or session.info.get("notice_transaction") is transaction_id:
+        return
+    session.info["notice_transaction"] = transaction_id
+    session.add(ResourceChange(owner="*" if path == "/admin/content" else context["owner"],
+                               path=path, request_id=context["request_id"]))
+    context["change_published"] = True
+    if time.monotonic() > _notice_cleanup_at:
+        from sqlalchemy import delete
+        _notice_cleanup_at = time.monotonic() + 60
+        session.execute(delete(ResourceChange).where(ResourceChange.created_at < time.time() - 86400))
