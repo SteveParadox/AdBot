@@ -16,7 +16,7 @@ from ..config import settings
 from ..db import Job, ResearchConversation, ResearchTask, Session, emit, transaction
 from ..jobs import TERMINAL, check_capacity
 from .contracts import Mode, Question, Strict, budget_for, route
-from .evidence import country_from
+from .memory import build_context
 from .runner import previous_turns
 from .search import configured_providers
 
@@ -113,11 +113,15 @@ def enqueue(data, owner, key, retry_of=None):
                 snapshot["research_history_before"] = original_job.snapshot.get(
                     "research_history_before", original_task.created_at
                 )
+                history = previous_turns(session, thread.id, owner, snapshot["research_history_before"])
+                context = original_job.snapshot.get("research_context") or build_context(data, history, intent, mode)
             else:
-                history = previous_turns(session, thread.id, owner)
+                snapshot["research_history_before"] = time.time()
+                history = previous_turns(session, thread.id, owner, snapshot["research_history_before"])
                 intent, mode = route(data, history)
-                values.update(conversation_id=thread.id, country=country_from(data.question, data.country)
-                              or (history[-1].get("country") if intent == "follow_up" and history else None))
+                context = build_context(data, history, intent, mode)
+            snapshot["research_context"] = context
+            values.update(conversation_id=thread.id, country=context["country"], freshness=context["freshness"])
             budget = budget_for(mode)
             snapshot["configuration"] = {"max_duration_seconds": budget.seconds}
             job = Job(owner=owner, job_type="research", website_id=None, idempotency_key=key, payload_hash=digest,
