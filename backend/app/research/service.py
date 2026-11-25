@@ -20,7 +20,7 @@ from .navigation import rank_links, safe_link
 from .policy import PublicPolicy, canonical_key
 from .retrieval import Fetcher
 from .search import Hit, ProviderPool, rank_hits, terms
-from .synthesis import batch_rows, evidence_rows, offered_evidence, profile_for, report_markdown, unique_claims
+from .synthesis import batch_rows, evidence_rows, fits, offered_evidence, profile_for, report_markdown, unique_claims
 
 INSTRUCTIONS = (
     "Return only one compact JSON object matching the schema. The user question defines the task. "
@@ -496,6 +496,12 @@ class Research:
             **({"research_subquestions": self.gap_plan.snapshot()} if self.gap_plan else {}),
         }
 
+    def verification_context(self, rows):
+        context = {"question": self.question.question, "freshness": self.freshness}
+        if self.mode == Mode.SHOPPING:
+            context["shopping_assessments"] = self.synthesis_payload(rows)["shopping_assessments"]
+        return context
+
     async def synthesize_batches(self, records, preferred):
         cfg = settings()
         profile = profile_for(self.mode, cfg.ai_max_output_tokens)
@@ -506,6 +512,7 @@ class Research:
             "Only propose claims supported by this batch. Prefer complementary findings, preserve "
             "qualifications, and do not declare the overall research complete."
         )
+        verify_prompt = VERIFY + " Evaluate claims against the question and supplied shopping constraints, if any. Unknown requirement or budget fit is not a verified match."
         accepted, presented = [], []
         proposed_total = rejected = batches = verified_total = 0
         verification_ms = 0
@@ -516,26 +523,28 @@ class Research:
             # Split the available evidence across the remaining batches. Do
             # not use every slot in the first call when more batches are possible.
             count = min(profile.rows, max(1, (len(remaining) + max_batches - index - 1) // (max_batches - index)))
-            base = self.synthesis_payload(remaining)
-            base["claim_limit"] = profile.claims_per_batch
-            base["batch"] = index + 1
+            limit = profile.claims_per_batch
+
+            def payload_for(rows):
+                return {**self.synthesis_payload(rows), "claim_limit": limit, "batch": index + 1}
+
             rows, pending = batch_rows(
-                remaining, base, batch_prompt, cfg.ai_max_request_chars, count,
-                profile.claims_per_batch, VERIFY,
+                remaining, payload_for, batch_prompt, cfg.ai_max_request_chars, count,
+                limit, verify_prompt, self.verification_context,
             )
             if not rows:
                 # For unusually small request caps, try a smaller claim
                 # response before giving up; schema and evidence stay intact.
-                base["claim_limit"] = 1
-                rows, pending = batch_rows(remaining, base, batch_prompt, cfg.ai_max_request_chars,
-                                           count, 1, VERIFY)
+                limit = 1
+                rows, pending = batch_rows(remaining, payload_for, batch_prompt, cfg.ai_max_request_chars,
+                                           count, limit, verify_prompt, self.verification_context)
             if not rows:
                 break
             remaining = pending
             presented.extend(rows)
             batches += 1
             await self.stage("synthesizing", "Synthesizing an evidence batch", batch=batches, evidence=len(rows))
-            summary = await self.ask("research_synthesis", batch_prompt, Summary, {**base, "evidence": rows})
+            summary = await self.ask("research_synthesis", batch_prompt, Summary, {**payload_for(rows), "evidence": rows})
             if summary is None:
                 self.result_quality = "partial"
                 continue
@@ -543,7 +552,7 @@ class Research:
                 limitations.extend(summary.limitations[:4])
             proposed_total += len(summary.claims)
             offered = offered_evidence(rows, self.evidence)
-            proposals = [claim for claim in summary.claims[:base["claim_limit"]]
+            proposals = [claim for claim in summary.claims[:limit]
                          if set(claim.evidence) <= offered.keys() and len(set(claim.evidence)) == len(claim.evidence)]
             rejected += len(summary.claims) - len(proposals)
             await self.stage("verifying", "Verifying evidence batch", batch=batches, candidates=len(proposals))
@@ -551,10 +560,11 @@ class Research:
                 self.result_quality = "partial"
                 continue
             started = time.monotonic()
-            checked = await self.ask("research_verify", VERIFY, Verification, {
-                "candidates": [claim.model_dump() for claim in proposals],
-                "evidence": rows,
-            })
+            verification = {**self.verification_context(rows),
+                            "candidates": [claim.model_dump() for claim in proposals], "evidence": rows}
+            checked = (await self.ask("research_verify", verify_prompt, Verification, verification)
+                       if fits(verify_prompt, "research_verify", verification, Verification, cfg.ai_max_request_chars)
+                       else None)
             verification_ms += round((time.monotonic() - started) * 1000)
             verified = verified_claims(proposals, checked, offered, self.sources) if checked else []
             rejected += len(proposals) - len(verified)
@@ -563,18 +573,22 @@ class Research:
         self.claims = unique_claims(accepted)
         self.metrics["synthesis_batches"] = batches
         self.metrics["synthesis_evidence_presented"] = len(presented)
-        self.metrics["synthesis_evidence_remaining"] = len(remaining)
+        oversized = sum(r["kind"] == "structured" and len(r["quote"]) > profile.quote_chars for r in records)
+        self.metrics["synthesis_evidence_remaining"] = len(remaining) + oversized
         self.metrics["verification_ms"] = verification_ms
         self.metrics["claims_proposed"] = proposed_total
         self.metrics["claims_verified"] = len(self.claims)
         self.metrics["citation_coverage"] = round(verified_total / proposed_total, 3) if proposed_total else None
-        if remaining:
+        if remaining or oversized:
             self.notes.append("Some retrieved evidence was not assessed within the synthesis budget.")
             self.result_quality = "partial"
         if limitations:
             self.notes.append("The synthesis model reported limitations; the verified claims do not establish a complete answer.")
             self.result_quality = "partial"
-        self.finalize_synthesis(presented, rejected, len(self.claims))
+        # If no batch fit, disclose the budget failure and use actual excerpts
+        # rather than claiming no relevant source was retrieved.
+        fallback = presented or remaining[:4]
+        self.finalize_synthesis(fallback, rejected, len(self.claims))
 
     async def synthesize(self):
         await self.stage("comparing", "Comparing evidence across sources", sources=len(self.sources), evidence=len(self.evidence))
