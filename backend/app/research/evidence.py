@@ -15,7 +15,7 @@ from courlan import extract_domain
 from .policy import PublicPolicy, canonical_key
 from .retrieval import clean
 from .search import terms
-from .shopping import comparable_identity, condition_value, suitability
+from .shopping import budget_constraint, comparable_identity, condition_value, suitability
 
 
 def source_domain(url):
@@ -189,24 +189,14 @@ def rank_products(products, question, country=None):
     # Exact offer identity preserves storage, memory, condition and seller
     # differences. The same variation can still be compared across retailers.
     text = question.casefold()
-    amount = re.search(r"(?:under|below|budget(?: of)?|up to)\s*(₦|ngn\s*|\$|usd\s*|€|eur\s*|£|gbp\s*)?\s*([0-9,.]+)\s*(million|m\b|k\b|thousand)?", text)
-    target = None
-    if amount:
-        symbol, value, scale = amount.groups()
-        currency = {"₦": "NGN", "$": "USD", "€": "EUR", "£": "GBP"}.get(symbol or "", (symbol or "").strip().upper())
-        if not currency and country_from(question, country) == "NG":
-            currency = "NGN"
-        try:
-            target = (currency, Decimal(value.replace(",", "")) * {"million": 1000000, "m": 1000000, "k": 1000, "thousand": 1000}.get(scale, 1))
-        except InvalidOperation:
-            pass
+    budget_requested, target = budget_constraint(question, country_from(question, country))
     unique = {}
     for product in products:
         key = (canonical_key(product["url"]), product["retailer"], product["price"], product["currency"],
                product["availability"], product["name"], product["model"], product["gtin"],
                json.dumps(product["variant"], sort_keys=True), json.dumps(product["specifications"], sort_keys=True))
         price = Decimal(product["price"]) if product["price"] else None
-        product["budget_requested"] = bool(amount)
+        product["budget_requested"] = budget_requested
         product["within_budget"] = price <= target[1] if target and target[0] == product["currency"] and price is not None else None
         product["suitability"] = suitability(product, question)
         product["comparison_group"] = comparable_identity(product)
