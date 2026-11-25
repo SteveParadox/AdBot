@@ -85,6 +85,19 @@ def recovery(page: Annotated[int, Query(ge=1, le=8)] = 1):
     return tools(page, "recovery")
 
 
+@router.get("/execution-fixture/reload", response_class=HTMLResponse)
+def reload_pager(page: Annotated[int, Query(ge=1, le=8)] = 1):
+    catalog = tools(page, "normal")
+    if page != 1:
+        return catalog
+    return catalog.replace(
+        '<button type="button" onclick="location.href=\'?page=2\'">Next</button>',
+        '<button type="button" id="next">Next</button>'
+        '<script>if (sessionStorage.getItem("opened")) document.getElementById("next").onclick=()=>location.href="?page=2";'
+        'sessionStorage.setItem("opened", "1");</script>',
+    )
+
+
 @router.get("/execution-fixture/semantic", response_class=HTMLResponse)
 def semantic():
     return (
@@ -104,6 +117,40 @@ def in_place():
         '<span itemprop="category">AI chatbot</span></article>'
         '<button type="button" onclick="setTimeout(()=>{const link=document.querySelector(\'article a\');'
         'link.href=\'/execution-fixture/tool/second\';link.textContent=\'Second chatbot\';this.disabled=true},150)">Next</button></main>'
+    )
+
+
+@router.get("/execution-fixture/tutors", response_class=HTMLResponse)
+def tutors():
+    return semantic().replace("AI products", "Language tutors")
+
+
+@router.get("/execution-fixture/prompt-hub", response_class=HTMLResponse)
+def prompt_hub():
+    return (
+        '<nav><a href="/execution-fixture/tools">Tools</a>'
+        '<a href="/execution-fixture/prompt-catalog">Prompts Find reusable instructions</a></nav>'
+        '<main><h1>Products</h1><p>2 products</p>'
+        '<article><a href="/execution-fixture/tool/assistant">Business Assistant</a>'
+        '<p>Business Assistant is a platform for generating sales prompts.</p></article>'
+        '<article><a href="/execution-fixture/tool/workbench">Marketing Workbench</a>'
+        '<p>Marketing Workbench is a tool for storing marketing prompts.</p></article></main>'
+    )
+
+
+@router.get("/execution-fixture/prompt-catalog", response_class=HTMLResponse)
+def prompt_catalog():
+    return (
+        '<main><h1>Prompts</h1><section><p>3 prompts</p><div>'
+        '<article><h2><a href="/execution-fixture/prompt/proposal">Proposal Writer</a></h2>'
+        '<p>Draft a sales proposal for a prospective customer.</p></article>'
+        '<article><h2><a href="/execution-fixture/prompt/explore">Explore the Sky</a></h2>'
+        '<p>Pick an astronomy topic and learn about the solar system.</p></article>'
+        '<article><h2><a href="/execution-fixture/tool/platform">Prompt Platform</a></h2>'
+        '<p>This is an AI-powered platform for managing marketing prompts.</p></article>'
+        '</div><button disabled>Next</button></section>'
+        '<ul><li><a href="/execution-fixture/topics/one">Topic one</a></li>'
+        '<li><a href="/execution-fixture/topics/two">Topic two</a></li></ul></main>'
     )
 
 

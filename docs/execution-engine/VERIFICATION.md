@@ -1,5 +1,18 @@
 # Verification and benchmark
 
+## Semantic source selection and independent catalog comparison
+
+The original prompt task completed after reading the wrong catalog, 119 tools, and returning four software products. With typed source verification, the first corrected run collected all 142 prompts and stayed partial with 58 unresolved classifications. It used 29,685 tokens. Grounded topic prefiltering reduced the final prompt run to 2,470 tokens and two model calls with no unresolved prompts.
+
+| Objective | Verified catalog coverage | Independently checked matches | Elapsed | Tokens |
+| --- | ---: | ---: | ---: | ---: |
+| List all business prompts | 142 prompts in 10 batches | 65 | 13.49 s | 2,470 |
+| List all AI chatbots | 119 tools in 8 batches | 5 | 25.75 s | 17,345 |
+
+Both live runs started at the XavKit homepage and used the normal task API, worker, local Chromium, configured providers, and a 60,000-token cap. A separate browser pass enumerated the two public catalogs. Manual review used the visible tags and stated purpose of each listing. Business matches had a direct organizational use such as marketing, sales, operations, hiring, or customer support. Generic and primarily personal tasks fell outside that rubric. Chatbot matches included standalone conversational assistants and answer engines. Catalog URLs, matched URLs, titles, and cited evidence all agreed with the independent review. Record counts reflect the live catalogs observed on November 25, 2026.
+
+Authenticated local dashboard retries of the original tasks returned the same independently verified sets. The business-prompt job returned 65 of 142 in 16.08 seconds with 1,325 tokens and one model call. The chatbot job returned five of 119 in 36.80 seconds with 21,233 tokens across 14 model calls, including provider failover. Both served verified results with all five checks and zero unresolved records. Browser checks also confirmed the typed source, the final verification decision, the completed saved plan, and the warning on the historical result.
+
 ## Live acceptance from the original XavKit start page
 
 The merged PR #16 baseline ran the original objective, "list all ai chatbots", from the public [XavKit rankings page](https://xavkit.com/best). It treated 26 ranking entries as products, used 6,523 tokens, and failed verification. The follow-up skips recognized ranking inventories and follows the observed Tools link. Numbered excerpts keep classification responses compact and allow the provider chain to reject invalid record or evidence references. The acceptance check for chatbot matches also rejects citations that describe features in streaming or editing products.

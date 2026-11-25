@@ -28,22 +28,44 @@ def task_output(job, task):
     elapsed = max(0, (job.completed_at or time.time()) - job.started_at) if job.started_at else 0
     directory = task.memory.get("directory") or {}
     records = directory.get("records", {})
+    route = task.memory.get("execution_route") or {}
+    entity = route.get("entity") or directory.get("entity") or ""
+    result = task.result or {}
+    verification = result.get("verification") or {}
+    planning = task.memory.get("planning")
+    # Earlier semantic inventories had no source-type gate. Preserve the stored
+    # run for inspection without presenting its matches as verified.
+    if entity.startswith("semantic:") and result.get("directory") and verification.get("complete") and not verification.get("dimensions"):
+        result = {**result, "partial": True, "verification": {**verification, "complete": False,
+                  "historical_unverified": True, "explanation": "This run did not verify the requested source type."}}
+        if planning and planning.get("plan"):
+            nodes = [
+                {**node, "status": "blocked", "outcome": "The requested source type was unverified."}
+                if node["kind"] == "verify" else node for node in planning["plan"].get("subtasks", [])
+            ]
+            planning = {**planning, "plan": {**planning["plan"], "subtasks": nodes}}
     return output(job) | {
         "traffic_kind": "automated",
         "automation_session_id": job.id,
         "objective": task.objective,
         "mode": task.mode,
         "options": task.options,
-        "result": task.result,
+        "result": result,
         "pending_step_id": task.pending_step_id,
-        "memory": task.memory,
+        "memory": {**task.memory, "planning": planning} if planning else task.memory,
         "prompt_tokens": task.prompt_tokens,
         "completion_tokens": task.completion_tokens,
         "model_calls": task.model_calls,
         "model_latency_ms": task.model_latency_ms,
-        "planning": task.memory.get("planning"),
+        "planning": planning,
         "execution": {
-            "strategy": task.memory.get("execution_route", {}).get("name", "directory_collection" if directory.get("pages") else "general"),
+            "strategy": route.get(
+                "name", (task.memory.get("planning") or {}).get("route")
+                or ("directory_collection" if directory.get("pages") else "general"),
+            ),
+            "entity": entity or None,
+            "collection_kind": directory.get("collection_kind"),
+            "collection_url": directory.get("collection_url"),
             "unique_records": len(records),
             "matched_records": sum(row.get("classification") == "match" for row in records.values()),
             "advertised_total": directory["totals"][0] if len(directory.get("totals", [])) == 1 else None,

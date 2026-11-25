@@ -256,6 +256,8 @@ def initial_plan(spec, max_steps=500, dataset=False):
     }
     route = select_route(spec["objective"], spec, dataset)
     state["route"] = route.name
+    if route.entity:
+        state["plan"]["intent"]["entities"] = [route.entity.removeprefix("semantic:")]
     if route.name != "general":
         state["plan"]["subtasks"][0]["description"] = route.guidance
     if spec["output_format"] in {"csv", "json"} and not dataset:
@@ -312,7 +314,8 @@ def ready(state):
     return [n for n in nodes if n["status"] in {"pending", "active"} and set(n["dependencies"]) <= done]
 
 
-def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False, *, collection_complete=None):
+def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False,
+             *, collection_complete=None, source_verified=None):
     for node in state["plan"]["subtasks"]:
         if node["status"] in {"failed", "blocked"}:
             continue
@@ -321,6 +324,7 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
         satisfied = (
             node["kind"] == "research"
             and observation.get("url", "").startswith(("http://", "https://"))
+            and source_verified is not False
             or node["kind"] == "collect"
             and (bool(evidence) if collection_complete is None else collection_complete)
             or node["kind"] == "dataset"

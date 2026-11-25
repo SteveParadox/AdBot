@@ -25,6 +25,7 @@ type Task = Job & {
   objective: string;
   execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
     directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
+    entity?: string | null; collection_kind?: string | null;
     classification_calls?: number };
   mode: string;
   options: {
@@ -37,7 +38,7 @@ type Task = Job & {
     partial?: boolean;
     claims?: Claim[];
     evidence?: Evidence[];
-    verification?: { complete: boolean; explanation: string };
+    verification?: { complete: boolean; explanation: string; dimensions?: Record<string, boolean>; historical_unverified?: boolean };
   };
   pending_step_id: number | null;
   memory: Record<string, unknown>;
@@ -67,7 +68,7 @@ type Step = {
     url_changed?: boolean;
     content_changed?: boolean | null;
     semantic?: SemanticAction;
-    trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
+    trace?: { phase: string; started_at?: number; duration_ms?: number; status?: string }[];
     interaction?: SemanticInteraction & { changed: boolean; scroll?: {y: number; height: number} | null };
     [key: string]: unknown;
   };
@@ -112,6 +113,7 @@ export function DecisionStatus({ status, decision, verified }: {
   verified?: boolean;
 }) {
   if (status === "completed") return <p className="hint"><strong>Completed</strong>{verified && " · Result verified"}</p>;
+  if (status === "unverified") return <p className="hint"><strong>Unverified</strong> · Historical source type was not verified</p>;
   if (status === "failed") return <p className="hint"><strong>Failed</strong></p>;
   if (status === "cancelled") return <p className="hint"><strong>Cancelled</strong></p>;
   if (status === "queued") return <p className="hint"><strong>Queued</strong> · Waiting for the worker</p>;
@@ -550,7 +552,7 @@ export default function AgentPanel({
                     </td>
                     <td>{t.mode}</td>
                     <td>
-                      <Badge status={t.status} />
+                      <Badge status={t.result.verification?.historical_unverified ? "unverified" : t.status} />
                     </td>
                     <td>{t.prompt_tokens + t.completion_tokens}</td>
                     <td>
@@ -634,6 +636,12 @@ function AgentDetail({
   const previewUrl = (typeof imageEvent?.details.url === "string" && imageEvent.details.url) ||
     capturedStep?.observation.url || latest?.observation.url;
   const [answer, setAnswer] = useState("");
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const memory = useQuery({
+    queryKey: ["agent-task-memory", id, token, task.data?.status],
+    queryFn: async ({signal}) => (await queryApi<Task>("/agent/tasks/" + id, token, signal)).memory,
+    enabled: memoryOpen,
+  });
   if (task.error)
     return (
       <p className="error" role="alert">
@@ -642,6 +650,7 @@ function AgentDetail({
     );
   if (!task.data) return <Empty text="Loading agent task…" />;
   const t = task.data;
+  const shownStatus = t.result.verification?.historical_unverified ? "unverified" : t.status;
   return (
     <>
       <Button variant="ghost" onClick={back}>
@@ -656,7 +665,7 @@ function AgentDetail({
               {t.mode} · {t.id}
             </p>
           </div>
-          <Badge status={t.status} />
+          <Badge status={shownStatus} />
         </div>
         <div className="button-row">
           {!finished(t.status) && (
@@ -697,7 +706,11 @@ function AgentDetail({
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
         {t.execution && t.execution.strategy !== "general" && (
-          <p className="hint">Strategy {t.execution.strategy.replaceAll("_", " ")}</p>
+          <p className="hint">
+            Strategy {t.execution.strategy.replaceAll("_", " ")}
+            {t.execution.entity && ` · ${t.execution.entity.replace(/^semantic:/, "")}`}
+            {t.execution.collection_kind && ` · Source catalog ${t.execution.collection_kind}`}
+          </p>
         )}
         {t.execution && ["directory_collection", "table_extraction"].includes(t.execution.strategy) && (
           <p className="hint">
@@ -794,7 +807,7 @@ function AgentDetail({
         </section>
         <section className="panel form-panel">
           <h2>Current decision</h2>
-          <DecisionStatus status={t.status} decision={latest?.decision} verified={t.result.verification?.complete} />
+          <DecisionStatus status={shownStatus} decision={latest?.decision} verified={t.result.verification?.complete} />
           <h2 className="agent-subheading">Tabs and context</h2>
           {latest?.observation.tabs?.map((tab) => (
             <p className="hint url" key={tab.tab_id}>
@@ -803,18 +816,19 @@ function AgentDetail({
               {tab.url}
             </p>
           ))}
-          <details>
+          <details onToggle={(event) => setMemoryOpen(event.currentTarget.open)}>
             <summary>Session memory</summary>
-            <pre className="agent-json">
-              {JSON.stringify(t.memory, null, 2)}
-            </pre>
+            {memoryOpen && (memory.error ? <p className="error" role="alert">{memory.error.message}</p> :
+              memory.data ? <pre className="agent-json">{JSON.stringify(memory.data, null, 2)}</pre> :
+              <Empty text="Loading saved session memory…" />)}
           </details>
           <SemanticObservation observation={latest?.observation} />
         </section>
       </div>
       {((t.status === "completed" && t.result.verification?.complete) || t.result.partial) && t.result.claims && (
         <section className="panel form-panel">
-          <h2>{t.result.partial ? "Partial task result" : "Verified task result"}</h2>
+          <h2>{t.result.verification?.historical_unverified ? "Unverified historical result" :
+            t.result.partial ? "Partial task result" : "Verified task result"}</h2>
           {t.status === "completed" && t.result.artifact && <Button disabled={busy} onClick={() => run(async () => {
             const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: "Bearer " + token } });
             if (!response.ok) throw new Error("Export unavailable or expired");
@@ -823,6 +837,11 @@ function AgentDetail({
             setTimeout(() => URL.revokeObjectURL(url), 1000);
           })}>Download verified artifact</Button>}
           <p className="hint">{t.result.verification?.explanation}</p>
+          {t.result.verification?.dimensions && <ul className="hint">
+            {Object.entries(t.result.verification.dimensions).map(([name, passed]) =>
+              <li key={name}>{name.replaceAll("_", " ")} · {passed ? "Verified" : "Unverified"}</li>
+            )}
+          </ul>}
           {t.result.partial && t.result.claims.length === 0 && <p>No verified matches were collected.</p>}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
@@ -869,8 +888,10 @@ function AgentDetail({
                   <summary>Interaction trace · automated session</summary>
                   <table className="interaction-trace"><thead><tr><th scope="col">Phase</th><th scope="col">Started (UTC)</th><th scope="col">Duration</th><th scope="col">Status</th></tr></thead>
                     <tbody>{step.outcome.trace.map((span, i) => <tr key={i}>
-                      <td>{span.phase}</td><td>{new Date(span.started_at * 1000).toISOString().slice(11, 23)}</td>
-                      <td>{Math.round(span.duration_ms)} ms</td><td>{span.status}</td>
+                      <td>{span.phase}</td><td>{typeof span.started_at === "number" && Number.isFinite(span.started_at)
+                        ? new Date(span.started_at * 1000).toISOString().slice(11, 23) : "Unavailable"}</td>
+                      <td>{typeof span.duration_ms === "number" && Number.isFinite(span.duration_ms)
+                        ? `${Math.round(span.duration_ms)} ms` : "Unavailable"}</td><td>{span.status || "Unrecorded"}</td>
                     </tr>)}</tbody></table>
                 </details>}
                 <details>

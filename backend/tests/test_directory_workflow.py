@@ -20,6 +20,7 @@ fixture.app.include_router(router)
 @pytest.mark.browser
 @pytest.mark.parametrize("case,steps,completed", [
     ("normal", 20, True), ("cycle", 20, False), ("normal", 3, False), ("recovery", 20, True), ("rankings", 20, True),
+    ("reload", 20, True),
 ])
 async def test_directory_workflow(client, target, fixture_server, monkeypatch, case, steps, completed):  # noqa: F811
     from app.agent.model import ModelClient
@@ -37,10 +38,8 @@ async def test_directory_workflow(client, target, fixture_server, monkeypatch, c
     url = "http://127.0.0.1:8765/execution-fixture"
     if case == "cycle":
         url += "/tools?case=cycle"
-    elif case == "recovery":
-        url += "/recovery"
-    elif case == "rankings":
-        url += "/rankings"
+    elif case in {"recovery", "rankings", "reload"}:
+        url += f"/{case}"
     data.update(base_url=url, authorized=True)
     data["configuration"] = {**data["configuration"], "delay_seconds": 0.1, "max_pages": 20,
                              "max_duration_seconds": 180, "screenshots": False}
@@ -76,6 +75,8 @@ async def test_directory_workflow(client, target, fixture_server, monkeypatch, c
             first = min(trace, key=lambda step: step.number)
             assert first.observation["directory"]["kind"] == "rankings"
             assert first.decision["url"].endswith("/execution-fixture/tools")
+        if case == "reload":
+            assert sum(step.decision.get("reason", "").startswith("Reload the observed catalog") for step in trace) == 1
         max_observation = max(step.observation["observation_metrics"]["characters"] for step in trace)
         phase_ms = Counter()
         for step in trace:
@@ -90,7 +91,7 @@ async def test_directory_workflow(client, target, fixture_server, monkeypatch, c
         assert answer["directory"]["unique_records"] < RECORD_COUNT
     else:
         assert "step budget" in answer["verification"]["explanation"]
-    if case == "recovery":
+    if case in {"recovery", "reload"}:
         assert answer["directory"]["repeated_pages"] >= 1
         assert answer["directory"]["recovery_actions"] >= 1
     print("DIRECTORY_RECEIPT " + json.dumps({"case": case, "seconds": round(elapsed, 2), "verified": completed,
@@ -129,7 +130,7 @@ async def test_unlandmarked_extraction(client, target, fixture_server, monkeypat
     monkeypatch.setattr(ModelClient, "request", assess)
     patch = client.patch("/api/websites/" + target["id"], json={
         "name": target["name"], "allowed_domains": target["allowed_domains"],
-        "base_url": f"http://127.0.0.1:8765/execution-fixture/{kind}", "authorized": True,
+        "base_url": f"http://127.0.0.1:8765/execution-fixture/{'tutors' if inferred else kind}", "authorized": True,
         "configuration": {**target["configuration"], "delay_seconds": 0.1, "screenshots": False},
     })
     assert patch.status_code == 200, patch.text
@@ -155,6 +156,75 @@ async def test_unlandmarked_extraction(client, target, fixture_server, monkeypat
         assert answer["strategy"] == "table_extraction"
         assert [row["headers"] for row in answer["directory"]["records"]] == [["Day", "Time"], ["Day", "Time"]]
         assert [row["cells"] for row in answer["directory"]["records"]] == [["Monday", "09:00"], ["Tuesday", "11:00"]]
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("misleading", [False, True])
+async def test_prompt_inventory_verifies_source_and_match_evidence(client, target, fixture_server, monkeypatch, misleading):  # noqa: F811
+    from app.agent.classification import AssessmentBatch
+    from app.agent.model import ModelClient
+
+    monkeypatch.setattr(settings(), "ai_provider", "local")
+    classified = []
+
+    async def assess(self, kind, payload, *args, **kwargs):
+        assert kind == "classify" and payload["record_types"] == ["prompts"] and payload["topic"] == "business"
+        rows = payload["records"]
+        classified.extend(row["name"] for row in rows)
+        return AssessmentBatch(records=[
+            {"id": row["id"], "evidence": 1,
+             "classification": "match" if misleading or row["name"] == "Proposal Writer" else "excluded"}
+            for row in rows
+        ])
+
+    monkeypatch.setattr(ModelClient, "request", assess)
+    site = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
+    site.update(base_url="http://127.0.0.1:8765/execution-fixture/prompt-hub", authorized=True)
+    site["configuration"].update(screenshots=False, max_duration_seconds=60)
+    assert client.patch("/api/websites/" + target["id"], json=site).status_code == 200
+    response = client.post("/api/agent/tasks", json={
+        "website_id": target["id"], "objective": "List all business prompts.", "max_steps": 5,
+    })
+    identifier = response.json()["id"]
+    await execute(*claim())
+    task = client.get(f"/api/agent/tasks/{identifier}").json()
+    assert task["status"] == ("failed" if misleading else "completed"), task.get("error_message")
+    assert task["execution"]["entity"] == "semantic:business prompts"
+    assert task["execution"]["collection_kind"] == "prompts"
+    assert task["planning"]["route"] == task["execution"]["strategy"] == "directory_collection"
+    assert task["result"]["directory"]["unique_records"] == 3
+    assert set(classified) == {"Explore the Sky"}
+    assert [claim["text"] for claim in task["result"]["claims"]] == ["Proposal Writer"]
+    dimensions = task["result"]["verification"]["dimensions"]
+    assert dimensions["source_relevance"] and dimensions["directory_coverage"] and dimensions["extraction_complete"]
+    assert dimensions["entity_correctness"] is (not misleading)
+    assert dimensions["objective_satisfied"] is (not misleading)
+    steps = client.get(f"/api/agent/tasks/{identifier}/steps").json()["items"]
+    assert steps[0]["observation"]["directory"]["kind"] == "products"
+    assert steps[0]["decision"]["url"].endswith("/prompt-catalog")
+    assert steps[-1]["decision"]["decision"] == "VERIFY_COLLECTION"
+    assert all(span["duration_ms"] >= 0 for span in steps[-1]["outcome"]["trace"])
+    assert task["memory"]["planning"]["last_observation"]["step"] == steps[-1]["number"]
+
+
+@pytest.mark.browser
+async def test_filtered_source_has_a_durable_unverified_result(client, target, fixture_server, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings(), "ai_provider", "disabled")
+    site = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
+    site.update(base_url="http://127.0.0.1:8765/execution-fixture/prompt-catalog?category=sales", authorized=True)
+    site["configuration"].update(screenshots=False, max_duration_seconds=60)
+    assert client.patch("/api/websites/" + target["id"], json=site).status_code == 200
+    response = client.post("/api/agent/tasks", json={
+        "website_id": target["id"], "objective": "List all business prompts.", "max_steps": 5,
+    })
+    identifier = response.json()["id"]
+    await execute(*claim())
+    saved = client.get(f"/api/agent/tasks/{identifier}").json()
+    assert saved["status"] == "failed" and saved["model_calls"] == 0
+    result = saved["result"]
+    assert result["partial"] and result["directory"]["unique_records"] == 0
+    assert not any(result["verification"]["dimensions"].values())
+    assert "filtered" in result["verification"]["explanation"]
 
 
 @pytest.mark.browser

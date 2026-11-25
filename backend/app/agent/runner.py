@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+from asyncio import Lock
 from dataclasses import asdict
 
 from playwright.async_api import Error as BrowserError
@@ -15,7 +16,8 @@ from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
 from .directory import DirectoryCollection, directory_result
-from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, exhaustive_request, select_route, task_text_only)
+from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, exhaustive_request, inventory_route,
+                      select_route, task_text_only)
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError, ModelProvidersUnavailable
 
@@ -25,6 +27,7 @@ class AgentRunner(Runner):
         super().__init__(job_id, token)
         self.model = ModelClient()
         self.model.on_provider_event = self.report_provider_failure
+        self.classification_account_lock = Lock()
         with transaction() as session:
             job = owned_job(session, self.id, self.token)
             task = session.get(AgentTask, self.id)
@@ -124,13 +127,16 @@ class AgentRunner(Runner):
             **event,
         )
 
-    async def ask_model(self, kind, payload, schema, observation=None, *, wait_for_provider=True):
+    async def ask_model(self, kind, payload, schema, observation=None, *, wait_for_provider=True, client=None):
         image = (
             settings().artifact_dir / observation["screenshot_path"]
             if observation and self.options["visual_reasoning"]
             else None
         )
         async def account_async(*args):
+            if client is not None:
+                async with self.classification_account_lock:
+                    return await database_call(self.account, *args)
             return await database_call(self.account, *args)
 
         while True:
@@ -147,7 +153,7 @@ class AgentRunner(Runner):
                 if remaining <= 0:
                     raise ModelDeadlineExceeded("Task time budget exhausted while paused before model request")
             try:
-                return await self.model.request(kind, payload, schema, account_async, image, timeout_cap_seconds=remaining)
+                return await (client or self.model).request(kind, payload, schema, account_async, image, timeout_cap_seconds=remaining)
             except ModelProvidersUnavailable as exc:
                 if not wait_for_provider or exc.retry_after is None:
                     raise
@@ -352,45 +358,137 @@ class AgentRunner(Runner):
                 }, RouteAssessment, wait_for_provider=False)
                 entity = assessed_entity(self.objective, assessment)
                 if entity:
-                    route = ExecutionRoute("directory_collection", "Collect visible records and classify them against the requested entity.", entity)
+                    route = inventory_route(entity)
             except (ModelError, ModelBudgetExceeded):
                 pass
         self.memory["execution_route"] = asdict(route)
         return route
 
+    async def finish_directory(self, directory, controller, observation, step_id, number, terminal):
+        from .planning import evaluate
+
+        with controller.engine.phase("verification"):
+            if directory.state.get("source_relevance"):
+                await self.classify_directory(directory, controller)
+            if directory.state.get("terminal"):
+                terminal = directory.blocker() or ""
+            result = directory_result(directory.state, terminal or None)
+            complete = result["verification"]["complete"]
+            explanation = result["verification"]["explanation"]
+            preview = observation["screenshot_path"]
+            preview_time = min(2, self.deadline - time.time() - 1)
+            if not preview and preview_time > 0 and controller.page.url == observation["url"]:
+                try:
+                    async with asyncio.timeout(preview_time):
+                        preview = await self.screenshot(controller.page)
+                except (BrowserError, OSError, TimeoutError):
+                    pass
+            plan = self.memory["planning"]
+            evaluate(plan, observation, result["evidence"], verified=complete,
+                     source_verified=result["verification"]["dimensions"]["source_relevance"],
+                     collection_complete=result["verification"]["dimensions"]["directory_coverage"]
+                     and result["verification"]["dimensions"]["extraction_complete"])
+            if not complete:
+                for node in plan["plan"]["subtasks"]:
+                    if node["kind"] == "verify":
+                        node.update(status="blocked", outcome=explanation)
+                plan["active_subtask"] = None
+            plan["last_observation"] = {
+                "url": observation["url"], "fingerprint": observation["fingerprint"],
+                "step": number, "active_subtask": plan["active_subtask"],
+            }
+            await self.checkpoint(controller)
+
+        decision = {
+            "decision": "VERIFY_COLLECTION", "reason": explanation,
+            "observation": "Requested record type, directory coverage and classified evidence",
+            "expected_result": "Verified coverage and supporting sources for the requested inventory",
+        }
+        def persist_verification():
+            with transaction() as session:
+                owned_job(session, self.id, self.token)
+                step = session.get(AgentStep, step_id)
+                step.status = "succeeded" if complete else "failed"
+                step.decision = decision
+                step.outcome = {
+                    "directory": {key: value for key, value in result["directory"].items() if key != "records"},
+                    "verification": result["verification"], "error": None if complete else explanation,
+                    "trace": controller.engine.trace.copy(),
+                }
+                if preview and not step.observation.get("screenshot_path"):
+                    step.observation = {**step.observation, "screenshot_path": preview}
+                    emit(session, self.id, "agent_preview_captured", "Last browser capture saved",
+                         step_id=step_id, url=observation["url"], screenshot_path=preview)
+                emit(session, self.id, "agent_verification", explanation, step_id=step_id,
+                     complete=complete, dimensions=result["verification"]["dimensions"])
+        await database_call(persist_verification)
+        if not complete:
+            raise RuntimeError(explanation)
+        self.verified_result = result
+
     async def classify_directory(self, directory, controller):
-        from .classification import AssessmentBatch, apply_assessments, assessment_payload
+        from .classification import AssessmentBatch, apply_assessments, assessment_payload, classification_groups
 
         config = settings()
         state = directory.state
         if config.ai_provider == "disabled" or not config.agent_classification_max_calls:
             return
+        store = directory.save_classification
+
+        async def assess(groups, expanded):
+            rows = [group[0] for group in groups]
+            payload = assessment_payload(directory.entity, rows, expanded=expanded)
+            client = ModelClient()
+            client.on_provider_event = self.model.on_provider_event
+            client.active_provider_index = self.model.active_provider_index
+            client.fallback_active = self.model.fallback_active
+            result = await self.ask_model("classify", payload, AssessmentBatch, wait_for_provider=False, client=client)
+            grounded = [dict(row) for row in rows]
+            apply_assessments(grounded, payload, result)
+            return grounded, client
+
         for expanded in (False, True):
-            candidates = [row for row in state["records"].values()
-                          if row["classification"] == "unknown" and not row.get("classification_conflict")]
+            candidates = []
+            for group in classification_groups(state["records"].values()):
+                cached = next((row for row in group if row["classification"] != "unknown"), None)
+                unresolved = [row for row in group if row["classification"] == "unknown"]
+                if cached:
+                    for row in unresolved:
+                        store(row, cached)
+                elif unresolved:
+                    candidates.append(unresolved)
             batch_size = min(
                 config.agent_classification_batch_rows,
                 max(1, (config.ai_max_request_chars - 3000) // (1500 if expanded else 950)),
                 max(1, (config.ai_max_output_tokens - 96) // 75),
             )
-            for offset in range(0, len(candidates), batch_size):
-                if state.get("classification_calls", 0) >= config.agent_classification_max_calls or self.deadline - time.time() <= 8:
+            batches = [candidates[offset:offset + batch_size] for offset in range(0, len(candidates), batch_size)]
+            concurrency = config.agent_classification_concurrency
+            for offset in range(0, len(batches), concurrency):
+                remaining = config.agent_classification_max_calls - state.get("classification_calls", 0)
+                if remaining <= 0 or self.deadline - time.time() <= 8:
                     return
-                rows = candidates[offset:offset + batch_size]
-                payload = assessment_payload(directory.entity, rows, expanded=expanded)
-                state["classification_calls"] = state.get("classification_calls", 0) + 1
-                try:
-                    assessments = await self.ask_model("classify", payload, AssessmentBatch, wait_for_provider=False)
-                except (ModelError, ModelBudgetExceeded):
-                    return
-                grounded = [dict(row) for row in rows]
-                apply_assessments(grounded, payload, assessments)
-                for original, candidate in zip(rows, grounded, strict=True):
-                    growth = directory.record_size(candidate) - directory.record_size(original)
-                    if state["record_bytes"] + growth <= directory.max_bytes:
-                        original.update(candidate)
-                        state["record_bytes"] += growth
+                wave = batches[offset:offset + min(concurrency, remaining)]
+                state["classification_calls"] = state.get("classification_calls", 0) + len(wave)
+                answers = await asyncio.gather(*(assess(batch, expanded) for batch in wave), return_exceptions=True)
+                usable = False
+                for batch, answer in zip(wave, answers, strict=True):
+                    if isinstance(answer, (ModelError, ModelBudgetExceeded)):
+                        continue
+                    if isinstance(answer, BaseException):
+                        raise answer
+                    usable = True
+                    grounded, client = answer
+                    self.model.models_used.update(client.models_used)
+                    self.model.active_provider_index = client.active_provider_index
+                    self.model.fallback_active = client.fallback_active
+                    for group, verdict in zip(batch, grounded, strict=True):
+                        if verdict["classification"] != "unknown":
+                            for row in group:
+                                store(row, verdict)
                 await self.checkpoint(controller)
+                if not usable:
+                    return
 
     async def execute_page(self, page, context):
         controller = Controller(self, context, page, self.memory)
@@ -402,7 +500,7 @@ class AgentRunner(Runner):
         cfg = settings()
         directory = DirectoryCollection(route.entity, self.memory.setdefault("directory", {}),
                                         max_rows=cfg.agent_collection_max_rows, max_bytes=cfg.agent_collection_max_bytes) if route.entity else None
-        collection_mode = "table" if route.name == "table_extraction" else True
+        collection_mode = route.entity
         def read_start():
             with transaction() as session:
                 start = session.scalar(
@@ -453,41 +551,7 @@ class AgentRunner(Runner):
                         deterministic = decision is not None or terminal is not None
                         if directory.state["pages"]:
                             await self.checkpoint(controller)
-                    if terminal is not None:
-                        await self.classify_directory(directory, controller)
-                        if directory.state.get("terminal"):
-                            terminal = directory.blocker() or ""
-                        result = directory_result(directory.state, terminal or None)
-                        preview = observation["screenshot_path"]
-                        # Deterministic reads skip per-step captures. Save the final
-                        # viewport for the dashboard without involving the model.
-                        preview_time = min(2, self.deadline - time.time() - 1)
-                        if not preview and preview_time > 0 and controller.page.url == observation["url"]:
-                            try:
-                                async with asyncio.timeout(preview_time):
-                                    preview = await self.screenshot(controller.page)
-                            except (BrowserError, OSError, TimeoutError):
-                                pass
-                        def finish_directory():
-                            with transaction() as session:
-                                owned_job(session, self.id, self.token)
-                                step = session.get(AgentStep, step_id)
-                                step.status = "failed" if terminal else "succeeded"
-                                if preview and not step.observation.get("screenshot_path"):
-                                    step.observation = {**step.observation, "screenshot_path": preview}
-                                    emit(session, self.id, "agent_preview_captured", "Last browser capture saved",
-                                         step_id=step_id, url=observation["url"], screenshot_path=preview)
-                                step.outcome = {"directory": {k: v for k, v in result["directory"].items() if k != "records"},
-                                                "error": terminal or None, "trace": controller.engine.trace.copy()}
-                        await database_call(finish_directory)
-                        if terminal:
-                            raise RuntimeError(terminal)
-                        from .planning import evaluate
-                        evaluate(self.memory["planning"], observation, result["evidence"], verified=True, collection_complete=True)
-                        await self.checkpoint(controller)
-                        self.verified_result = result
-                        return
-                    if decision is None:
+                    if terminal is None and decision is None:
                         if directory:
                             # Keep the directory intent for a later observed page reached by the general strategy.
                             observation = await controller.observe()
@@ -513,6 +577,9 @@ class AgentRunner(Runner):
                             Decision,
                             observation,
                         )
+                if terminal is not None:
+                    await self.finish_directory(directory, controller, observation, step_id, number, terminal)
+                    return
                 if decision.decision == "OBSERVE" and self.memory["recent_actions"]:
                     previous = self.memory["recent_actions"][-1]
                     if previous["action"] == "OBSERVE" and not previous.get("outcome", {}).get("page_changed", False):
@@ -572,6 +639,8 @@ class AgentRunner(Runner):
                 elif decision.decision == "FAIL":
                     raise RuntimeError("Agent reported task blocked: " + decision.text)
                 elif decision.decision == "COMPLETE":
+                    if directory:
+                        raise ValueError("Exhaustive completion requires verified coverage of the requested collection")
                     outcome = await self.complete(decision)
                 elif decision.decision == "EXTRACT":
                     outcome = self.extract(decision, observation, step_id)
@@ -604,6 +673,7 @@ class AgentRunner(Runner):
                     await database_call(self.dataset_count),
                     bool(self.memory.get("export_artifact")),
                     collection_complete=False if directory else None,
+                    source_verified=bool(directory.state.get("source_relevance")) if directory else None,
                 )
                 active_id = self.memory["planning"]["active_subtask"]
                 self.memory["planning"]["last_observation"] = {
@@ -871,6 +941,11 @@ class AgentRunner(Runner):
             self.memory["planning"] = state
         if state["specification"]["source_hash"] != expected["source_hash"]:
             raise ValueError("Durable task constraints no longer match the authorized task")
+        route = self.memory.get("execution_route")
+        if route:
+            state["route"] = route["name"]
+            if route.get("entity"):
+                state["plan"]["intent"]["entities"] = [route["entity"].removeprefix("semantic:")]
         if not state.get("initialized"):
             if not deterministic and needs_model_plan(expected):
                 try:
@@ -904,7 +979,10 @@ class AgentRunner(Runner):
                     )
             state["initialized"] = True
         evaluate(
-            state, observation, self.memory["evidence"], await database_call(self.dataset_count), bool(self.memory.get("export_artifact"))
+            state, observation, self.memory["evidence"], await database_call(self.dataset_count),
+            bool(self.memory.get("export_artifact")),
+            collection_complete=False if deterministic else None,
+            source_verified=bool(self.memory.get("directory", {}).get("source_relevance")) if deterministic else None,
         )
         def persist():
             with transaction() as session:

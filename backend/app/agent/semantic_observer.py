@@ -84,7 +84,7 @@ class Observer:
             from ..config import settings
             from .directory import READ_DIRECTORY, directory_link, pagination_element
             limit = settings().agent_collection_batch_rows
-            arguments = {"limit": limit, "table": directory == "table"}
+            arguments = {"limit": limit, "table": directory in {"table", "table rows"}}
             stamp = await self.document.evaluate(r"""s=>{
                 if(!s.watch) {
                     s.revision=0;
@@ -142,8 +142,9 @@ class Observer:
         if directory:
             # Bind forward controls and directory routes. Record extraction reads
             # the visible cards directly, so their individual links need no handles.
+            entity = directory if isinstance(directory, str) else None
             eligible = [element for element in eligible if element["role"] in {"dialog", "alertdialog"} or (
-                element["visible"] and (pagination_element(element) or directory_link(element))
+                element["visible"] and (pagination_element(element) or directory_link(element, entity))
             )]
         candidates = sorted(eligible, key=priority)[:limit]
         semaphore = asyncio.Semaphore(8)

@@ -6,6 +6,10 @@ The directory observer reads visible cards, accessible repeated listings, and na
 
 Clear category or description evidence can classify records without a model. Product inventories skip recognized ranking and article listings. Ambiguous product listings are assessed in bounded batches. Each answer uses a request-local record ID and the number of a source excerpt. The runner resolves that number to the exact observed text. Invalid references fail over through the provider chain. Chatbot matches require evidence that supports the product's conversational role. A bounded second pass can use additional source text for unresolved entries. A verified inventory needs consistent coverage equal to the observed count, classified records, and no detectable filter, truncation, or remaining forward page. Results cite the observed record text and retain source URLs.
 
+For typed inventory requests, the entity noun determines the expected catalog and any qualifier determines the classification topic. The runner compares that type with the visited page's visible count and heading before collecting records. When those do not support the requested type, the runner selects a matching authorized link from the current observation. If deterministic discovery cannot establish the source, the planner can continue discovery while the verification gate remains closed. The result records separate checks for source relevance, coverage, extraction, entity classification, and overall satisfaction.
+
+Topic classification prefilters from observed tags and specific purpose text. Exact duplicates reuse a classification when their name, category, description, quote, and topics match. Other records use compact numbered excerpts. `ADBOT_AGENT_CLASSIFICATION_CONCURRENCY` limits parallel batches per agent to two by default. Batch provider failover is independent, and budget accounting for the task is serialized.
+
 | Configuration | Default | Scope |
 | --- | ---: | --- |
 | `ADBOT_AGENT_COLLECTION_BATCH_ROWS` | 250 | Rows read per observation |

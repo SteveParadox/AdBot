@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     agent_collection_max_bytes: int = Field(4_000_000, ge=4096, le=16_000_000)
     agent_classification_batch_rows: int = Field(12, ge=1, le=40)
     agent_classification_max_calls: int = Field(12, ge=0, le=40)
+    agent_classification_concurrency: int = Field(2, ge=1, le=4)
     agent_max_steps: int = Field(500, ge=1, le=500)
     agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
     agent_max_tabs: int = Field(4, ge=1, le=10)

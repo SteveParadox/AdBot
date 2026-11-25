@@ -194,7 +194,7 @@ async def _execute(job_id, token):
                     if kind == "agent" and job.status in {"failed", "cancelled"}:
                         task = session.get(AgentTask, job_id)
                         directory = task.memory.get("directory", {})
-                        if directory.get("pages"):
+                        if directory.get("entity") or directory.get("pages"):
                             from .agent.directory import directory_result
                             task.result = directory_result(directory, error or "Directory collection stopped before verification")
                             emit(session, job_id, "agent_partial_result", "Directory evidence preserved",
