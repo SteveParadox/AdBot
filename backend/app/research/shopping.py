@@ -242,8 +242,13 @@ def requirements(question):
         (rf"\b({spec})\s*(?:of|:)?\s*{modifier}\s*{amount}\b", False),
         (rf"{modifier}\s*\b{amount}\s*(?:of\s+)?({spec})\b", True),
     )
+    occupied = []
     for pattern, reverse in patterns:
         for match in re.finditer(pattern, text):
+            if reverse and any(match.start() < end and start < match.end() for start, end in occupied):
+                continue
+            if not reverse:
+                occupied.append(match.span())
             label, mod, num, unit = (match[4], match[1], match[2], match[3]) if reverse else match.groups()
             key = SPEC_NAMES[label]
             op = ("max" if mod and (mod.startswith("maximum") or mod in
