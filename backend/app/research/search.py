@@ -17,6 +17,7 @@ from ..outbound import ProviderPolicy, manager
 from ..provider_quota import QuotaBlocked, cooldown, identity, release, reserve
 from ..retry import retry_delay
 from .policy import PublicPolicy, canonical_key
+from .ranking import domain_group, lexical_scores, source_signals
 
 
 class Cache:
@@ -299,10 +300,9 @@ def terms(text):
     return set(re.findall(r"[^\W_]{3,}", text.casefold())) - STOP_WORDS
 
 
-def rank_hits(groups, objective, technical=False):
+def rank_hits(groups, objective, technical=False, semantic=None):
     by_url = {}
     scores = Counter()
-    keywords = terms(objective)
     for group in groups:
         seen = set()
         for hit in group:
@@ -311,16 +311,28 @@ def rank_hits(groups, objective, technical=False):
                 continue
             seen.add(url)
             by_url.setdefault(url, hit)
-            scores[url] += 1 / (15 + hit.rank)
-    def score(hit):
-        relevance = len(terms(f"{hit.title} {hit.description}") & keywords) / max(1, len(keywords))
-        authority_hint = (hit.domain.endswith((".gov", ".edu", ".gov.ng"))
-                          or (technical and (hit.domain.startswith("docs.") or hit.domain == "github.com")))
-        return scores[hit.canonical_url] + relevance * 0.10 + authority_hint * 0.022
-    order = sorted(by_url.values(), key=lambda hit: (-score(hit), hit.canonical_url))
+            scores[url] += 1 / (15 + max(1, hit.rank))
+    candidates = list(by_url.values())
+    relevance = lexical_scores(objective, [
+        f"{hit.title} {hit.title} {hit.description} {urlsplit(hit.url).path}"
+        for hit in candidates
+    ])
+    peak = max(scores.values(), default=1)
+    semantic = semantic or {}
+    ranked = []
+    for hit, rel in zip(candidates, relevance):
+        authority = source_signals(hit.url, technical=technical)["ranking_adjustment"]
+        # Authority can break relevant ties; it cannot turn an unrelated
+        # result into a good match. Model scores have a bounded influence.
+        score = .55 * rel + .35 * scores[hit.canonical_url] / peak
+        score += authority * rel
+        score += .18 * semantic.get(hit.canonical_url, 0)
+        ranked.append((score, hit))
+    order = sorted(ranked, key=lambda pair: (-pair[0], pair[1].canonical_url))
     counts = Counter()
     diversified = []
-    for hit in order:
-        counts[hit.domain] += 1
-        diversified.append((counts[hit.domain], -score(hit), hit.canonical_url, hit))
-    return [hit for _, _, _, hit in sorted(diversified)]
+    for score, hit in order:
+        domain = domain_group(hit.url)
+        counts[domain] += 1
+        diversified.append((score - .09 * (counts[domain] - 1), hit))
+    return [hit for _, hit in sorted(diversified, key=lambda pair: (-pair[0], pair[1].canonical_url))]
