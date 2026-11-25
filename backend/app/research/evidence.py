@@ -153,7 +153,11 @@ def product_evidence(doc, source, country):
                 status = None
             gtin = raw["gtin"] or raw["gtin13"] or raw["gtin14"]
             variant = {k: raw[k] for k in ("sku", "mpn", "color", "size") if raw[k]}
-            variant["condition"] = condition_value(offer.get("itemCondition"))
+            offer_condition = condition_value(offer.get("itemCondition"))
+            product_condition = condition_value(raw.get("itemCondition"))
+            variant["condition"] = (offer_condition if product_condition == "unknown" else product_condition
+                                    if offer_condition == "unknown" else offer_condition
+                                    if offer_condition == product_condition else "unknown")
             data = {
                 "name": raw["name"], "brand": raw["brand"], "model": raw["model"], "gtin": gtin, "variant": variant,
                 "specifications": {k: v for k, v in raw["specs"].items() if v},
@@ -162,11 +166,13 @@ def product_evidence(doc, source, country):
                 "warranty": offer.get("warranty") or None, "shipping": offer.get("shipping") or None,
                 "review_summary": raw["rating"], "last_verified": doc.retrieved,
                 "geographic_match": geo, "market": country, "source_id": source["id"],
-                "extraction_method": raw.get("origin", "json-ld"),
+                "extraction_method": raw.get("origin", "json-ld"), "category": raw.get("category", ""),
             }
             origin = raw.get("origin", "json-ld")
-            observation = {"product": raw["name"], "offer": offer, "brand": raw["brand"], "model": raw["model"],
-                           "variant": variant, "specifications": data["specifications"]}
+            observation = {"product": raw["name"], "offer": {k: v for k, v in offer.items() if v},
+                           "specifications": data["specifications"], "variant": variant,
+                           "brand": raw["brand"], "model": raw["model"], "category": raw.get("category", ""),
+                           "product_condition": raw.get("itemCondition", "")}
             if origin == "dom":
                 observation["observed_fields"] = raw.get("observations", {})
             structured = quote_record(
