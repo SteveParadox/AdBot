@@ -186,6 +186,57 @@ def visible_products(tree):
     return result
 
 
+def budget_constraint(question, country=None):
+    """Return whether a monetary budget was requested and an unambiguous limit.
+
+    Do not treat 'under 8 GB VRAM' or 'up to 1 TB' as a currency budget.
+    """
+    markets = {"NG": "NGN", "US": "USD", "GB": "GBP", "CA": "CAD", "AU": "AUD",
+               "JP": "JPY", "IN": "INR", "ZA": "ZAR", "KE": "KES", "GH": "GHS", "BR": "BRL"}
+    pattern = re.compile(
+        r"\b(?P<limit>under|below|budget(?: of)?|up to|maximum(?: budget)?|at most)\s*"
+        r"(?P<before>₦|€|£|\$|[A-Z]{3}(?=\s*\d))?\s*"
+        r"(?P<value>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
+        r"(?![\d,.])\s*(?P<scale>million\b|thousand\b|m\b|k\b)?"
+        r"\s*(?P<after>[A-Z]{3}\b)?", re.I,
+    )
+    requested = False
+    targets = set()
+    for match in pattern.finditer(question):
+        tail = question[match.end():].lstrip()
+        if re.match(r"^(?:gb|tb|mb|kb|hz|ghz|mhz|watts?|kg|cm|mm|inches|hours?|years?)\b", tail, re.I):
+            continue
+        if match["after"] and not currency_code(match["after"]):
+            # Regex may capture a non-currency word such as 'for'; ignore it.
+            # A captured unit like 'GB' is handled by the tail check above.
+            if match["after"].casefold() in {"gib", "tib", "mib", "ghz", "mhz"}:
+                continue
+        before, after = match["before"] or "", match["after"] or ""
+        codes = [currency_code(v) for v in (before, after) if v and v != "$" and currency_code(v)]
+        explicit = bool(before or codes or match["scale"] or match["limit"].casefold().startswith("budget"))
+        if not explicit and not (country in markets and Decimal(match["value"].replace(",", "")) >= 100):
+            continue
+        requested = True
+        if before and before != "$" and not currency_code(before):
+            continue
+        if before == "$" and not codes:
+            codes = [markets.get(country, "USD")] if country in {None, "US", "CA", "AU"} else []
+            if not codes:
+                continue
+        code = one(codes) if codes else markets.get(country)
+        if not code:
+            continue
+        try:
+            value = Decimal(match["value"].replace(",", "")) * {
+                "million": 1000000, "m": 1000000, "thousand": 1000, "k": 1000,
+            }.get((match["scale"] or "").casefold(), 1)
+        except InvalidOperation:
+            continue
+        if 0 < value < Decimal("1000000000000000"):
+            targets.add((code, value))
+    return requested, next(iter(targets)) if len(targets) == 1 else None
+
+
 def condition_value(value):
     raw = norm(value).rsplit("/", 1)[-1].replace("-", "").replace(" ", "")
     return {"newcondition": "new", "new": "new", "usedcondition": "used", "used": "used",
@@ -302,15 +353,16 @@ def suitability(product, question):
     if len(requested) == 1 and not re.search(accessory, question, re.I):
         key = requested[0]
         name = product.get("name", "")
-        matching = bool(re.search(categories[key][1], name, re.I))
+        category = product.get("category", "")
+        matching = bool(re.search(categories[key][1], name + " " + category, re.I))
         # No inference from a missing product category or from a model name.
-        if matching and re.search(accessory, name, re.I):
+        if matching and re.search(accessory, name + " " + category, re.I):
             category_status = "not_met"
         elif matching:
             category_status = "met"
         else:
             category_status = "unknown"
-        checks.append({"requirement": f"Product category: {key}", "observed": name or None,
+        checks.append({"requirement": f"Product category: {key}", "observed": " · ".join(v for v in (name, category) if v) or None,
                        "status": category_status})
     # A condition preference is explicit only in ordinary purchase wording.
     # Comparisons and alternatives do not require every offer to be new.
