@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from ..agent.model import ModelError, bounded_request_text
 from .contracts import Mode, Summary, Verification
 from .evidence import citation_markdown
+from .integrity import freshness_status
 from .ranking import lexical_scores
 
 
@@ -29,10 +30,11 @@ def profile_for(mode, output_tokens):
     return SynthesisProfile(batches, rows, quote_chars, min(ceiling, max(1, output_tokens // 150)))
 
 
-def evidence_rows(records, sources, objective, preferred, quote_chars):
+def evidence_rows(records, sources, objective, preferred, quote_chars, freshness=None):
     """Keep evidence IDs and exact displayed text; deduplicate copied passages."""
     scores = lexical_scores(objective, [record["quote"] for record in records])
     ordered = [record for _, record in sorted(zip(scores, records), key=lambda pair: (
+        freshness_status(sources[pair[1]["source_id"]].get("published_at"), freshness) != "fresh" if freshness else False,
         pair[1]["id"] not in preferred,
         -pair[0] * (1 + sources[pair[1]["source_id"]].get("credibility", {}).get("ranking_adjustment", 0)),
         pair[1]["id"],
@@ -54,6 +56,7 @@ def evidence_rows(records, sources, objective, preferred, quote_chars):
         groups.setdefault(source, []).append({
             "id": record["id"], "source": source, "quote": quote,
             "date": record["published_at"], "kind": record["kind"],
+            **({"publication_freshness": freshness_status(sources[record["source_id"]].get("published_at"), freshness)} if freshness else {}),
             **({"page": record["page"]} if record.get("page") else {}),
         })
     # Interleave domains so the first batch does not consist of a single site.
