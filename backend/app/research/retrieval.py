@@ -25,6 +25,7 @@ from ..security import PolicyError
 from .navigation import UNSAFE, safe_link, static_links
 from .policy import PublicPolicy
 from .search import Cache, bounded_bytes
+from .shopping import price_value, visible_products
 
 ROBOTS = Cache(512)
 DOCUMENTS = Cache(96)
@@ -179,6 +180,13 @@ def extract(response, shopping):
             products = structured_products(tree)
             # Persist only supported product fields, with a strict bound on nested input.
             products = [product_fields(product) for product in products]
+            if not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
+                       for product in products for offer in product["offers"]):
+                fallback = [product_fields(product) for product in visible_products(tree)]
+                if fallback:
+                    # Keep each offer independently scoped; never transfer
+                    # fields between a JSON-LD object and a DOM product.
+                    products = fallback
         text = trafilatura.extract(tree, include_comments=False, include_tables=True, favor_precision=True) or ""
     check_robots_directives(directives)
     if "noarchive" in directives:
@@ -199,6 +207,8 @@ def extract(response, shopping):
 def product_fields(product):
     result = {key: clean(product.get(key), 250) for key in
               ("name", "model", "sku", "mpn", "gtin", "gtin13", "gtin14", "color", "size", "description")}
+    result["origin"] = "dom" if product.get("_origin") == "dom" else "json-ld"
+    result["observations"] = product.get("_observations", {}) if result["origin"] == "dom" else {}
     brand = product.get("brand")
     result["brand"] = clean(brand.get("name") if isinstance(brand, dict) else brand, 100)
     result["rating"] = {}
@@ -376,7 +386,9 @@ class Fetcher:
                 else:
                     doc = await database_call(extract, response, shopping)
             if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
-                    and not doc.products and (shopping or sum(map(len, doc.blocks)) < 200)):
+                    and ((shopping and not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
+                                                  for product in doc.products for offer in product["offers"]))
+                         or (not shopping and not doc.products and sum(map(len, doc.blocks)) < 200))):
                 # Shell validators cannot refresh scripts or API data. Keep
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
