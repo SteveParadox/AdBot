@@ -44,3 +44,13 @@ Citation URLs append #page=N to the retrieved source URL; the source itself
 remains identified by its original URL and content hash.
 Table evidence uses normalized observed cells, optionally with the observed
 first row. Existing evidence IDs and verification semantics are unchanged.
+
+### Conversation context
+
+Completed tasks expose `result.conversation_context` (anchor_id, references,
+unresolved, constraints, country, freshness) and versioned
+`result.conversation_memory`. These are output-only fields; clients cannot
+supply arbitrary memory snapshots. References use original one-based result
+positions. Retries reuse the original server-side context. Use explicit
+phrases such as "product 7", "source 12", "drop RAM requirement", or
+"new topic" to resolve or reset supported context.
