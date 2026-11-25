@@ -88,7 +88,7 @@ def new_metrics():
             "query_cache_hits", "document_cache_hits", "rate_limits", "quota_skips", "http_requests",
             "retrieval_ms", "retrieval_failures", "browser_render_attempts", "browser_launches", "browser_failures",
             "observed_link_candidates", "observed_link_attempts",
-            "pdf_parse_attempts", "pdf_pages_examined", "pdf_no_text",
+            "pdf_parse_attempts", "pdf_pages_examined", "pdf_no_text", "pdf_parse_failures",
             "model_calls", "model_ms", "prompt_tokens", "completion_tokens", "verification_ms", "first_event_ms",
             "first_answer_ms", "total_ms",
         )},
@@ -736,6 +736,9 @@ class Research:
         await self.synthesize()
         if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
             self.notes.append("One or more PDF sources exceeded extraction limits; only examined pages and rows were considered.")
+            self.result_quality = "partial"
+        if self.metrics.get("pdf_parse_failures"):
+            self.notes.append("One or more PDF sources could not be parsed within the document limits or extraction policy.")
             self.result_quality = "partial"
         if self.metrics.get("pdf_no_text"):
             self.notes.append("One or more PDFs lacked usable text or tables. Scanned documents require OCR, which is not supported.")
