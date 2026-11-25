@@ -101,9 +101,9 @@ INTENTS = [
 
 def route(question, history):
     text = question.question.casefold()
-    followup = bool(history and re.search(
-        r"\b(those|previous|that claim|more recent|other retailers|what about|first and|sources?|cheapest)\b", text
-    ))
+    from .memory import followup as is_followup, relevant_turns
+
+    followup = is_followup(text, history)
     intent = next((name for name, regex in INTENTS if re.search(regex, text)), "general")
     if followup:
         intent = "follow_up"
@@ -112,7 +112,8 @@ def route(question, history):
     if intent == "follow_up":
         if re.search(r"\b(verify|fact.?check)\b", text):
             return intent, Mode.FACT_CHECK
-        return intent, Mode(history[-1]["mode"]) if history[-1]["mode"] != Mode.DIRECT else Mode.QUICK
+        anchor = relevant_turns(text, history)[0]
+        return intent, Mode(anchor["mode"]) if anchor["mode"] != Mode.DIRECT else Mode.QUICK
     mapping = {
         "deep_research": Mode.DEEP, "fact_check": Mode.FACT_CHECK, "product_comparison": Mode.SHOPPING,
         "product_discovery": Mode.SHOPPING, "technical": Mode.TECHNICAL, "documentation": Mode.TECHNICAL,
