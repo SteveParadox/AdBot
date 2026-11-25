@@ -230,6 +230,8 @@ def recover_expired():
             )
             job.retry_count += 1
             if job.status in TERMINAL:
+                if job.job_type == "research":
+                    job.execution_state = {k: v for k, v in job.execution_state.items() if k != "research_checkpoint"}
                 job.completed_at = now
                 job.error_message = (
                     "Worker lease expired; manual review required" if unsafe else "Worker recovery limit reached"
