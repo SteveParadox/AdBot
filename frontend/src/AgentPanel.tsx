@@ -2,7 +2,7 @@ import { useJobEvents } from "./useJobEvents";
 import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
+import { BrainCircuit, Play, ArrowLeft, RefreshCw, LoaderCircle } from "lucide-react";
 import { queryApi,
   api,
   type Collection,
@@ -531,6 +531,16 @@ export default function AgentPanel({
   );
 }
 
+export function AgentThinking({ status }: { status: string }) {
+  if (status !== "running") return null;
+  return (
+    <p role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <LoaderCircle size={16} className="spin" aria-hidden="true" />
+      Thinking…
+    </p>
+  );
+}
+
 function AgentDetail({
   id,
   token,
@@ -594,7 +604,7 @@ function AgentDetail({
         {task.error.message}
       </p>
     );
-  if (!task.data) return <Empty text="Loading agent task…" />;
+  if (!task.data) return <p role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" /> Loading agent task…</p>;
   const t = task.data;
   return (
     <>
@@ -650,6 +660,7 @@ function AgentDetail({
           </span>
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
+        <AgentThinking status={t.status} />
         {t.execution && t.execution.strategy !== "general" && (
           <p className="hint">Strategy {t.execution.strategy.replaceAll("_", " ")}</p>
         )}
