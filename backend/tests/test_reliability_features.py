@@ -83,6 +83,23 @@ async def test_filtered_export_numeric_order_and_ownership(client, target):
     assert client.post(f"/api/extraction/datasets/{dataset['id']}/exports", json=options).status_code == 422
 
 
+def test_classification_diagnostic_ignores_successful_action_timing(client, target):
+    from app.failures import diagnose
+
+    identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
+    with transaction() as session:
+        job = session.get(Job, identifier)
+        job.job_type = "agent"
+        session.add(AgentTask(job_id=identifier, objective="List all AI chatbots", mode="supervised", options={}))
+        session.flush()
+        session.add(AgentStep(job_id=identifier, number=1, observation={}, decision={"decision": "CLICK"},
+                              status="succeeded", outcome={"trace": [{"phase": "waiting", "duration_ms": 40}]}))
+        session.flush()
+        diagnostic = diagnose(session, job, "Some products could not be classified from their visible category or description")
+    assert diagnostic["category"] == "classification"
+    assert diagnostic["stage"] == "verification"
+
+
 def test_uncertain_submission_diagnostic_never_advises_retry(client, target):
     from app.failures import diagnose
     identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]

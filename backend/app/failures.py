@@ -7,11 +7,10 @@ def diagnose(session, job, message, exception=None):
     last = session.scalar(select(AgentStep).where(AgentStep.job_id == job.id).order_by(AgentStep.number.desc()).limit(1))
     successful = session.scalar(select(AgentStep).where(AgentStep.job_id == job.id, AgentStep.status == "succeeded").order_by(AgentStep.number.desc()).limit(1))
     action = (last.decision or {}).get("decision") if last else None
-    text = (message + " " + (str(last.outcome) if last else "")).lower()
     outcome = (last.outcome or {}) if last else {}
-    # Do not match the *name* of a false uncertainty flag in serialized JSON.
-    uncertainty_text = (message + " " + str(outcome.get("error", ""))).lower()
-    uncertain = bool(last and action in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"} and (last.status == "executing" or "uncertain" in uncertainty_text or bool(outcome.get("uncertain_submission"))))
+    # Match error text only. Trace timing fields are present for successful actions too.
+    text = (message + " " + str(outcome.get("error") or "")).lower()
+    uncertain = bool(last and action in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"} and (last.status == "executing" or "uncertain" in text or bool(outcome.get("uncertain_submission"))))
     category, stage, recovery = "execution", "execution", "Inspect the job events and correct the failed operation before retrying."
     if uncertain:
         category, stage, recovery = "uncertain_submission", "interaction", "Check the destination for the action result before starting another task; do not replay automatically."
@@ -23,6 +22,8 @@ def diagnose(session, job, message, exception=None):
         category, stage, recovery = "provider_throttling", "model_request", "Wait for the provider cooldown, then retry within the configured shared quota."
     elif exception is not None and type(exception).__module__ == "app.agent.model":
         category, stage, recovery = "provider_error", "model_request", "Check provider availability, credentials and model configuration before retrying."
+    elif "could not be classified" in text:
+        category, stage, recovery = "classification", "verification", "Review the unresolved listings and provider events before starting another run."
     elif job.job_type == "export" or "export" in text:
         category, stage, recovery = "export", "dataset_export", "Review export options and dataset changes; retry against a consistent dataset."
     elif "extract" in text or "dataset" in text or action == "EXTRACT_DATASET":
