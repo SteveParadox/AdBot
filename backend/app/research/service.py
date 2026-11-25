@@ -100,6 +100,7 @@ def new_metrics():
             "observed_link_candidates", "observed_link_attempts",
             "semantic_rank_attempts", "semantic_rank_successes", "shared_origin_sources",
             "pdf_parse_attempts", "pdf_pages_examined", "pdf_no_text", "pdf_parse_failures",
+            "shared_cache_hits", "shared_cache_errors", "checkpoints_saved", "checkpoint_recoveries", "checkpoint_oversized",
             "model_calls", "model_ms", "prompt_tokens", "completion_tokens", "verification_ms", "first_event_ms",
             "first_answer_ms", "total_ms",
         )},
@@ -462,9 +463,13 @@ class Research:
         await self.stage("retrieving", "Retrieving public sources", candidates=len(initial))
         documents = await self.retrieve_batch(fetcher, initial)
         if not navigate:
+            if not self.checkpoint:
+                self.pending_ranked = None
             return
         remaining = max(0, pages_left - len(initial))
         if not remaining:
+            if not self.checkpoint:
+                self.pending_ranked = None
             return
         candidates = self.navigation_hits(documents)
         self.metrics["observed_link_candidates"] += len(candidates)
@@ -479,6 +484,8 @@ class Research:
         for hit in selected:
             self.hits.setdefault(hit.canonical_url, asdict(hit))
         await self.retrieve_batch(fetcher, selected)
+        if not self.checkpoint:
+            self.pending_ranked = None
 
     def navigation_hits(self, documents):
         candidates = {}
@@ -602,17 +609,34 @@ class Research:
         cfg = settings()
         profile = profile_for(self.mode, cfg.ai_max_output_tokens)
         remaining = evidence_rows(records, self.sources, self.contextual_question(), preferred, profile.quote_chars)
-        max_batches = min(profile.batches, max(0, (self.budget.calls - self.metrics["model_calls"]) // 2))
+        progress = self.synthesis_state or {}
+        accepted = list(progress.get("accepted", []))
+        presented = list(progress.get("presented", []))
+        processed = {row["id"] for row in presented}
+        remaining = [row for row in remaining if row["id"] not in processed]
+        batches = progress.get("batches", 0)
+        max_batches = min(max(0, profile.batches - batches),
+                          max(0, (self.budget.calls - self.metrics["model_calls"]) // 2))
         batch_prompt = SYNTHESIS + (
             " This is one bounded evidence batch, not the entire research corpus. "
             "Only propose claims supported by this batch. Prefer complementary findings, preserve "
             "qualifications, and do not declare the overall research complete."
         )
         verify_prompt = VERIFY + " Evaluate claims against the question and supplied shopping constraints, if any. Unknown requirement or budget fit is not a verified match."
-        accepted, presented = [], []
-        proposed_total = rejected = batches = verified_total = 0
-        verification_ms = 0
-        limitations = []
+        proposed_total = progress.get("proposed_total", 0)
+        rejected = progress.get("rejected", 0)
+        verified_total = progress.get("verified_total", 0)
+        verification_ms = progress.get("verification_ms", 0)
+        limitations = list(progress.get("limitations", []))
+
+        async def save_batch():
+            self.synthesis_state = {
+                "accepted": accepted, "presented": presented, "batches": batches,
+                "proposed_total": proposed_total, "rejected": rejected,
+                "verified_total": verified_total, "verification_ms": verification_ms,
+                "limitations": limitations,
+            }
+            await self.save_checkpoint()
         for index in range(max_batches):
             if not remaining or self.budget.calls - self.metrics["model_calls"] < 2 or self.deadline - time.monotonic() < 3:
                 break
@@ -622,7 +646,7 @@ class Research:
             limit = profile.claims_per_batch
 
             def payload_for(rows):
-                return {**self.synthesis_payload(rows), "claim_limit": limit, "batch": index + 1}
+                return {**self.synthesis_payload(rows), "claim_limit": limit, "batch": batches + 1}
 
             rows, pending = batch_rows(
                 remaining, payload_for, batch_prompt, cfg.ai_max_request_chars, count,
@@ -643,6 +667,7 @@ class Research:
             summary = await self.ask("research_synthesis", batch_prompt, Summary, {**payload_for(rows), "evidence": rows})
             if summary is None:
                 self.result_quality = "partial"
+                await save_batch()
                 continue
             if summary.limitations:
                 limitations.extend(summary.limitations[:4])
@@ -654,6 +679,7 @@ class Research:
             await self.stage("verifying", "Verifying evidence batch", batch=batches, candidates=len(proposals))
             if not proposals:
                 self.result_quality = "partial"
+                await save_batch()
                 continue
             started = time.monotonic()
             verification = {**self.verification_context(rows),
@@ -666,6 +692,7 @@ class Research:
             rejected += len(proposals) - len(verified)
             verified_total += len(verified)
             accepted.extend(verified)
+            await save_batch()
         self.claims = unique_claims(accepted)
         self.metrics["synthesis_batches"] = batches
         self.metrics["synthesis_evidence_presented"] = len(presented)
@@ -828,6 +855,10 @@ class Research:
                                 ) as fetcher:
                                     for round_number in range(self.next_round, self.budget.rounds):
                                         if self.page_count >= self.budget.pages:
+                                            break
+                                        if round_number and self.pending_ranked is None and (
+                                            self.sufficient() or self.search_count >= self.budget.requests
+                                        ):
                                             break
                                         queries = (await self.plan(round_number)
                                                    if pool.names and self.pending_ranked is None else [])
