@@ -64,7 +64,7 @@ def new_metrics():
     return {
         "provider_requests": Counter(), "provider_failures": Counter(), "provider_ms": Counter(), "provider_rate_limits": Counter(),
         **{key: 0 for key in (
-            "query_cache_hits", "document_cache_hits", "rate_limits", "http_requests",
+            "query_cache_hits", "document_cache_hits", "rate_limits", "quota_skips", "http_requests",
             "retrieval_ms", "retrieval_failures", "browser_render_attempts", "browser_launches", "browser_failures",
             "model_calls", "model_ms", "prompt_tokens", "completion_tokens", "verification_ms", "first_event_ms",
             "first_answer_ms", "total_ms",

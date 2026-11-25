@@ -3,16 +3,18 @@
 import asyncio
 import time
 import zlib
-from collections import Counter, OrderedDict, deque
+from collections import Counter, OrderedDict
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
 
+from ..concurrency import database_call
 from ..config import settings
 from ..egress import egress_proxy
 from ..outbound import ProviderPolicy, manager
+from ..provider_quota import QuotaBlocked, cooldown, identity, release, reserve
 from ..retry import retry_delay
 from .policy import PublicPolicy, canonical_key
 
@@ -54,19 +56,9 @@ class Hit:
 
 @dataclass
 class ProviderHealth:
-    requests: deque = field(default_factory=deque)
     cooldown: float = 0
     failures: int = 0
     status: str = "unknown"
-
-    def admit(self):
-        now = time.monotonic()
-        while self.requests and self.requests[0] < now - 60:
-            self.requests.popleft()
-        if self.cooldown > now or len(self.requests) >= settings().research_provider_rpm:
-            return False
-        self.requests.append(now)
-        return True
 
     def fail(self, retry_after=None):
         self.failures += 1
@@ -254,27 +246,38 @@ class ProviderPool:
         if cached is not None:
             self.metrics["query_cache_hits"] += 1
             return cached
-        if not health.admit():
+        if health.cooldown > time.monotonic():
+            return []
+        cfg = settings()
+        method, url, args = provider_request(name, query, country, freshness)
+        secret = "" if name == "searxng" else getattr(cfg, f"research_{name}_key").get_secret_value()
+        quota = identity("research:" + url, secret)
+        try:
+            receipt = await database_call(reserve, quota, 0, cfg.research_provider_rpm, 0)
+        except QuotaBlocked:
+            self.metrics["quota_skips"] += 1
             return []
         if not await self.reserve():
-            health.requests.pop()
+            await database_call(release, quota, receipt)
             return []
         self.metrics["provider_requests"][name] += 1
         started = time.monotonic()
         try:
-            method, url, args = provider_request(name, query, country, freshness)
             client = await self.client(name, url)
             async with client.stream(method, url, **args) as response:
                 if response.status_code == 429:
                     health.fail(response.headers.get("retry-after", "30"))
                     self.metrics["rate_limits"] += 1
                     self.metrics["provider_rate_limits"][name] += 1
+                    await database_call(cooldown, quota, health.cooldown - time.monotonic())
                     return []
                 response.raise_for_status()
                 data = loads(await bounded_bytes(response, 512_000))
             hits = normalize_hits(name, data, query)
         except (httpx.HTTPError, RuntimeError, ValueError, OSError, TimeoutError):
             health.fail()
+            if health.cooldown > time.monotonic():
+                await database_call(cooldown, quota, health.cooldown - time.monotonic())
             self.metrics["provider_failures"][name] += 1
             return []
         else:

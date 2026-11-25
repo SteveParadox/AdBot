@@ -1,0 +1,11 @@
+# Known limitations
+
+- A real search provider and model are required to validate live research quality. The fixture test exercises the complete worker flow with simulated responses. The Chromium fallback runs against controlled source material.
+- Source authority uses lightweight heuristics and domain diversity. Ranking is lexical plus reciprocal rank fusion. No vector index, learned cross-encoder or independent editorial credibility score is shipped.
+- Semantic verification is a second constrained model call using the same configured provider chain. Exact citations, quoted evidence and independent domains are checked deterministically where applicable. Model agreement still needs judgment, and adversarial or subtle contradictions can survive the verifier.
+- Automatic classification uses rules. Specialized queries can be overridden manually. Deep research uses bounded additions based on coverage, geography and search perspectives. It does not maintain a general-purpose knowledge graph or independently prove the complete space of potentially relevant sources.
+- Sources may lack reliable publication dates. Provider freshness support differs. Public HTML, XHTML and plain text are supported. PDF parsing, authenticated sites, paywalls, CAPTCHA challenges, cross-origin browser scripts and interactive browser filtering are outside the retrieval implementation.
+- Shopping extracts structured Product and Offer markup. Many retailers omit price, inventory, warranty, shipping or variant details. Currency codes are normalized and offers are compared within a currency. Foreign exchange conversion and historical price tracking are unavailable. Availability describes the retrieved retailer record at the recorded time.
+- The app streams observable progress and publishes verified answer segments after the answer is committed. Raw model tokens are withheld during verification.
+- SQL shares provider rate limits and cooldowns across workers. Search and document caches are worker-local. Recovery can repeat a read-only request within the original deadline and the persisted remaining budgets. Partial source collections are committed at task completion.
+- Process caches are tenant-keyed and expire independently of persisted conversation deletion. A restarted worker begins with empty caches.
