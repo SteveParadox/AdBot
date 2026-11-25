@@ -202,6 +202,8 @@ async def _execute(job_id, token):
                                  claims=len(result["claims"]))
                     if kind == "research" and job.status == "completed":
                         runner.persist(session)
+                    if kind == "research" and job.status in {"completed", "failed", "cancelled"}:
+                        job.execution_state = {k: v for k, v in job.execution_state.items() if k != "research_checkpoint"}
                     job.completed_at = None if job.status == "queued" else time.time()
                     if not error and job.status == "completed":
                         job.execution_state = {k: v for k, v in job.execution_state.items() if k != "failure"}
