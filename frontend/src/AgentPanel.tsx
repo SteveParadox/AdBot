@@ -17,12 +17,14 @@ type Run = (
   action: () => Promise<unknown>,
   success?: () => void,
 ) => Promise<void>;
-type Evidence = { id: string; url: string; quote: string; step_id: number };
+type Evidence = { id: string; url: string; quote: string; step_id: number; source_url?: string };
 type Claim = { text: string; evidence_ids: string[] };
 type Task = Job & {
   planning?: Planning;
   budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
   objective: string;
+  execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
+    directory_pages: number; prevented_repetitions: number; evidence_count: number };
   mode: string;
   options: {
     success_criteria: string[];
@@ -31,6 +33,7 @@ type Task = Job & {
   };
   result: {
     artifact?: { format: string; download_url: string };
+    partial?: boolean;
     claims?: Claim[];
     evidence?: Evidence[];
     verification?: { complete: boolean; explanation: string };
@@ -647,6 +650,10 @@ function AgentDetail({
           </span>
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
+        {t.execution?.strategy === "directory_collection" && (
+          <p className="hint">Directory collection ? {t.execution.unique_records}{t.execution.advertised_total != null ? ` of ${t.execution.advertised_total}` : ""} records read ? {t.execution.matched_records} matches ? {t.execution.directory_pages} directory pages</p>
+        )}
+        {Boolean(t.execution?.prevented_repetitions) && <p className="hint">{t.execution?.prevented_repetitions} repeated actions or pages stopped</p>}
         <JobFailure failure={t.failure} />
         {t.error_message && (
           <p className="error" role="alert">
@@ -763,9 +770,9 @@ function AgentDetail({
           <SemanticObservation observation={latest?.observation} />
         </section>
       </div>
-      {t.status === "completed" && t.result.verification?.complete && t.result.claims && (
+      {((t.status === "completed" && t.result.verification?.complete) || t.result.partial) && t.result.claims && (
         <section className="panel form-panel">
-          <h2>Verified task result</h2>
+          <h2>{t.result.partial ? "Partial task result" : "Verified task result"}</h2>
           {t.status === "completed" && t.result.artifact && <Button disabled={busy} onClick={() => run(async () => {
             const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: "Bearer " + token } });
             if (!response.ok) throw new Error("Export unavailable or expired");
@@ -774,6 +781,7 @@ function AgentDetail({
             setTimeout(() => URL.revokeObjectURL(url), 1000);
           })}>Download verified artifact</Button>}
           <p className="hint">{t.result.verification?.explanation}</p>
+          {t.result.partial && t.result.claims.length === 0 && <p>No verified matches were collected.</p>}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
               <p>{claim.text}</p>

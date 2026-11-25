@@ -55,7 +55,7 @@ class Observer:
             return {k: self.sanitize(v) for k, v in value.items()}
         return value
 
-    async def observe(self, page, tab_id, goal="", _retry=0):
+    async def observe(self, page, tab_id, goal="", _retry=0, *, directory=False):
         start = time.perf_counter()
         await asyncio.gather(*(h.dispose() for h in self.bindings.values()), return_exceptions=True)
         self.bindings, self.registry, self.private_targets = {}, {}, {}
@@ -72,6 +72,9 @@ class Observer:
             self.generation += 1
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
+        if directory:
+            from .directory import READ_DIRECTORY
+            data["directory"] = await page.evaluate(READ_DIRECTORY)
         secrets = data.pop("sensitive_values")
         self.secrets = secrets
 
@@ -97,13 +100,25 @@ class Observer:
                 e["role"] not in {"dialog", "alertdialog"},
                 not e["focused"],
                 not e["actionable"],
+                directory and not re.match(r"^(?:next|load more|show more|(?:browse )?(?:ai )?tools|products|directory)\b", e["name"], re.I),
                 -relevance,
                 not e["in_view"],
                 e["role"] == "link",
                 e["index"],
             )
 
-        candidates = sorted((e for e in all_elements if not e["sensitive"]), key=priority)[:80]
+        limit = 12 if directory else 80
+        eligible = [element for element in all_elements if not element["sensitive"]]
+        if directory:
+            # Bind forward controls and directory routes. Record extraction reads
+            # the visible cards directly, so their individual links need no handles.
+            eligible = [element for element in eligible if element["role"] in {"dialog", "alertdialog"} or (
+                element["visible"] and re.match(
+                    r"^(?:next|load more|show more|page \d+|(?:browse )?(?:ai )?(?:tools|products|directory|articles))\b",
+                    element["name"], re.I,
+                )
+            )]
+        candidates = sorted(eligible, key=priority)[:limit]
         semaphore = asyncio.Semaphore(8)
 
         async def inspect(element):
@@ -157,11 +172,11 @@ class Observer:
         if not coherent:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
             if _retry < 1:
-                return await self.observe(page, tab_id, goal, _retry=1)
+                return await self.observe(page, tab_id, goal, _retry=1, directory=directory)
             raise ValueError("Page changed repeatedly during semantic observation; no coherent evidence available")
         if len(inspected) < len(candidates) and _retry < 1:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
-            retried = await self.observe(page, tab_id, goal, _retry=1)
+            retried = await self.observe(page, tab_id, goal, _retry=1, directory=directory)
             retried["observation_metrics"]["read_attempts"] = 2
             retried["observation_metrics"]["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
             return retried
@@ -192,11 +207,15 @@ class Observer:
         data["fingerprint"] = fingerprint(data)
         states = {
             e["node_token"]: {
-                k: e[k] for k in ("role", "name", "focused", "expanded", "checked", "selected", "invalid", "value")
+                k: e[k] for k in ("role", "name", "focused", "expanded", "pressed", "checked", "selected", "invalid", "value")
             }
             for e in data["elements"]
         }
-        data["semantic_changes"] = [v for k, v in states.items() if self.previous.get(k) != v][:12]
+        previous = self.previous if same_document else {}
+        data["semantic_changes"] = [v for k, v in states.items() if previous.get(k) != v][:12]
+        data["removed_controls"] = [
+            {"role": value["role"], "name": value["name"]} for key, value in previous.items() if key not in states
+        ][:8]
         self.previous = states
         data["focus"] = next((e["element_id"] for e in data["elements"] if e["focused"]), None)
         data["dialogs"] = [
@@ -212,7 +231,7 @@ class Observer:
         data["observation_metrics"] = {
             "candidates": len(all_elements),
             "included": len(data["elements"]),
-            "truncated": data.pop("candidate_limit") or sum(not e["sensitive"] for e in all_elements) > 80,
+            "truncated": data.pop("candidate_limit") or sum(not e["sensitive"] for e in all_elements) > limit,
             "withheld_sensitive": sum(e["sensitive"] for e in all_elements),
             "changed_during_inspection": len(candidates) - len(data["elements"]),
             "read_attempts": _retry + 1,

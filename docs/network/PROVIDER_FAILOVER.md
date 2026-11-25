@@ -104,3 +104,36 @@ about 2.3 seconds. Both Groq keys, OpenRouter and NVIDIA passed fresh simple
 inference checks; Google continued to return HTTP 503. The idle local worker was
 restarted after checking that no jobs were queued or active. The original failed
 task and its diagnostics were retained.
+
+
+Response-contract follow-up on 2026-11-25: replaying the saved failing request
+reproduced Groq returning `claims: null` for a non-completion action, and NVIDIA
+spending all 800 completion tokens on reasoning with no answer content. The
+adapter now requests strict JSON-schema output for the configured GPT-OSS and
+NVIDIA Lightning models. Wire object fields are required and closed; all local
+action, citation and authorization validators still run. Dynamic extraction
+maps retain JSON-object mode so caller-defined field names are preserved.
+
+Explicit null optional collection fields use their existing empty collection
+default. Required fields, missing click targets, and completion without evidence
+claims remain invalid. JSON fences and executable text remain rejected. Validation
+failure events identify field paths and error types without storing the returned
+content or sensitive input values.
+
+The default and local `ADBOT_AI_MAX_OUTPUT_TOKENS` are now 2048, and that complete
+allowance is reserved before dispatch. `ADBOT_NVIDIA_THINKING_ENABLED=false`
+disables Lightning's reasoning trace so the answer can use the output budget.
+See [NVIDIA's reasoning controls](https://docs.nvidia.com/nim/large-language-models/2.0.10/get-started/advanced/get-started-nemotron-3.5-lightning)
+and [Groq structured outputs](https://console.groq.com/docs/structured-outputs).
+Live replay with the new settings produced validated decisions from both Groq
+keys, OpenRouter and NVIDIA. NVIDIA reported zero reasoning tokens and a normal
+stop, rather than truncation. Google continued returning HTTP 503.
+
+Validation for the response-contract follow-up: the initial non-browser run had
+124 passes and one wall-clock-sensitive Retry-After assertion failure. That test
+now uses a fixed monotonic clock; the focused 16-test rerun passed, including the
+new extraction-map compatibility case. A first browser run timed out before its
+first model call; an isolated Chromium startup check then passed, and a fresh
+run of all three response/failover browser workflows passed in 26.62 seconds.
+Ruff and diff whitespace checks passed. Both idle local workers were reloaded
+with the fix, preserving the existing worker count.

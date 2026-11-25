@@ -191,6 +191,14 @@ async def _execute(job_id, token):
                                 save_memory(session, job, task)
                             emit(session, job_id, "goal_verified", "Objective verified against collected evidence",
                                  claims=len(result["claims"]))
+                    if kind == "agent" and job.status in {"failed", "cancelled"}:
+                        task = session.get(AgentTask, job_id)
+                        directory = task.memory.get("directory", {})
+                        if directory.get("pages"):
+                            from .agent.directory import directory_result
+                            task.result = directory_result(directory, error or "Directory collection stopped before verification")
+                            emit(session, job_id, "agent_partial_result", "Directory evidence preserved",
+                                 records=task.result["directory"]["unique_records"])
                     job.completed_at = None if job.status == "queued" else time.time()
                     if not error and job.status == "completed":
                         job.execution_state = {k: v for k, v in job.execution_state.items() if k != "failure"}

@@ -15,6 +15,10 @@ def diagnose(session, job, message, exception=None):
     category, stage, recovery = "execution", "execution", "Inspect the job events and correct the failed operation before retrying."
     if uncertain:
         category, stage, recovery = "uncertain_submission", "interaction", "Check the destination for the action result before starting another task; do not replay automatically."
+    elif "token budget exhausted" in text:
+        category, stage, recovery = "model_token_budget", "model_request", "Inspect estimated input, reserved output and the remaining task token budget."
+    elif "context window too small" in text:
+        category, stage, recovery = "model_context_limit", "model_request", "Use a compatible provider context window or narrow the task context."
     elif "quota" in text or "429" in text or "throttl" in text:
         category, stage, recovery = "provider_throttling", "model_request", "Wait for the provider cooldown, then retry within the configured shared quota."
     elif exception is not None and type(exception).__module__ == "app.agent.model":

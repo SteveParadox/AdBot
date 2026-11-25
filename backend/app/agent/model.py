@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+from pydantic import ValidationError
 
 from ..outbound import model_clients
 
@@ -40,11 +41,64 @@ class ModelDeadlineExceeded(ModelError):
     pass
 
 
+class ModelContextExceeded(ModelError):
+    pass
+
+
 class ModelBudgetExceeded(RuntimeError):
     pass
 
 
 logger = logging.getLogger("adbot.agent.model")
+
+
+def structured_response_format(schema):
+    """Require the full wire shape; local validators still enforce action semantics."""
+    document = copy.deepcopy(schema.model_json_schema())
+
+    def has_open_mapping(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" and (
+                "properties" not in node or node.get("additionalProperties") not in (None, False)
+            ):
+                return True
+            return any(has_open_mapping(value) for value in node.values())
+        return isinstance(node, list) and any(has_open_mapping(value) for value in node)
+
+    # Extraction dictionaries have caller-defined keys. Do not close or discard
+    # those keys merely to satisfy a provider's strict-object subset.
+    if has_open_mapping(document):
+        return {"type": "json_object"}
+
+    def constrain(node):
+        if isinstance(node, dict):
+            node.pop("default", None)
+            if node.get("type") == "object" and "properties" in node:
+                node["required"] = list(node["properties"])
+                node["additionalProperties"] = False
+            for value in node.values():
+                constrain(value)
+        elif isinstance(node, list):
+            for value in node:
+                constrain(value)
+
+    constrain(document)
+    return {"type": "json_schema", "json_schema": {
+        "name": schema.__name__, "strict": True, "schema": document,
+    }}
+
+
+def validate_response(message, schema):
+    """Treat null optional collections as omitted, without relaxing required fields."""
+    value = json.loads(message)
+    if isinstance(value, dict):
+        for name, field in schema.model_fields.items():
+            if name in value and value[name] is None and not field.is_required():
+                default = field.get_default(call_default_factory=True)
+                if isinstance(default, (list, dict)):
+                    value.pop(name)
+    # Keep JSON-mode validation and all semantic/citation/permission validators.
+    return schema.model_validate_json(json.dumps(value))
 
 
 def _clip(value, limit):
@@ -76,6 +130,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars):
                 "focusable",
                 "focused",
                 "expanded",
+                "pressed",
                 "checked",
                 "selected",
                 "required",
@@ -117,6 +172,9 @@ def bounded_request_text(system, kind, payload, schema, max_chars):
                         form["action"] = _clip(form.get("action"), 400)
             current_page["elements"] = elements[:40]
             current_page["semantic_changes"] = current_page.get("semantic_changes", [])[:5]
+            current_page["removed_controls"] = current_page.get("removed_controls", [])[:4]
+            if current_page.get("elements"):
+                current_page.pop("accessibility", None)  # The same roles and names already travel in elements.
             current_page["observation_metrics"] = {
                 **current_page.get("observation_metrics", {}),
                 "model_elements": min(40, len(elements)),
@@ -219,8 +277,9 @@ class ModelClient:
         provider_names = ([name.strip() for name in cfg.ai_provider_order.split(",")]
                           if cloud_chain else [cfg.ai_provider, "local"])
 
-        async def record_unavailable(reason, delay=None):
-            failure = {"provider": provider_names[provider_index], "model": model, "reason": reason}
+        async def record_unavailable(reason, delay=None, **details):
+            failure = {"provider": provider_names[provider_index], "model": model, "purpose": kind,
+                       "reason": reason, **details}
             failures.append(failure)
             if delay is not None:
                 retry_at.append(time.monotonic() + max(0.05, delay))
@@ -251,7 +310,9 @@ class ModelClient:
             "EXTRACT_DATASET captures records using the configured schema; EXPORT_DATASET creates the requested artifact after data exists. "
             "Do not COMPLETE while required dataset or export phases remain pending. "
             "During verification, check supplied artifact records against all requested output constraints; source quotations alone do not establish that an exported dataset satisfies them. "
-            "If blocked, ASK_USER or FAIL instead of claiming completion."
+            "If blocked, ASK_USER or FAIL instead of claiming completion. "
+            "Keep explanations brief. For unused claims return an empty array [], never null. "
+            "Never set required fields to null. Omit unused optional fields when the response format permits it."
 
         )
         request_text = bounded_request_text(system, kind, payload, schema, cfg.ai_max_request_chars)
@@ -280,7 +341,6 @@ class ModelClient:
         # Reserve a conservative upper bound, including each ambiguous transport
         # attempt. Actual usage may exceed estimates, so the next call is denied
         # when the persisted budget is exhausted. Vision reserves extra tokens.
-        estimate = len(system + request_text) + (5000 if image_path else 0)
 
         def request_timeout(provider_index):
             configured = cfg.ai_fallback_timeout_seconds if provider_index else cfg.ai_timeout_seconds
@@ -312,6 +372,16 @@ class ModelClient:
                 native = local_provider and cfg.ai_ollama_native
                 endpoint = base.rstrip("/") + "/chat/completions"
                 provider_body = {**body, "model": model}
+                provider_name = provider_names[provider_index]
+                strict_output = (
+                    provider_name in {"groq", "groq_secondary", "openrouter"} and "/gpt-oss-" in model
+                ) or (provider_name == "nvidia" and model.startswith("nvidia/nemotron-3.5-lightning-"))
+                if cfg.ai_json_mode and strict_output:
+                    provider_body["response_format"] = structured_response_format(schema)
+                    if provider_name == "openrouter" and provider_body["response_format"]["type"] == "json_schema":
+                        provider_body["provider"] = {"require_parameters": True}
+                if provider_name == "nvidia" and model.startswith("nvidia/nemotron-3.5-lightning-"):
+                    provider_body["chat_template_kwargs"] = {"enable_thinking": cfg.nvidia_thinking_enabled}
                 if not native and "/gpt-oss-" in model:
                     if provider_names[provider_index] == "openrouter":
                         provider_body["reasoning"] = {"effort": cfg.ai_reasoning_effort}
@@ -375,11 +445,30 @@ class ModelClient:
                         "keep_alive": -1,
                         "options": {"num_predict": cfg.ai_max_output_tokens, "num_ctx": 8192, "temperature": 0},
                     }
-                provider_estimate = len(system + request_text) + (5000 if image_path and not native else 0)
+                # Count serialized messages, schema and framing. Known GPT-OSS deployments use
+                # a byte-based heuristic with slack. Unknown tokenizers keep a conservative bound.
+                serialized_body = len(json.dumps(provider_body, ensure_ascii=False).encode("utf-8"))
+                image_bytes = len(content[1]["image_url"]["url"]) if image_path and not native else 0
+                text_bytes = serialized_body - image_bytes
+                uses_gpt_oss = provider_name in {"groq", "groq_secondary", "openrouter"} and model.startswith("openai/gpt-oss-")
+                provider_estimate = ((text_bytes + 2) // 3 + 128 if uses_gpt_oss else text_bytes)
+                provider_estimate += 5000 if image_bytes else 0
                 unavailable = False
                 has_fallback = position + 1 < len(provider_indices)
                 next_provider_index = provider_indices[position + 1] if has_fallback else 0
                 attempts = 1 if has_fallback or cfg.ai_provider_order else cfg.ai_retries + 1
+                context_limit = cfg.ai_context_windows.get(provider_name, cfg.ai_context_windows.get(model))
+                if uses_gpt_oss and context_limit is None:
+                    context_limit = 131072
+                if context_limit is not None and provider_estimate + cfg.ai_max_output_tokens > context_limit:
+                    reason = f"Model context window too small: estimated {provider_estimate} input + {cfg.ai_max_output_tokens} output exceeds {context_limit}"
+                    if not cloud_chain and not has_fallback:
+                        raise ModelContextExceeded(reason)
+                    await record_unavailable(reason)
+                    if has_fallback:
+                        self.fallback_active = True
+                        self.active_provider_index = next_provider_index
+                    continue
                 for attempt in range(attempts):
                     try:
                         from ..provider_quota import identity, reserve, settle, release, cooldown, QuotaBlocked
@@ -387,7 +476,7 @@ class ModelClient:
                         quota_key = identity(base, key.get_secret_value())
                         try:
                             quota_receipt = await database_call(
-                                reserve, quota_key, len(json.dumps(provider_body, ensure_ascii=False).encode("utf-8")) + cfg.ai_max_output_tokens,
+                                reserve, quota_key, provider_estimate + cfg.ai_max_output_tokens,
                                 cfg.ai_provider_rpm, cfg.ai_provider_tpm,
                             )
                         except ValueError as invalid_quota:
@@ -460,7 +549,7 @@ class ModelClient:
                                         continue
                                 raise ModelError(f"Model provider returned HTTP {response.status_code}")
                             if has_fallback or cloud_chain:
-                                thresholds = {"requests": 1, "tokens": (estimate + 2) // 3 + cfg.ai_max_output_tokens}
+                                thresholds = {"requests": 1, "tokens": provider_estimate + cfg.ai_max_output_tokens}
                                 for resource, threshold in thresholds.items():
                                     value = response.headers.get("x-ratelimit-remaining-" + resource)
                                     try:
@@ -509,8 +598,8 @@ class ModelClient:
                         if not native and data["choices"][0].get("finish_reason") == "length":
                             raise ModelError("Model response truncated at output token limit")
                         message = data["message"]["content"] if native else data["choices"][0]["message"]["content"]
-                        # Strict JSON only; do not repair fences or evaluate content.
-                        result = schema.model_validate_json(message)
+                        # Parse JSON only; never repair fences, invent fields or evaluate content.
+                        result = validate_response(message, schema)
                         self.models_used.add(model)
                         return result
                     except ModelDeadlineExceeded:
@@ -553,7 +642,21 @@ class ModelClient:
                     except (ValueError, KeyError, IndexError, TypeError) as exc:
                         if has_fallback or cloud_chain:
                             await database_call(cooldown, quota_key, cfg.ai_failure_cooldown_seconds)
-                        await record_unavailable("Invalid JSON or response schema", cfg.ai_failure_cooldown_seconds)
+                        validation_errors = []
+                        if isinstance(exc, ValidationError):
+                            validation_errors = [
+                                {"field": ".".join(map(str, error["loc"])) or "$", "type": error["type"]}
+                                for error in exc.errors(include_input=False, include_context=False)[:5]
+                            ]
+                            reason = "Response schema validation failed: " + "; ".join(
+                                f"{error['field']} ({error['type']})" for error in validation_errors
+                            )
+                        elif isinstance(exc, json.JSONDecodeError):
+                            reason = "Invalid JSON response"
+                        else:
+                            reason = "Invalid provider response envelope"
+                        await record_unavailable(reason, cfg.ai_failure_cooldown_seconds,
+                                                 validation_errors=validation_errors)
                         if not settled:
                             await charge(0, 0, (time.monotonic() - started) * 1000, False, reservation)
                         if has_fallback or cloud_chain:

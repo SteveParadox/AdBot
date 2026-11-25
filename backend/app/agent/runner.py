@@ -13,7 +13,8 @@ from ..db import AgentStep, AgentTask, emit, transaction
 from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
-from .memory import action_key, decrypt_session, encrypt_session, relevant_memories
+from .directory import DirectoryCollection, directory_intent, directory_result
+from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError, ModelProvidersUnavailable
 
 
@@ -81,7 +82,12 @@ class AgentRunner(Runner):
             if provider_index == 0 and len(settings().model_providers()) > 1:
                 task_budget = max(0, task_budget - settings().agent_fallback_tokens)
             if task.prompt_tokens + task.completion_tokens + prompt + completion > task_budget:
-                raise ModelBudgetExceeded("Model token budget exhausted before request")
+                remaining = self.options["max_tokens"] - task.prompt_tokens - task.completion_tokens
+                held = self.options["max_tokens"] - task_budget
+                raise ModelBudgetExceeded(
+                    f"Model token budget exhausted before request: {prompt} estimated input + {completion} reserved output, "
+                    f"{max(0, remaining)} remaining, {held} held for fallback"
+                )
             if getattr(self, "fallback_notified", 0) != provider_index:
                 cfg = settings()
                 provider = cfg.ai_provider_order.split(",")[provider_index].strip() if cfg.ai_provider_order else "local"
@@ -332,6 +338,8 @@ class AgentRunner(Runner):
         await context.unroute("**/*")
         await context.route("**/*", controller.route)
         await self.restore_tabs(controller)
+        entity = directory_intent(self.objective, self.options, bool(self.snapshot.get("extraction")))
+        directory = DirectoryCollection(entity, self.memory.setdefault("directory", {})) if entity else None
         def read_start():
             with transaction() as session:
                 start = session.scalar(
@@ -346,8 +354,8 @@ class AgentRunner(Runner):
             controller.engine.trace = []
             controller.engine.dispatch_started = False
             with controller.engine.phase("inspection"):
-                observation = await controller.observe()
-            await self.prepare_plan(observation)
+                observation = await controller.observe(directory=True) if directory else await controller.observe()
+            await self.prepare_plan(observation, deterministic=directory is not None)
             if observation["url"] not in self.memory["visited_urls"]:
                 self.memory["visited_urls"].append(observation["url"])
             def record_observation():
@@ -370,30 +378,74 @@ class AgentRunner(Runner):
 
             step_id = await database_call(record_observation)
             decision = None
+            deterministic = False
+            semantic_key = None
+            prevented = False
+            len_before = len(self.memory["evidence"])
             try:
                 with controller.engine.phase("decision"):
-                    decision = await self.ask_model(
-                        "decide",
-                        {
-                            "objective": self.objective,
-                            "success_criteria": self.options["success_criteria"],
-                            "current_page": observation,
-                            "session_memory": self.context_memory(),
-                            "historical_hints": self.hints,
-                            "steps_remaining": self.options["max_steps"] - number,
-                            "form_input_enabled": self.options["allow_form_input"],
-                            "task_plan": self.planning_context(),
-                        },
-                        Decision,
-                        observation,
-                    )
+                    terminal = None
+                    if directory:
+                        decision, terminal = directory.advance(observation, step_id, self.policy)
+                        deterministic = decision is not None or terminal is not None
+                        if directory.state["pages"]:
+                            await self.checkpoint(controller)
+                    if terminal is not None:
+                        result = directory_result(directory.state, terminal or None)
+                        def finish_directory():
+                            with transaction() as session:
+                                owned_job(session, self.id, self.token)
+                                step = session.get(AgentStep, step_id)
+                                step.status = "failed" if terminal else "succeeded"
+                                step.outcome = {"directory": {k: v for k, v in result["directory"].items() if k != "records"},
+                                                "error": terminal or None, "trace": controller.engine.trace.copy()}
+                        await database_call(finish_directory)
+                        if terminal:
+                            raise RuntimeError(terminal)
+                        from .planning import evaluate
+                        evaluate(self.memory["planning"], observation, result["evidence"], verified=True, collection_complete=True)
+                        await self.checkpoint(controller)
+                        self.verified_result = result
+                        return
+                    if decision is None:
+                        if directory:
+                            # Keep the directory intent for a later observed page reached by the general strategy.
+                            observation = await controller.observe()
+                            def update_observation():
+                                with transaction() as session:
+                                    owned_job(session, self.id, self.token)
+                                    session.get(AgentStep, step_id).observation = observation
+                            await database_call(update_observation)
+                        decision = await self.ask_model(
+                            "decide",
+                            {
+                                "objective": self.objective,
+                                "success_criteria": self.options["success_criteria"],
+                                "current_page": observation,
+                                "session_memory": self.context_memory(),
+                                "historical_hints": self.hints,
+                                "steps_remaining": self.options["max_steps"] - number,
+                                "form_input_enabled": self.options["allow_form_input"],
+                                "task_plan": self.planning_context(),
+                            },
+                            Decision,
+                            observation,
+                        )
                 if decision.decision == "OBSERVE" and self.memory["recent_actions"]:
                     previous = self.memory["recent_actions"][-1]
                     if previous["action"] == "OBSERVE" and not previous.get("outcome", {}).get("page_changed", False):
                         raise ValueError(
                             "OBSERVE already returned unchanged content; navigate an observed link, interact with a relevant control, or report the blockage"
                         )
-                key = action_key(decision.model_dump())
+                decision_data = decision.model_dump()
+                key = action_key(decision_data)
+                if not deterministic:
+                    semantic_key = semantic_action_key(decision_data, observation)
+                    entries = self.memory.get("semantic_attempts", {})
+                    if semantic_key is not None and entries.get(semantic_key, 0) >= 2:
+                        prevented = True
+                        self.memory["prevented_repetitions"] = self.memory.get("prevented_repetitions", 0) + 1
+                        raise ValueError("Blocked a repeated action with no new evidence; choose a different observed route")
                 from .planning import guard
 
                 guard(self.memory["planning"], decision, observation)
@@ -448,10 +500,11 @@ class AgentRunner(Runner):
                     self.memory["summary"] = [c.model_dump() for c in decision.claims]
                     outcome = {"summary": self.memory["summary"]}
                 else:
-                    outcome = await controller.act(decision, self.options, approved)
+                    outcome = (await controller.act(decision, self.options, approved, read_only=True)
+                               if deterministic else await controller.act(decision, self.options, approved))
                 # COMPLETE has no browser side effect; the current observation
                 # already grounds its evidence. Do not add a fallible browser read.
-                after = observation if decision.decision == "COMPLETE" else await controller.observe()
+                after = observation if decision.decision == "COMPLETE" or deterministic else await controller.observe()
                 if (
                     self.snapshot.get("extraction")
                     and decision.decision != "EXTRACT_DATASET"
@@ -468,6 +521,7 @@ class AgentRunner(Runner):
                     self.memory["evidence"],
                     await database_call(self.dataset_count),
                     bool(self.memory.get("export_artifact")),
+                    collection_complete=False if directory else None,
                 )
                 active_id = self.memory["planning"]["active_subtask"]
                 self.memory["planning"]["last_observation"] = {
@@ -478,8 +532,9 @@ class AgentRunner(Runner):
                 }
                 outcome["trace"] = controller.engine.trace.copy()
                 outcome["traffic_kind"] = "automated"
-                outcome["after_url"] = after["url"]
-                outcome["page_changed"] = after["fingerprint"] != observation["fingerprint"]
+                outcome["after_url"] = controller.page.url if deterministic else after["url"]
+                outcome["page_changed"] = (outcome["after_url"] != observation["url"] or
+                                           after["fingerprint"] != observation["fingerprint"])
                 if isinstance(outcome.get("interaction"), dict):
                     for key, observed_page in (("focus_before", observation), ("focus_after", after)):
                         focused = next((e for e in observed_page.get("elements", []) if e.get("focused")), None)
@@ -498,6 +553,10 @@ class AgentRunner(Runner):
                         "outcome": outcome if decision.decision != "COMPLETE" else "Verified result",
                     }
                 )
+                if len(self.memory["evidence"]) > len_before:
+                    self.memory.pop("semantic_attempts", None)
+                elif semantic_key is not None:
+                    self.record_semantic_attempt(semantic_key)
                 await self.checkpoint(controller)
                 def record_success():
                     with transaction() as session:
@@ -513,7 +572,7 @@ class AgentRunner(Runner):
                             trace=outcome["trace"],
                             traffic_kind="automated",
                             step_id=step_id,
-                            url=after["url"],
+                            url=outcome["after_url"],
                             screenshot_path=after["screenshot_path"],
                             page_changed=outcome["page_changed"],
                         )
@@ -523,6 +582,8 @@ class AgentRunner(Runner):
                 if decision.decision == "COMPLETE":
                     self.verified_result = outcome
                     return
+                if deterministic:
+                    continue
                 from .planning import track_progress
 
                 track_progress(self.memory["planning"], decision, after, len(self.memory["evidence"]))
@@ -550,6 +611,8 @@ class AgentRunner(Runner):
                         "error": controller.observer.safe_text(str(exc))[:500],
                     }
                 )
+                if semantic_key is not None and not prevented:
+                    self.record_semantic_attempt(semantic_key)
                 from .planning import replan
 
                 ambiguous_write = bool(
@@ -605,6 +668,12 @@ class AgentRunner(Runner):
                 if consecutive_failures >= settings().agent_max_retries:
                     raise RuntimeError("Agent recovery budget exhausted; inspect failed steps") from exc
         raise RuntimeError("Agent step budget exhausted before verified completion")
+
+    def record_semantic_attempt(self, key):
+        entries = self.memory.setdefault("semantic_attempts", {})
+        entries[key] = entries.get(key, 0) + 1
+        if len(entries) > 64:
+            entries.pop(next(iter(entries)))
 
     def context_memory(self):
         return {
@@ -698,7 +767,7 @@ class AgentRunner(Runner):
                     raise ValueError("Task records changed in a concurrent run; re-observe before export")
             return len(ids)
 
-    async def prepare_plan(self, observation):
+    async def prepare_plan(self, observation, *, deterministic=False):
         from .planning import specification, initial_plan, needs_model_plan, accept_model_plan, evaluate, TaskPlan
 
         expected = specification(
@@ -711,7 +780,7 @@ class AgentRunner(Runner):
         if state["specification"]["source_hash"] != expected["source_hash"]:
             raise ValueError("Durable task constraints no longer match the authorized task")
         if not state.get("initialized"):
-            if needs_model_plan(expected):
+            if not deterministic and needs_model_plan(expected):
                 try:
                     draft = await self.ask_model(
                         "plan",

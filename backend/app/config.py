@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     google_model: str = "gemini-3.8-flash"
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_api_key: SecretStr = SecretStr("")
+    nvidia_thinking_enabled: bool = False
     nvidia_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     # Empty retains the single-provider / optional local fallback configuration.
     ai_provider_order: str = ""
@@ -84,9 +85,10 @@ class Settings(BaseSettings):
     ai_provider_rpm: int = Field(0, ge=0, le=1000000)
     ai_provider_tpm: int = Field(0, ge=0, le=1000000000)
     ai_retries: int = Field(2, ge=0, le=4)
-    ai_max_output_tokens: int = Field(800, ge=256, le=8000)
+    ai_max_output_tokens: int = Field(2048, ge=256, le=8000)
     ai_max_request_chars: int = Field(18000, ge=4000, le=100000)
     ai_json_mode: bool = True
+    ai_context_windows: dict[str, int] = Field(default_factory=dict)
     ai_reasoning_effort: Literal["low", "medium", "high"] = "low"
     agent_max_steps: int = Field(500, ge=1, le=500)
     agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
@@ -157,6 +159,8 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires PostgreSQL, Redis and fixture mode disabled")
             if not any(d.strip() for d in self.authorized_domains.split(",")):
                 raise ValueError("Production requires ADBOT_AUTHORIZED_DOMAINS")
+        if any(value < 256 for value in self.ai_context_windows.values()):
+            raise ValueError("Model context windows must be at least 256 tokens")
         if self.ai_provider != "disabled":
             if not self.ai_model:
                 raise ValueError("Set ADBOT_AI_MODEL when enabling an AI provider")

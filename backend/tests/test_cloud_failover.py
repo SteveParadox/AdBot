@@ -449,12 +449,14 @@ async def test_browser_task_waits_for_provider_recovery_without_replanning(clien
 
 
 async def test_retry_after_on_server_errors_is_preserved(cloud, monkeypatch):
+    # Verify the provider's delay independently of host/SQLite scheduling time.
+    monkeypatch.setattr("app.agent.model.time", SimpleNamespace(monotonic=lambda: 1000.0))
     original = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(
         lambda request: httpx.Response(503, headers={"retry-after": "120"})), **kw))
     with pytest.raises(ModelProvidersUnavailable) as captured:
         await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))
-    assert captured.value.retry_after > 118
+    assert 120 <= captured.value.retry_after <= 120.25
 
 
 async def test_paused_model_request_keeps_original_deadline():
@@ -467,3 +469,24 @@ async def test_paused_model_request_keeps_original_deadline():
     runner.deadline = time.time() + 5.01
     with pytest.raises(ModelDeadlineExceeded, match="while paused"):
         await runner.ask_model("decide", {}, Reply)
+
+
+async def test_context_window_skips_incompatible_provider_without_spending_budget(cloud, monkeypatch):
+    monkeypatch.setattr(cloud, "ai_context_windows", {"groq": 256})
+    calls, reservations = [], []
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        calls.append(request.url.host)
+        return success()
+
+    def account(prompt, completion, latency, reserve, receipt=None):
+        if reserve:
+            reservations.append(receipt["provider_index"])
+            return (prompt, completion)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    model = ModelClient()
+    await model.request("decide", {}, Reply, account)
+    assert calls == ["openrouter.test"]
+    assert reservations == [1]

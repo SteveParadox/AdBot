@@ -26,6 +26,8 @@ def task_for(session, identifier, owner):
 
 def task_output(job, task):
     elapsed = max(0, (job.completed_at or time.time()) - job.started_at) if job.started_at else 0
+    directory = task.memory.get("directory") or {}
+    records = directory.get("records", {})
     return output(job) | {
         "traffic_kind": "automated",
         "automation_session_id": job.id,
@@ -40,6 +42,16 @@ def task_output(job, task):
         "model_calls": task.model_calls,
         "model_latency_ms": task.model_latency_ms,
         "planning": task.memory.get("planning"),
+        "execution": {
+            "strategy": "directory_collection" if directory.get("pages") or directory.get("attempted") else "general",
+            "unique_records": len(records),
+            "matched_records": sum(row.get("classification") == "match" for row in records.values()),
+            "advertised_total": directory["totals"][0] if len(directory.get("totals", [])) == 1 else None,
+            "directory_pages": len(directory.get("pages", [])),
+            "prevented_repetitions": task.memory.get("prevented_repetitions", 0) + directory.get("repeated_pages", 0),
+            "evidence_count": (len(task.result.get("evidence", [])) if task.result else
+                               len(task.memory.get("evidence", [])) + sum(row.get("classification") == "match" for row in records.values())),
+        },
         "budget": {
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, job.snapshot["configuration"]["max_duration_seconds"] - elapsed),
