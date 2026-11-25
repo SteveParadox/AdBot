@@ -124,8 +124,9 @@ class Document:
 def cache_max_age(headers, default):
     # The page cache may impose a shorter freshness window than the origin.
     age = headers.get("age", "0")
-    limits = [default]
-    if headers.get("vary", "").strip() == "*":
+    limits = [max(0, default - int(age)) if age.isascii() and age.isdecimal() and len(age) < 16 else 0]
+    vary = {name.strip().lower() for name in headers.get("vary", "").split(",") if name.strip()}
+    if vary - {"accept", "accept-encoding", "user-agent"}:
         return None
     for directive in headers.get("cache-control", "").lower().split(","):
         name, _, value = directive.strip().partition("=")
@@ -453,10 +454,13 @@ class Fetcher:
                     if prior.url != hit.url:
                         await self.gate(prior.url, True, origin)
                     origin_age = cache_max_age(prior.cache_headers, max_age)
-                    if origin_age and 0 <= time.time() - stored < origin_age:
+                    if origin_age is None or not prior.cacheable or prior.metadata.get("robots_noarchive"):
+                        await self.discard_document(cache_key)
+                        prior = None
+                    if prior and origin_age and 0 <= time.time() - stored < origin_age:
                         self.metrics["document_cache_hits"] += 1
                         return prior
-                    if prior.url == hit.url:
+                    if prior and prior.url == hit.url:
                         if prior.etag:
                             headers["If-None-Match"] = prior.etag
                         if prior.last_modified:
