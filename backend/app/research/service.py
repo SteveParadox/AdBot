@@ -719,8 +719,10 @@ class Research:
             self.result_quality = "partial"
         used = {identifier for claim in self.claims for identifier in claim["evidence"]}
         assessed_evidence = [row for row in evidence if row["id"] in used] if used else evidence
-        if assessed_evidence and len({row["source"] for row in assessed_evidence}) < 2:
-            self.notes.append("The answer relies on evidence from fewer than two independent domains.")
+        groups = supporting_groups([row["id"] for row in assessed_evidence],
+                                   offered_evidence(assessed_evidence, self.evidence), self.sources)
+        if assessed_evidence and len(groups) < 2:
+            self.notes.append("The answer relies on fewer than two potentially independent source groups.")
             self.result_quality = "partial"
         if self.freshness and assessed_evidence:
             dates = [row["date"] for row in assessed_evidence if row["date"]]
@@ -804,6 +806,8 @@ class Research:
             self.products = rank_products(self.products, self.shopping_question(), self.country)
             self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
         await self.synthesize()
+        if self.metrics["shared_origin_sources"]:
+            self.notes.append("Some retrieved sources contain substantially overlapping text and were grouped as a possible shared origin, not independent corroboration.")
         if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
             self.notes.append("One or more PDF sources exceeded extraction limits; only examined pages and rows were considered.")
             self.result_quality = "partial"
