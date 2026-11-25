@@ -41,13 +41,14 @@ class ResearchRunner:
             self.question = Question.model_validate(task.question)
             self.budget = ResearchBudget.model_validate(task.budget)
             self.usage = dict(task.usage)
-            self.history = previous_turns(session, task.conversation_id, job.owner, task.created_at)
+            before = job.snapshot.get("research_history_before", task.created_at)
+            self.history = previous_turns(session, task.conversation_id, job.owner, before)
         self.cfg = {"max_duration_seconds": self.budget.seconds}
         self.result = None
 
     def event(self, name, message, details):
         with transaction() as session:
-            job = owned_job(session, self.id, self.token)
+            job = owned_job(session, self.id, self.token, write=True)
             if job.cancel_requested:
                 raise asyncio.CancelledError
             emit(session, self.id, name, message, **details)
@@ -57,7 +58,7 @@ class ResearchRunner:
 
     def record_usage(self, delta):
         with transaction() as session:
-            job = owned_job(session, self.id, self.token)
+            job = owned_job(session, self.id, self.token, write=True)
             if job.cancel_requested:
                 raise asyncio.CancelledError
             task = session.get(ResearchTask, self.id)

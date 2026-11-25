@@ -14,10 +14,10 @@ Set `ADBOT_RESEARCH_ENABLED=true` in the API and worker environment. Configure a
 | `ADBOT_RESEARCH_PROVIDER_TIMEOUT` | 8 seconds per search transport operation. |
 | `ADBOT_RESEARCH_PROVIDER_RPM` | 60 requests per provider identity per minute across workers. |
 | `ADBOT_RESEARCH_FETCH_TIMEOUT` | 8 seconds per source transport operation, within the task deadline. |
-| `ADBOT_RESEARCH_CACHE_SECONDS` | 300 seconds. Shopping and freshness-sensitive documents use at most 60 seconds. |
+| `ADBOT_RESEARCH_CACHE_SECONDS` | 300 seconds. Shopping and freshness-sensitive documents use at most 60 seconds. Origin cache directives can shorten that window. |
 | `ADBOT_RESEARCH_PARALLELISM` | 4 parallel operations per research task. |
 | `ADBOT_RESEARCH_EXCLUDED_DOMAINS` | Empty. Comma-separated exact hosts or `*.example.org` patterns for public source access. |
-| `ADBOT_RESEARCH_BROWSER_ENABLED` | `false`. Enables optional Chromium fallback. The worker image includes Chromium. |
+| `ADBOT_RESEARCH_BROWSER_ENABLED` | `false`. Enables optional Chromium fallback. The worker image includes Chromium, and the runtime must support its sandbox. |
 | `ADBOT_RESEARCH_BUDGETS` | Empty JSON object. Keys select individual mode overrides. |
 | `ADBOT_AI_PROVIDER`, `ADBOT_AI_MODEL` | Use the existing Groq, Ollama or compatible configuration. See the repository's provider settings. |
 
@@ -52,4 +52,4 @@ If outbound routing is enabled, add a `research` service to the private routing 
 3. Open `/research`, connect with the workspace key and submit a Quick Search query without a URL.
 4. Check `/api/research/v1/providers` with an authenticated request and inspect the research timeline if a provider returned errors.
 5. A SearXNG 403 can indicate JSON output is disabled, a limiter rejected the request, or the service requires different routing. Start with the instance settings and logs. A sustained 429 opens the adapter cooldown and can trigger configured fallback.
-6. Leave browser fallback disabled if sites require logins or challenge handling. Check Chromium installation and working runtime limits if enabled browser rendering fails.
+6. Browser fallback requires a compatible Chromium sandbox. On Linux containers, run the worker as a non-root user with a seccomp profile that supports the Chromium sandbox. If Chromium cannot start securely, Adbot keeps any available HTTP result. [Playwright container guidance](https://playwright.dev/python/docs/docker)

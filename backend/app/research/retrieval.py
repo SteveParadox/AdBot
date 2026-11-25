@@ -3,18 +3,19 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
-from urllib.robotparser import RobotFileParser
 
 import httpx
 import trafilatura
-from lxml import html
+from lxml import etree, html
 from playwright.async_api import Error as PlaywrightError, async_playwright
+from protego import Protego
 
 from ..concurrency import database_call
 from ..config import settings
@@ -29,6 +30,10 @@ MAX_HTML_BYTES = 1_200_000
 REDIRECTS = {301, 302, 303, 307, 308}
 DOCUMENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"}
 BROWSER_TYPES = DOCUMENT_TYPES | {"application/javascript", "text/javascript", "application/json"}
+CHROMIUM_ENV = {
+    "PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SYSTEMROOT", "WINDIR",
+    "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "XDG_RUNTIME_DIR",
+}
 BLOCKED_PATH = re.compile(r"/(log[io]n|log[io]ut|sign[io]n|signout|account|admin|cart|checkout|payment|track|pixel|ads?)(/|$)", re.I)
 
 
@@ -86,6 +91,7 @@ class Response:
     mime: str
     encoding: str
     headers: dict
+    status: int = 200
 
 
 @dataclass(frozen=True)
@@ -102,11 +108,37 @@ class Document:
     metadata: dict
     etag: str | None
     last_modified: str | None
+    cache_headers: dict
+    cacheable: bool = True
+
+
+def cache_max_age(headers, default):
+    # The page cache may impose a shorter freshness window than the origin.
+    age = headers.get("age", "0")
+    limits = [default]
+    if headers.get("vary", "").strip() == "*":
+        return None
+    for directive in headers.get("cache-control", "").lower().split(","):
+        name, _, value = directive.strip().partition("=")
+        if name in {"no-store", "private"}:
+            return None
+        if name == "no-cache":
+            limits.append(0)
+        if name in {"max-age", "s-maxage"}:
+            value = value.strip().strip('"')
+            limits.append(max(0, int(value) - int(age)) if value.isascii() and value.isdecimal()
+                          and len(value) < 16 and age.isascii() and age.isdecimal() and len(age) < 16 else 0)
+    return min(limits)
 
 
 def robots_directives(content):
     content = re.sub(r":\s+", ":", content.casefold()[:1000])
     return set(re.split(r"[,\s]+", content))
+
+
+def check_robots_directives(directives):
+    if directives & {"none", "noindex", "nosnippet", "max-snippet:0"}:
+        raise PolicyError("Source excludes indexing or quotations")
 
 
 def extract(response, shopping):
@@ -115,7 +147,7 @@ def extract(response, shopping):
     directives = robots_directives(response.headers.get("x-robots-tag", ""))
     canonical = response.url
     if response.mime != "text/plain":
-        tree = html.fromstring(text or "<html></html>")
+        tree = html.fromstring(text if text.strip() else "<html></html>")
         for field in tree.xpath("//meta[@content]")[:100]:
             key = (field.get("property") or field.get("name") or field.get("itemprop") or "").lower()
             if key in {"robots", settings().user_agent_default.split("/", 1)[0].casefold()}:
@@ -143,8 +175,7 @@ def extract(response, shopping):
             # Persist only supported product fields, with a strict bound on nested input.
             products = [product_fields(product) for product in products]
         text = trafilatura.extract(tree, include_comments=False, include_tables=True, favor_precision=True) or ""
-    if directives & {"none", "noindex", "nosnippet", "max-snippet:0"}:
-        raise PolicyError("Source excludes indexing or quotations")
+    check_robots_directives(directives)
     if "noarchive" in directives:
         metadata["robots_noarchive"] = True
     blocks = [clean(line, 1800) for line in text.splitlines()[:300] if len(line.strip()) >= 25]
@@ -155,6 +186,7 @@ def extract(response, shopping):
         normalized_date(metadata.get("article:modified_time") or metadata.get("datemodified")),
         time.time(), hashlib.sha256(response.body).hexdigest(), blocks, products, metadata,
         response.headers.get("etag"), response.headers.get("last-modified"),
+        {name: response.headers[name] for name in ("cache-control", "vary", "age") if name in response.headers},
     )
 
 
@@ -205,7 +237,7 @@ class Fetcher:
         self.client = None
         self.browser = None
         self.browser_lock = asyncio.Lock()
-        self.robots_lock = asyncio.Lock()
+        self.robots_locks = {}
 
     async def __aenter__(self):
         await self.stack.__aenter__()
@@ -237,8 +269,11 @@ class Fetcher:
             self.metrics["http_requests"] += 1
             response = await self.client.send(request, stream=True)
             try:
+                kept = {k: v[:1000] for k, v in response.headers.items() if k in {
+                    "etag", "last-modified", "content-security-policy", "x-robots-tag", "cache-control", "vary", "age",
+                }}
                 if response.status_code == 304 and hop == 0 and headers:
-                    return None
+                    return Response(url, b"", "", "utf-8", kept, status=304)
                 if response.status_code in REDIRECTS:
                     location = response.headers.get("location")
                     if not location:
@@ -249,12 +284,12 @@ class Fetcher:
                     url = redirected
                     continue
                 response.raise_for_status()
+                if response.status_code == 206 or "content-range" in response.headers:
+                    raise ValueError("Incomplete source response")
                 mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 if mime not in types:
                     raise ValueError("Unsupported response type")
                 body = await bounded_bytes(response, max_bytes)
-                kept = {k: v[:1000] for k, v in response.headers.items()
-                        if k in {"etag", "last-modified", "content-security-policy", "x-robots-tag"}}
                 return Response(url, body, mime, response.encoding or "utf-8", kept)
             finally:
                 await response.aclose()
@@ -264,7 +299,7 @@ class Fetcher:
         parsed = urlsplit(url)
         if origin and (parsed.scheme, parsed.netloc) != origin:
             raise PolicyError("Browser subresource is outside its origin")
-        if robots and BLOCKED_PATH.search(unquote(parsed.path)):
+        if BLOCKED_PATH.search(unquote(parsed.path)):
             raise PolicyError("Research excludes interactive paths")
         if robots and not await self.robots_allowed(url):
             raise PolicyError("Destination blocked by robots policy")
@@ -275,63 +310,84 @@ class Fetcher:
         cache_key = (self.owner, *origin)
         record = ROBOTS.get(cache_key, 600)
         if record is None:
-            async with self.robots_lock:
+            async with self.robots_locks.setdefault(origin, asyncio.Lock()):
                 record = ROBOTS.get(cache_key, 600)
                 if record is None:
-                    record = RobotFileParser()
                     robots_url = urlunsplit((*origin, "/robots.txt", "", ""))
                     try:
-                        response = await self.fetch(robots_url, {"text/plain"}, robots=False, max_bytes=300_000,
+                        response = await self.fetch(robots_url, {"text/plain"}, robots=False, max_bytes=512_000,
                                                     origin=origin, allowed_redirects=2)
-                        record.parse(response.body.decode(response.encoding, "replace").splitlines())
+                        rules = response.body.decode("utf-8-sig", "replace")
+                        record = await database_call(Protego.parse, rules)
                     except httpx.HTTPStatusError as exc:
-                        record.allow_all = exc.response.status_code in {404, 410}
-                        record.disallow_all = not record.allow_all
+                        record = exc.response.status_code in {404, 410}
                     except (ValueError, httpx.HTTPError, OSError, TimeoutError):
-                        record.disallow_all = True
+                        record = False
                     ROBOTS.put(cache_key, record)
-        return record.can_fetch(settings().user_agent_default, url)
+        return record if isinstance(record, bool) else await database_call(
+            record.can_fetch, url, settings().user_agent_default
+        )
 
     async def retrieve(self, hit, shopping, freshness):
         cfg = settings()
-        try:
-            self.policy.check(hit.url)
-        except ValueError:
-            return None
         cache_key = (self.owner, hit.url, shopping)
         max_age = min(cfg.research_cache_seconds, 60) if shopping or freshness else cfg.research_cache_seconds
-        cached = DOCUMENTS.get(cache_key, max_age)
-        if cached:
-            self.metrics["document_cache_hits"] += 1
-            return cached
-        prior = DOCUMENTS.get(cache_key, 3600) if cfg.research_cache_seconds else None
-        headers = {}
-        if prior and prior.url == hit.url:
-            if prior.etag:
-                headers["If-None-Match"] = prior.etag
-            if prior.last_modified:
-                headers["If-Modified-Since"] = prior.last_modified
         started = time.monotonic()
         try:
             async with asyncio.timeout(cfg.research_fetch_timeout + 3):
+                self.policy.check(hit.url)
+                prior = DOCUMENTS.get(cache_key, 3600) if cfg.research_cache_seconds else None
+                headers = {}
+                if prior:
+                    self.policy.check(prior.url)
+                    await self.gate(hit.url, True, None)
+                    if prior.url != hit.url:
+                        await self.gate(prior.url, True, None)
+                    origin_age = cache_max_age(prior.cache_headers, max_age)
+                    if origin_age and DOCUMENTS.get(cache_key, origin_age):
+                        self.metrics["document_cache_hits"] += 1
+                        return prior
+                    if prior.url == hit.url:
+                        if prior.etag:
+                            headers["If-None-Match"] = prior.etag
+                        if prior.last_modified:
+                            headers["If-Modified-Since"] = prior.last_modified
                 response = await self.fetch(hit.url, DOCUMENT_TYPES, headers=headers)
-                if response is None:
-                    from dataclasses import replace
-                    doc = replace(prior, retrieved=time.time())
+                if response.status == 304:
+                    doc = self.revalidated(prior, response)
                 else:
                     doc = await database_call(extract, response, shopping)
-            if response and response.mime == "text/html" and not doc.products and sum(map(len, doc.blocks)) < 200:
-                doc = await self.render(response, doc, shopping)
+            if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
+                    and not doc.products and sum(map(len, doc.blocks)) < 200):
+                # Shell validators cannot refresh scripts or API data. Keep
+                # incomplete shells out of the cache even if rendering failed.
+                doc = replace(await self.render(response, doc, shopping), cacheable=False)
             if not doc.blocks and not doc.products:
+                DOCUMENTS.discard(cache_key)
                 return None
-            if cfg.research_cache_seconds and not doc.metadata.get("robots_noarchive"):
+            if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")
+                    and cache_max_age(doc.cache_headers, max_age) is not None):
                 DOCUMENTS.put(cache_key, doc)
+            else:
+                DOCUMENTS.discard(cache_key)
             return doc
-        except (httpx.HTTPError, PlaywrightError, TimeoutError, ValueError, OSError, LookupError):
+        except (httpx.HTTPError, PlaywrightError, etree.LxmlError, TimeoutError, ValueError, OSError, LookupError):
+            DOCUMENTS.discard(cache_key)
             self.metrics["retrieval_failures"] += 1
             return None
         finally:
             self.metrics["retrieval_ms"] += round((time.monotonic() - started) * 1000)
+
+    @staticmethod
+    def revalidated(prior, response):
+        directives = robots_directives(response.headers.get("x-robots-tag", ""))
+        check_robots_directives(directives)
+        cache_headers = {name: value for name, value in prior.cache_headers.items() if name != "age"}
+        cache_headers.update({name: response.headers[name] for name in ("cache-control", "vary", "age")
+                              if name in response.headers})
+        return replace(prior, retrieved=time.time(), cache_headers=cache_headers,
+                       cacheable="noarchive" not in directives, etag=response.headers.get("etag", prior.etag),
+                       last_modified=response.headers.get("last-modified", prior.last_modified))
 
     async def render(self, response, doc, shopping):
         if not self.browsers or not settings().research_browser_enabled:
@@ -346,7 +402,9 @@ class Fetcher:
                     if self.browser is None:
                         playwright = await self.stack.enter_async_context(async_playwright())
                         self.browser = await playwright.chromium.launch(
-                            headless=True, proxy={"server": "http://127.0.0.1:1", "bypass": "<-loopback>"},
+                            headless=True, chromium_sandbox=True,
+                            env={name: value for name, value in os.environ.items() if name.upper() in CHROMIUM_ENV},
+                            proxy={"server": "http://127.0.0.1:1", "bypass": "<-loopback>"},
                             args=["--disable-quic", "--disable-background-networking",
                                   "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
                         )
@@ -355,12 +413,15 @@ class Fetcher:
                     rendered = await self.render_in_context(response)
                     document = await database_call(extract, rendered, shopping)
                     return document if document.blocks or document.products else doc
-            except (PlaywrightError, TimeoutError, ValueError):
+            except PolicyError:
+                raise
+            except (PlaywrightError, etree.LxmlError, TimeoutError, ValueError):
                 self.metrics["browser_failures"] += 1
                 return doc
 
     async def render_in_context(self, response):
-        parsed = urlsplit(response.url)
+        page_url = str(httpx.URL(response.url))
+        parsed = urlsplit(page_url)
         origin = (parsed.scheme, parsed.netloc)
         context = await self.browser.new_context(
             service_workers="block", accept_downloads=False, user_agent=settings().user_agent_default,
@@ -379,7 +440,7 @@ class Fetcher:
                     await route.abort()
                     return
                 if request.is_navigation_request():
-                    if served_main or request.url != response.url or request.frame != page.main_frame:
+                    if served_main or request.url != page_url or request.frame != page.main_frame:
                         await route.abort()
                         return
                     served_main = True
@@ -402,7 +463,7 @@ class Fetcher:
             await context.route("**/*", route_request)
             # To avoid closing the first page, install the popup handler only after creation.
             context.on("page", lambda popup: popup.close())
-            await page.goto(response.url, wait_until="domcontentloaded")
+            await page.goto(page_url, wait_until="domcontentloaded")
             try:
                 await page.wait_for_load_state("networkidle", timeout=1200)
             except PlaywrightError:

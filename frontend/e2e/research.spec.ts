@@ -13,15 +13,24 @@ const task = {
 
 test("researches without a website and displays citations and evidence on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.addInitScript(() => sessionStorage.setItem("adbot-token", "fixture-workspace-token"));
-  let submitted = false, connected = false;
+  await page.addInitScript(() => {
+    sessionStorage.setItem("adbot-token", "fixture-workspace-token");
+    Object.defineProperty(window.crypto, "randomUUID", {value: undefined});
+  });
+  let key = "", submitted = false, connected = false;
   await page.route(`**${root}/**`, async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === `${root}/providers`) return route.fulfill({json: {enabled: true, model_configured: true, providers: [{name: "searxng"}]}});
     if (path === `${root}/conversations`) return route.fulfill({json: {items: submitted ? [{id: conversation, title: question}] : [], total: Number(submitted)}});
     if (path === `${root}/query`) {
       expect(route.request().postDataJSON()).toEqual({question, mode: "quick", conversation_id: null, country: null, freshness: null});
-      expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+      const requestKey = route.request().headers()["idempotency-key"];
+      expect(requestKey).toBeTruthy();
+      if (!key) {
+        key = requestKey;
+        return route.abort();
+      }
+      expect(requestKey).toBe(key);
       submitted = true;
       return route.fulfill({status: 202, json: task});
     }
@@ -42,7 +51,9 @@ test("researches without a website and displays citations and evidence on mobile
       }});
     }
     if (path.endsWith(id)) return route.fulfill({json: {
-      ...task, status: "completed", result: {quality: "complete", answer: "Quantum processors can correct errors. [1](https://example.com/study)", sources: [source]},
+      ...task, status: "completed", result: {quality: "complete",
+        answer: "Quantum processors can correct errors. [1](https://example.com/study) See https://example.org/notes.",
+        sources: [source]},
     }});
     return route.fulfill({status: 404, json: {detail: "Unexpected fixture path"}});
   });
@@ -51,7 +62,11 @@ test("researches without a website and displays citations and evidence on mobile
   await page.getByLabel("Question").fill(question);
   await page.getByLabel("Mode").selectOption("quick");
   await page.getByRole("button", {name: "Send"}).click();
-  await expect(page.getByText("Quantum processors can correct errors.")).toBeVisible();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByRole("button", {name: "Send"}).click();
+  await expect(page.getByText(/Quantum processors can correct errors/)).toBeVisible();
+  await expect(page.getByText("https://example.org/notes", {exact:true})).toBeVisible();
+  await expect(page.getByRole("link", {name: "https://example.org/notes"})).toHaveCount(0);
   await expect(page.getByRole("link", {name: "1", exact: true})).toHaveAttribute("href", source.url);
   await page.getByText("Sources and evidence (1)").click();
   await expect(page.getByText("A quantum processor detected and corrected errors.")).toBeVisible();
@@ -68,4 +83,23 @@ test("keeps the website agent available from the research mode selector", async 
   await page.goto("/research");
   await page.getByLabel("Mode").selectOption("website_agent");
   await expect(page.getByRole("link", {name: "Open Website Agent"})).toHaveAttribute("href", "/?tab=agent");
+});
+
+test("loads older turns in a saved research conversation", async ({page}) => {
+  await page.addInitScript(() => sessionStorage.setItem("adbot-token", "fixture-workspace-token"));
+  await page.route(`**${root}/conversations`, route => route.fulfill({json: {
+    items: [{id: conversation, title: "Quantum notes"}], total: 1,
+  }}));
+  await page.route(`**${root}/providers`, route => route.fulfill({json: {enabled: true, model_configured: true, providers: []}}));
+  await page.route(`**${root}/conversations/${conversation}*`, route => {
+    const older = new URL(route.request().url()).searchParams.get("offset") === "1";
+    const turn = older ? {...task, id: "earlier", question: {...task.question, question: "Earlier research question"}} : task;
+    return route.fulfill({json: {id: conversation, total: 2, messages: [{...turn, status: "completed"}]}});
+  });
+  await page.goto("/research");
+  await page.getByRole("button", {name: "Quantum notes"}).click();
+  await page.getByRole("button", {name: "Load earlier turns"}).click();
+  await expect(page.getByRole("heading", {name: "Earlier research question"})).toBeVisible();
+  await expect(page.getByRole("heading", {name: question})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Load earlier turns"})).toHaveCount(0);
 });

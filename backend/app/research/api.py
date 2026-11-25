@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..api_support import Limit, Offset, Owner, collection, output
@@ -39,7 +39,11 @@ def task_row(session, identifier, owner):
 
 
 def conversation(session, identifier, owner, *, lock=False):
-    query = select(ResearchConversation).where(ResearchConversation.id == identifier, ResearchConversation.owner == owner)
+    predicates = (ResearchConversation.id == identifier, ResearchConversation.owner == owner)
+    if lock and session.get_bind().dialect.name == "sqlite":
+        # Serialize the active-turn check against submissions and deletion.
+        session.execute(update(ResearchConversation).where(*predicates).values(updated_at=ResearchConversation.updated_at))
+    query = select(ResearchConversation).where(*predicates)
     item = session.scalar(query.with_for_update() if lock else query)
     if item is None:
         raise HTTPException(404, "Research conversation not found")
@@ -100,13 +104,24 @@ def enqueue(data, owner, key, retry_of=None):
             if not thread.title:
                 thread.title = data.question[:160]
             thread.updated_at = time.time()
-            history = previous_turns(session, thread.id, owner)
-            intent, mode = route(data, history)
+            snapshot = {"allowed_domains": []}
+            if retry_of:
+                original_job, original_task = task_row(session, retry_of, owner)
+                if original_task.conversation_id != thread.id:
+                    raise HTTPException(409, "Retry must stay in the original conversation")
+                intent, mode = original_task.intent, Mode(original_task.mode)
+                snapshot["research_history_before"] = original_job.snapshot.get(
+                    "research_history_before", original_task.created_at
+                )
+            else:
+                history = previous_turns(session, thread.id, owner)
+                intent, mode = route(data, history)
+                values.update(conversation_id=thread.id, country=country_from(data.question, data.country)
+                              or (history[-1].get("country") if intent == "follow_up" and history else None))
             budget = budget_for(mode)
-            values.update(conversation_id=thread.id, country=country_from(data.question, data.country)
-                          or (history[-1].get("country") if intent == "follow_up" and history else None))
+            snapshot["configuration"] = {"max_duration_seconds": budget.seconds}
             job = Job(owner=owner, job_type="research", website_id=None, idempotency_key=key, payload_hash=digest,
-                      snapshot={"allowed_domains": [], "configuration": {"max_duration_seconds": budget.seconds}})
+                      snapshot=snapshot)
             session.add(job)
             session.flush()
             task = ResearchTask(job_id=job.id, conversation_id=thread.id, mode=mode.value, intent=intent,

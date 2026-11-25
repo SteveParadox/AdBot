@@ -460,9 +460,11 @@ async def events(
     with Session() as session:
         owned(session, Job, identifier, owner)
     try:
-        cursor = max(after, int(last_event_id or "0"))
+        cursor = max(0, after, int(last_event_id or "0"))
+        if cursor > 2**63 - 1:
+            raise ValueError
     except ValueError:
-        raise HTTPException(422, "Last-Event-ID must be an integer") from None
+        raise HTTPException(422, "Event cursor must fit in a signed 64-bit integer") from None
 
     async def stream():
         nonlocal cursor

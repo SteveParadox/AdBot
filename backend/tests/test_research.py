@@ -401,21 +401,23 @@ async def test_http_to_javascript_renderer_reuses_browser_and_blocks_writes(rese
         'fetch("https://other.example.net/track").catch(()=>{});'
         '</script></body></html>'
     )
-    paths = []
+    paths, sent_validators = [], []
     def handle(request):
         paths.append(str(request.url))
         if request.url.path == "/robots.txt":
             return httpx.Response(404)
-        return httpx.Response(200, text=markup, headers={"Content-Type": "text/html"})
+        sent_validators.append(request.headers.get("if-none-match"))
+        return httpx.Response(200, text=markup, headers={"Content-Type": "text/html", "ETag": '"shell"'})
 
-    async with Fetcher("browser-fixture", stats, browsers=2) as fetcher:
+    async with Fetcher("browser-fixture", stats, browsers=3) as fetcher:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as transport:
             fetcher.client = transport
-            for url in (SOURCE_A, SOURCE_B):
+            for url in (SOURCE_A, SOURCE_B, SOURCE_A):
                 hit = normalize_hits("searxng", {"results": [{"url": url}]}, "quantum")[0]
                 result = await fetcher.retrieve(hit, False, None)
                 assert result and "silicon quantum processor" in result.blocks[0]
-    assert stats["browser_launches"] == 1 and stats["browser_render_attempts"] == 2
+    assert stats["browser_launches"] == 1 and stats["browser_render_attempts"] == 3
+    assert paths.count(SOURCE_A) == 2 and sent_validators == [None, None, None]
     assert all("/submit" not in url and "other.example" not in url for url in paths)
 
 
@@ -526,3 +528,212 @@ async def test_shopping_flows_through_provider_retrieval_and_persistence(client,
     assert all(item["availability"] == "In stock" for item in result["products"])
     assert all(item["within_budget"] for item in result["products"])
     assert {item["source_id"] for item in result["products"]} == {item["id"] for item in result["sources"]}
+
+
+def local_hit(url=SOURCE_A):
+    return normalize_hits("searxng", {"results": [{"url": url, "title": "Quantum study"}]}, "quantum")[0]
+
+
+async def test_robots_prefers_the_specific_rule_with_wildcards(research):
+    from app.research.service import new_metrics
+
+    def handle(request):
+        return httpx.Response(200, text=(
+            "User-agent: *\nDisallow: /reports/*/draft$\nAllow: /reports/public/draft$\n"
+        ))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        fetcher = Fetcher("robots-test", new_metrics())
+        fetcher.client = client
+        assert not await fetcher.robots_allowed("https://science.example.org/reports/internal/draft")
+        assert await fetcher.robots_allowed("https://science.example.org/reports/public/draft")
+        assert await fetcher.robots_allowed("https://science.example.org/reports/internal/draft-notes")
+
+
+@pytest.mark.parametrize("policy", ["private", "no-store", "no-cache", "max-age=0"])
+async def test_origin_cache_rules_require_a_new_request(research, policy):
+    from app.research.service import new_metrics
+
+    requests = []
+
+    def handle(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        requests.append(request)
+        return httpx.Response(200, text=TEXT_A, headers={"Cache-Control": policy, "ETag": '"a"'})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        fetcher = Fetcher("origin-cache", new_metrics())
+        fetcher.client = client
+        assert await fetcher.retrieve(local_hit(), False, None)
+        assert await fetcher.retrieve(local_hit(), False, None)
+    assert len(requests) == 2
+    assert ("if-none-match" in requests[-1].headers) == (policy in {"no-cache", "max-age=0"})
+
+
+async def test_conditional_response_can_revoke_excerpt_permission(research):
+    from app.research.service import new_metrics
+
+    def handle(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if "if-none-match" in request.headers:
+            return httpx.Response(304, headers={"X-Robots-Tag": "nosnippet"})
+        return httpx.Response(200, text=TEXT_A, headers={"Cache-Control": "no-cache", "ETag": '"a"'})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        fetcher = Fetcher("revoked-source", new_metrics())
+        fetcher.client = client
+        assert await fetcher.retrieve(local_hit(), False, None)
+        assert await fetcher.retrieve(local_hit(), False, None) is None
+    assert DOCUMENTS.get(("revoked-source", SOURCE_A, False), 3600) is None
+
+
+async def test_cached_redirect_target_is_checked_against_current_exclusions(research, monkeypatch):
+    from app.research.service import new_metrics
+
+    def handle(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if str(request.url) == SOURCE_A:
+            return httpx.Response(302, headers={"Location": SOURCE_B})
+        return httpx.Response(200, text=TEXT_B)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        fetcher = Fetcher("cached-redirect", new_metrics())
+        fetcher.client = client
+        first = await fetcher.retrieve(local_hit(), False, None)
+        assert first.url == SOURCE_B
+        monkeypatch.setattr(research, "research_excluded_domains", "research.example.com")
+        assert await fetcher.retrieve(local_hit(), False, None) is None
+
+
+async def test_refuses_partial_source_responses_and_tolerates_empty_html(research):
+    from app.research.service import new_metrics
+
+    def handle(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if str(request.url) == SOURCE_A:
+            return httpx.Response(206, text=TEXT_A, headers={"Content-Range": "bytes 0-40/300"})
+        return httpx.Response(200, text="  \n", headers={"Content-Type": "text/html"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        fetcher = Fetcher("malformed-source", new_metrics())
+        fetcher.client = client
+        assert await fetcher.retrieve(local_hit(), False, None) is None
+        assert await fetcher.retrieve(local_hit(SOURCE_B), False, None) is None
+
+
+async def test_retry_keeps_original_route_and_cuts_off_newer_turns(client, research):
+    from app.research.runner import ResearchRunner
+
+    original = client.post(API + "/query", json={"question": "Which of those sources are useful?"}).json()
+    await run_job(original["id"])
+    newer = client.post(API + "/query", json={
+        "question": "PostgreSQL documentation", "mode": "technical", "conversation_id": original["conversation_id"],
+    }).json()
+    await run_job(newer["id"])
+    retry = client.post(f'{API}/tasks/{original["id"]}/retry').json()
+    assert (retry["mode"], retry["intent"]) == (original["mode"], original["intent"])
+    assert retry["mode"] != newer["mode"]
+    identifier, token = claim()
+    assert identifier == retry["id"]
+    runner = ResearchRunner(identifier, token)
+    assert runner.history == []
+
+
+def test_expired_attempt_cannot_write_usage_or_progress(client, research):
+    from app.research.runner import ResearchRunner
+
+    response = client.post(API + "/query", json={"question": "Find recent computing research"})
+    identifier, token = claim()
+    assert identifier == response.json()["id"]
+    runner = ResearchRunner(identifier, token)
+    with transaction() as session:
+        session.execute(update(Job).where(Job.id == identifier).values(lease_until=0))
+    recover_expired()
+    assert claim()[1] != token
+    with pytest.raises(InterruptedError):
+        runner.record_usage({"pages_attempted": 1})
+    with pytest.raises(InterruptedError):
+        runner.event("retrieving", "Reading sources", {})
+    with Session() as session:
+        assert session.get(ResearchTask, identifier).usage == {}
+
+
+def test_stream_rejects_cursor_larger_than_database_integer(client, research):
+    response = client.post(API + "/query", json={"question": "Find recent computing research"})
+    path = f'{API}/tasks/{response.json()["id"]}/events'
+    assert client.get(path, headers={"Last-Event-ID": str(2**63)}).status_code == 422
+
+
+async def test_concurrent_submissions_keep_one_active_turn(client, research):
+    conversation = client.post(API + "/conversations", json={"title": "Reading list"}).json()["id"]
+
+    def submit(topic):
+        return client.post(API + "/query", json={
+            "question": topic, "conversation_id": conversation,
+        }).status_code
+
+    codes = await asyncio.gather(
+        asyncio.to_thread(submit, "Find sources on programming languages"),
+        asyncio.to_thread(submit, "Find sources on database migrations"),
+    )
+    assert sorted(codes) == [202, 409]
+    assert client.get(f"{API}/conversations/{conversation}").json()["total"] == 1
+
+
+async def test_retrieval_timeout_retains_completed_sources(research):
+    from app.research.contracts import budget_for
+    from app.research.service import Research
+
+    class Pool:
+        names = ["fixture"]
+
+        async def search(self, *args, **kwargs):
+            return [local_hit(), local_hit(SOURCE_B)]
+
+    class Pages:
+        async def retrieve(self, hit, *args):
+            if hit.url == SOURCE_B:
+                await asyncio.Future()
+            return extract(Response(hit.url, TEXT_A.encode(), "text/plain", "utf-8", {}), False)
+
+    async def progress(*args, **kwargs):
+        pass
+
+    gate = asyncio.Event()
+    gate.set()
+    engine = Research("owner", Question(question="Research quantum processors"), Mode.QUICK, "general",
+                      budget_for(Mode.QUICK), time.monotonic() + 10, [], progress, gate)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await engine.search_round(Pool(), Pages(), ["quantum"], True)
+    assert [source["url"] for source in engine.sources.values()] == [SOURCE_A]
+    assert engine.evidence
+
+
+async def test_old_publication_is_reported_only_as_partial(research, monkeypatch):
+    from app.research.contracts import budget_for
+    from app.research.evidence import source_record, text_evidence
+    from app.research.service import Research
+
+    cfg = settings()
+    monkeypatch.setattr(cfg, "ai_provider", "disabled")
+
+    async def progress(*args, **kwargs):
+        pass
+
+    gate = asyncio.Event()
+    gate.set()
+    engine = Research("owner", Question(question="Research quantum processors", freshness="day"),
+                      Mode.QUICK, "current", budget_for(Mode.QUICK), time.monotonic() + 10, [], progress, gate)
+    markup = f'<html><head><meta property="article:published_time" content="2020-01-02"></head><body><main><p>{TEXT_A}</p></main></body></html>'
+    doc = extract(Response(SOURCE_A, markup.encode(), "text/html", "utf-8", {}), False)
+    source = source_record(doc, "quantum", "fixture")
+    engine.sources[source["id"]] = source
+    engine.evidence.update((record["id"], record) for record in text_evidence(doc, source, "quantum"))
+    await engine.synthesize()
+    assert engine.result_quality == "partial"
+    assert any("outside the requested freshness window" in note for note in engine.notes)

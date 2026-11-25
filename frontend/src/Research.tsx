@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ArrowLeft, BookOpen, ExternalLink, Plus, Search, Send, Square } from "lucide-react";
 import Markdown from "react-markdown";
@@ -31,7 +31,7 @@ type Task = {
   conversation_id: string; mode: Mode; error: string | null;
   result: { answer?: string; quality?: string; notes?: string[]; sources?: Source[]; products?: Product[]; claims?: Claim[] };
 };
-type Conversation = { id: string; title: string; updated_at: number; messages?: Task[] };
+type Conversation = { id: string; title: string; updated_at: number; messages?: Task[]; total?: number };
 type ProviderConfig = { enabled: boolean; model_configured: boolean; providers: { name: string }[] };
 
 function readDate(seconds: number) {
@@ -51,6 +51,27 @@ function safeURL(url?: string) {
 function SourceLink({ href, children }: { href: string; children: React.ReactNode }) {
   const safe = safeURL(href);
   return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
+}
+
+function AnswerMarkup({ text, sources = [], direct = false }: {text: string; sources?: Source[]; direct?: boolean}) {
+  return <Markdown remarkPlugins={[remarkGfm]} skipHtml disallowedElements={["img", "input"]}
+    components={{a: ({href, children}) => {
+      const index = typeof children === "string" && /^[1-9]\d*$/.test(children) ? Number(children) - 1 : -1;
+      const citation = sources[index];
+      return direct || (citation && safeURL(href) === safeURL(citation.url))
+        ? <SourceLink href={href || ""}>{children}</SourceLink>
+        : <span>{children}</span>;
+    }}}>{text}</Markdown>;
+}
+
+type PendingMutation = { body: string; key: string };
+function idempotencyHeaders(slot: {current: PendingMutation | null}, body: string) {
+  if (slot.current?.body !== body) {
+    // getRandomValues also works when Adbot is served over HTTP on a LAN.
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    slot.current = {body, key: Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("")};
+  }
+  return {"Idempotency-Key": slot.current.key};
 }
 
 function ProductResults({ products, sources }: { products: Product[]; sources: Source[] }) {
@@ -115,8 +136,7 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
     {task.status === "failed" || task.status === "cancelled" ? <p role="status">{task.error || "Research was stopped."}</p> : null}
     {task.result.quality === "partial" && <p className="research-partial">Partial result</p>}
     {markdown && <div className="research-markdown">
-      <Markdown remarkPlugins={[remarkGfm]} skipHtml disallowedElements={["img", "input"]}
-        components={{a: ({href, children}) => <SourceLink href={href || ""}>{children}</SourceLink>}}>{markdown}</Markdown>
+      <AnswerMarkup text={markdown} sources={sources} direct={task.mode === "direct"} />
     </div>}
     {!!task.result.notes?.length && <ul className="research-notes">{task.result.notes.map(note => <li key={note}>{note}</li>)}</ul>}
     <ProductResults products={products} sources={sources} />
@@ -144,6 +164,9 @@ export default function Research() {
   const [thread, setThread] = useState<string | null>(null);
   const [history, setHistory] = useState<Conversation[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [turnCount, setTurnCount] = useState(0);
+  const submission = useRef<PendingMutation | null>(null);
+  const retryMutation = useRef<PendingMutation | null>(null);
   const [config, setConfig] = useState<ProviderConfig>();
   const [progress, setProgress] = useState<Event[]>([]);
   const [stream, setStream] = useState<StreamState>("closed");
@@ -163,6 +186,9 @@ export default function Research() {
       sessionStorage.removeItem("adbot-token");
       setToken("");
       setTasks([]);
+      setTurnCount(0);
+      submission.current = null;
+      retryMutation.current = null;
       setHistory([]);
       setThread(null);
     }
@@ -208,8 +234,28 @@ export default function Research() {
       setThread(id);
       setProgress([]);
       setTasks(details ? details.messages || [] : []);
+      setTurnCount(details ? details.total ?? details.messages?.length ?? 0 : 0);
     } catch (e) {setError((e as Error).message);}
     finally {setBusy(false);}
+  }
+
+  async function loadEarlierTurns() {
+    if (!thread || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const details = await api<Conversation>(`${ROOT}/conversations/${thread}?offset=${tasks.length}`, token);
+      const alreadyLoaded = new Set(tasks.map(task => task.id));
+      setTasks(items => [...(details.messages || []).filter(task => !alreadyLoaded.has(task.id)), ...items]);
+      setTurnCount(details.total ?? turnCount);
+    } catch (e) {setError((e as Error).message);}
+    finally {setBusy(false);}
+  }
+
+  function appendTask(result: Task) {
+    if (tasks.some(task => task.id === result.id)) return;
+    setTasks(items => [...items, result]);
+    setTurnCount(count => count + 1);
   }
 
   async function submit(event: FormEvent) {
@@ -217,14 +263,17 @@ export default function Research() {
     if (!question.trim() || active || busy || mode === "website_agent") return;
     setBusy(true);
     setError("");
+    const data = {
+      question: question.trim(), mode, conversation_id: thread,
+      country: country.trim().toUpperCase() || null, freshness: freshness || null,
+    };
     try {
-      const result = await api<Task>(`${ROOT}/query`, token, "POST", {
-        question: question.trim(), mode, conversation_id: thread,
-        country: country.trim().toUpperCase() || null, freshness: freshness || null,
-      }, {"Idempotency-Key": crypto.randomUUID()});
+      const result = await api<Task>(`${ROOT}/query`, token, "POST", data,
+        idempotencyHeaders(submission, JSON.stringify(data)));
+      submission.current = null;
       setThread(result.conversation_id);
       setProgress([]);
-      setTasks(items => [...items, result]);
+      appendTask(result);
       setQuestion("");
       await loadHistory();
     } catch (e) {setError((e as Error).message);}
@@ -236,10 +285,12 @@ export default function Research() {
     setBusy(true);
     setError("");
     try {
-      const updated = await api<Task>(`${ROOT}/tasks/${task.id}/${action}`, token, "POST", undefined,
-        {"Idempotency-Key": crypto.randomUUID()});
-      if (action === "retry") setTasks(items => [...items, updated]);
-      else {
+      const headers = action === "retry" ? idempotencyHeaders(retryMutation, task.id) : undefined;
+      const updated = await api<Task>(`${ROOT}/tasks/${task.id}/${action}`, token, "POST", undefined, headers);
+      if (action === "retry") {
+        retryMutation.current = null;
+        appendTask(updated);
+      } else {
         const current = await api<Task>(`${ROOT}/tasks/${task.id}`, token);
         setTasks(items => items.map(item => item.id === task.id ? current : item));
       }
@@ -271,12 +322,14 @@ export default function Research() {
             "Compare PostgreSQL and Cassandra for high-throughput applications"].map(text =>
               <button key={text} type="button" onClick={() => setQuestion(text)}>{text}</button>)}
         </div>}
+        {turnCount > tasks.length && <button type="button" className="research-button" disabled={busy}
+          onClick={() => void loadEarlierTurns()}>Load earlier turns</button>}
         {tasks.map(task => <Answer key={task.id} task={task} token={token} retryDisabled={!!active || busy} onRetry={() => void control(task, "retry")} />)}
         {active && <div className="research-running"><div role="status" aria-live="polite">
           <strong>{status?.message || "Research queued"}</strong>
           {stream === "backoff" && <small> Reconnecting to progress updates.</small>}
-          {chunks.map(chunk => <div key={chunk.id}><Markdown skipHtml disallowedElements={["img", "input"]} components={{a: ({href, children}) =>
-            <SourceLink href={href || ""}>{children}</SourceLink>}}>{String(chunk.details.text)}</Markdown></div>)}
+          {chunks.map(chunk => <div key={chunk.id}><AnswerMarkup text={String(chunk.details.text)}
+            direct={active.mode === "direct"} /></div>)}
         </div><button type="button" className="research-button" disabled={busy} onClick={() => void control(active, "cancel")}><Square size={14}/> Stop</button></div>}
         {error && <p className="research-error" role="alert">{error}</p>}
         <form className="research-composer" onSubmit={submit}>

@@ -263,7 +263,16 @@ def heartbeat(job_id, token):
         return bool(changed)
 
 
-def owned_job(session, job_id, token):
+def owned_job(session, job_id, token, *, write=False):
+    if write and session.get_bind().dialect.name == "sqlite":
+        # SQLite ignores FOR UPDATE. Acquire its write lock before reading a
+        # lease that will guard changes to another row.
+        changed = session.execute(update(Job).where(
+            Job.id == job_id, Job.lease_token == token, Job.lease_until > time.time(),
+            Job.status.not_in(TERMINAL),
+        ).values(lease_token=token)).rowcount
+        if not changed:
+            raise InterruptedError("Worker lease lost")
     job = session.scalar(select(Job).where(Job.id==job_id).with_for_update())
     if not job or job.lease_token != token or job.lease_until <= time.time() or job.status in TERMINAL:
         raise InterruptedError("Worker lease lost")

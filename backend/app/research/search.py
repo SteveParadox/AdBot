@@ -31,6 +31,9 @@ class Cache:
             return record[1]
         return None
 
+    def discard(self, key):
+        self.items.pop(key, None)
+
     def put(self, key, value):
         self.items[key] = (time.time(), value)
         self.items.move_to_end(key)

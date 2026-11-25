@@ -5,6 +5,7 @@ import re
 import time
 from collections import Counter
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import pycountry
@@ -245,7 +246,9 @@ class Research:
                 await self.gate.wait()
                 return await pool.search(query, self.country, self.freshness,
                                          diversify=self.mode == Mode.DEEP and index % 2 == 1)
-        groups = await asyncio.gather(*(find(i, query) for i, query in enumerate(queries)))
+        async with asyncio.TaskGroup() as search_group:
+            searches = [search_group.create_task(find(i, query)) for i, query in enumerate(queries)]
+        groups = [task.result() for task in searches]
         supplied = self.initial_hits() if first else []
         ranked = rank_hits([*groups, supplied], self.contextual_question(), self.mode == Mode.TECHNICAL)
         ranked = list({hit.canonical_url: hit for hit in [*supplied, *ranked]}.values())
@@ -266,24 +269,33 @@ class Research:
         self.page_count += len(queued)
         if queued:
             await self.charge_usage(pages_attempted=len(queued))
-        docs = await asyncio.gather(*(retrieve(hit) for hit in queued))
-        for hit, doc in zip(queued, docs, strict=True):
-            if not doc or doc.digest in self.content_hashes:
-                continue
-            if any(source["url"] == doc.url for source in self.sources.values()):
-                continue
-            self.content_hashes.add(doc.digest)
-            source = source_record(doc, hit.query, hit.provider)
-            self.sources[source["id"]] = source
-            records = text_evidence(doc, source, self.contextual_question())
-            if self.mode == Mode.SHOPPING:
-                products, structured = product_evidence(doc, source, self.country)
-                structured_by_id = {item["id"]: item for item in structured}
-                offers = sorted(products, key=lambda item: (item["price"] is None, item["availability"] is None))[:12]
-                self.products.extend(offers)
-                records = [structured_by_id[item["evidence_id"]] for item in offers] + records
-            for record in records:
-                self.evidence[record["id"]] = record
+        retrievals = []
+        try:
+            async with asyncio.TaskGroup() as retrieval_group:
+                retrievals = [(hit, retrieval_group.create_task(retrieve(hit))) for hit in queued]
+        finally:
+            # Keep completed sources even when the round hits its deadline.
+            for hit, task in retrievals:
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    self.collect_source(hit, task.result())
+
+    def collect_source(self, hit, doc):
+        if not doc or doc.digest in self.content_hashes:
+            return
+        if any(source["url"] == doc.url for source in self.sources.values()):
+            return
+        self.content_hashes.add(doc.digest)
+        source = source_record(doc, hit.query, hit.provider)
+        self.sources[source["id"]] = source
+        records = text_evidence(doc, source, self.contextual_question())
+        if self.mode == Mode.SHOPPING:
+            products, structured = product_evidence(doc, source, self.country)
+            structured_by_id = {item["id"]: item for item in structured}
+            offers = sorted(products, key=lambda item: (item["price"] is None, item["availability"] is None))[:12]
+            self.products.extend(offers)
+            records = [structured_by_id[item["evidence_id"]] for item in offers] + records
+        for record in records:
+            self.evidence[record["id"]] = record
 
     def independent_count(self):
         return len({self.sources[record["source_id"]]["independence_group"] for record in self.evidence.values()})
@@ -349,12 +361,22 @@ class Research:
         if not evidence:
             self.notes.append("No accessible sources provided relevant evidence for this question.")
             self.result_quality = "partial"
-        if evidence and self.independent_count() < 2:
-            self.notes.append("The retrieved evidence came from fewer than two independent domains.")
+        used = {identifier for claim in self.claims for identifier in claim["evidence"]}
+        assessed_evidence = [row for row in evidence if row["id"] in used] if used else evidence
+        if assessed_evidence and len({row["source"] for row in assessed_evidence}) < 2:
+            self.notes.append("The answer relies on evidence from fewer than two independent domains.")
             self.result_quality = "partial"
-        if self.freshness and evidence and not any(row["date"] for row in evidence):
-            self.notes.append("Publication dates could not be established for the selected evidence.")
-            self.result_quality = "partial"
+        if self.freshness and assessed_evidence:
+            dates = [row["date"] for row in assessed_evidence if row["date"]]
+            cutoff = datetime.now(timezone.utc).date() - timedelta(
+                days={"day": 1, "week": 7, "month": 30, "year": 365}[self.freshness]
+            )
+            if not dates:
+                self.notes.append("Publication dates could not be established for the selected evidence.")
+                self.result_quality = "partial"
+            elif not any(datetime.fromisoformat(date).date() >= cutoff for date in dates):
+                self.notes.append("The available publication dates are outside the requested freshness window.")
+                self.result_quality = "partial"
         if any(claim["kind"] == "conflict" for claim in self.claims):
             self.notes.append("The retrieved sources disagree. The disputed claims are marked above.")
 

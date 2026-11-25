@@ -1,6 +1,6 @@
 # Research API
 
-Versioned routes use `/api/research/v1`. Supply the workspace bearer credential on each request, including SSE connections. Cross-workspace resource IDs return 404. The events stream accepts `Last-Event-ID` or `after` for replay. Lists accept `offset` and `limit`.
+Versioned routes use `/api/research/v1`. Supply the workspace bearer credential on each request, including SSE connections. Cross-workspace resource IDs return 404. The events stream accepts `Last-Event-ID` or `after` for replay within the signed 64-bit cursor range. Lists accept `offset` and `limit`.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
@@ -12,7 +12,7 @@ Versioned routes use `/api/research/v1`. Supply the workspace bearer credential 
 | GET | `/tasks/{id}/evidence` | Inspect quotations and extracted facts. |
 | GET | `/tasks/{id}/search-results` | Inspect normalized search candidates. |
 | POST | `/tasks/{id}/cancel` | Request cancellation. A running worker acknowledges it asynchronously. |
-| POST | `/tasks/{id}/retry` | Create a new attempt after partial, failed or cancelled research. |
+| POST | `/tasks/{id}/retry` | Create a new attempt after partial, failed or cancelled research using the original resolved mode and preceding conversation turns. |
 | GET, POST | `/conversations` | List or create conversations. |
 | GET, DELETE | `/conversations/{id}` | Read paginated turns or delete an inactive conversation. |
 | POST | `/conversations/{id}/messages` | Append a turn. One turn can be active per conversation. |

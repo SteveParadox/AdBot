@@ -105,7 +105,7 @@ async def _execute(job_id, token):
             if previous_status != control:
                 def publish_control():
                     with transaction() as session:
-                        job = owned_job(session, job_id, token)
+                        job = owned_job(session, job_id, token, write=kind == "research")
                         if job.status == previous_status:
                             job.status = control
                             emit(session, job_id, control, "Execution state updated")
@@ -141,7 +141,13 @@ async def _execute(job_id, token):
         def finalize():
             nonlocal status, error
             with transaction() as session:
-                job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                if status and kind == "research":
+                    try:
+                        job = owned_job(session, job_id, token, write=True)
+                    except InterruptedError:
+                        job = None
+                else:
+                    job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 if status and job and job.lease_token == token and job.lease_until > time.time():
                     if error:
                         from .failures import diagnose

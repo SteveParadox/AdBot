@@ -20,3 +20,9 @@ Verified on November 25, 2026 from the feature branch. The research feature suit
 The browser rendering test uses real Playwright Chromium with controlled HTML, a dynamically rendered article, blocked POST and blocked cross-origin fetch. The search, paid-provider fallback and native Ollama protocol tests use transport fixtures. They do not establish production provider availability or Qwen3:4B accuracy.
 
 The second review checked route ownership, migration rollback, cache scope, provider limits, worker lease races, evidence IDs, browser access and frontend/backend response handling. It found and corrected missing evidence caused by repeated passages, SQLite downgrade compatibility after a parent-table rebuild, cold-provider rate-limit bursts, URL credential forwarding, and concurrent usage reservation. [Known limitations](KNOWN_LIMITATIONS.md)
+
+## Follow-up review
+
+The follow-up passed 55 research tests on SQLite, including Chromium with its sandbox enabled. PostgreSQL 16 passed all 54 non-browser research tests at the existing migration head. The frontend passed 59 unit tests, three dedicated browser tests and the production build. Ruff and the Git whitespace check passed.
+
+The added regression coverage includes origin cache restrictions, updated robots directives on conditional responses, wildcard and specific robots rules, fresh rendering of a previously retrieved JavaScript document, partial HTTP responses, expired worker attempts, concurrent submissions, retry context, deadline handling, source freshness, citation-only links, and a lost submission response. Scope and provider limitations from the initial verification still apply to live deployment.
