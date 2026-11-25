@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import pycountry
 from courlan import extract_domain
 
+from .integrity import claim_freshness, freshness_status, numerical_support, quoted_support
 from .policy import PublicPolicy, canonical_key
 from .retrieval import clean
 from .ranking import lexical_scores, source_signals, supporting_groups
@@ -267,11 +268,14 @@ def rank_products(products, question, country=None):
     return ordered
 
 
-def select_evidence(evidence, sources, char_budget):
+def select_evidence(evidence, sources, char_budget, freshness=None):
     seen = set()
     counts = Counter()
     packed = []
     spend = 0
+    if freshness:
+        evidence = sorted(evidence, key=lambda row: freshness_status(
+            sources[row["source_id"]].get("published_at"), freshness) != "fresh")
     for record in evidence:
         key = record["quote"].casefold()
         group = sources[record["source_id"]]["independence_group"]
@@ -279,9 +283,13 @@ def select_evidence(evidence, sources, char_budget):
             continue
         seen.add(key)
         counts[group] += 1
-        quote = record["quote"] if record.get("page") and record["kind"] == "structured" else record["quote"][:550]
+        if record["kind"] == "structured" and len(record["quote"]) > 1400:
+            continue
+        quote = record["quote"] if record["kind"] == "structured" else record["quote"][:550]
         row = dict(id=record["id"], source=group, quote=quote,
                    date=record["published_at"], kind=record["kind"])
+        if freshness:
+            row["publication_freshness"] = freshness_status(sources[record["source_id"]].get("published_at"), freshness)
         if record.get("page"):
             row["page"] = record["page"]
         packed.append((counts[group], len(packed), row))
@@ -295,7 +303,38 @@ def select_evidence(evidence, sources, char_budget):
     return result
 
 
-def verified_claims(proposals, checked, evidence, sources):
+def valid_reference(identifier, evidence, sources):
+    record = evidence.get(identifier)
+    if not record:
+        return False
+    source = sources.get(record.get("source_id"))
+    if not source:
+        return False
+    # Legacy unit-test/minimal records may omit redundant provenance; when
+    # present these fields must match their authoritative source.
+    for field, source_field in (("source_url", "url"), ("content_hash", "content_hash"),
+                                ("published_at", "published_at"), ("retrieved_at", "retrieved_at")):
+        if field in record and source_field in source and record[field] != source[source_field]:
+            return False
+    if "id" in record and record["id"] != identifier:
+        return False
+    if "url" in source:
+        try:
+            if PublicPolicy().check(source["url"]) != source["url"]:
+                return False
+        except (ValueError, TypeError, AttributeError):
+            return False
+    if "page" in record:
+        page = record["page"]
+        metadata = source.get("metadata", {})
+        if (metadata.get("document_type") != "pdf" or type(page) is not int
+                or not 1 <= page <= metadata.get("pages_examined", 0)
+                or not record.get("location", "").startswith(f"pdf:page-{page}:")):
+            return False
+    return True
+
+
+def verified_claims(proposals, checked, evidence, sources, freshness=None):
     result = []
     checks = {}
     for check in checked.checks:
@@ -308,21 +347,19 @@ def verified_claims(proposals, checked, evidence, sources):
         if not check or check.status not in {"supported", "conflicting"} or not check.evidence:
             continue
         ids = list(dict.fromkeys(check.evidence))
-        if any(item not in evidence or item not in claim.evidence for item in ids):
+        if len(ids) != len(check.evidence) or any(item not in claim.evidence or not valid_reference(item, evidence, sources) for item in ids):
             continue
         groups = supporting_groups(ids, evidence, sources)
         if check.status == "conflicting" and (len(groups) < 2 or claim.kind != "conflict"):
             continue
         if claim.kind == "conflict" and check.status != "conflicting":
             continue
-        if check.status == "supported" and claim.kind == "fact":
-            # Numbers and quoted terms need literal corroboration as well as the
-            # verifier's semantic support decision.
-            claimed = set(re.findall(r"(?<![\w])\d[\d.,]*(?=\b)", claim.text))
-            actual = set(re.findall(r"(?<![\w])\d[\d.,]*(?=\b)", " ".join(evidence[item]["quote"] for item in ids)))
-            if not claimed <= actual:
-                continue
-        result.append({"text": claim.text, "kind": claim.kind, "evidence": ids, "independent_sources": len(groups)})
+        quotes = [evidence[item]["quote"] for item in ids]
+        if not numerical_support(claim.text, quotes) or not quoted_support(claim.text, quotes):
+            continue
+        result.append({"text": claim.text, "kind": claim.kind, "evidence": ids,
+                       "independent_sources": len(groups),
+                       **({"freshness": claim_freshness(ids, evidence, sources, freshness)} if freshness else {})})
     return result
 
 
@@ -330,6 +367,8 @@ def citation_markdown(claims, evidence, sources):
     numbers = {source: i for i, source in enumerate(sources, 1)}
     lines = []
     for claim in claims:
+        if not claim.get("evidence") or any(not valid_reference(i, evidence, sources) for i in claim["evidence"]):
+            continue
         references = []
         for identifier in claim["evidence"]:
             record = evidence[identifier]
@@ -348,5 +387,10 @@ def citation_markdown(claims, evidence, sources):
         escaped = re.sub(r"([\\\x60*_\[\]{}()<>#+!|])", r"\\\1", clean(claim["text"], 520))
         label = {"inference": "**Inference.** ", "recommendation": "**Recommendation.** ",
                  "conflict": "**Sources disagree.** ", "excerpt": "**Retrieved excerpt.** "}.get(claim["kind"], "")
-        lines.append(f"{label}{escaped} {citations}")
+        freshness_label = {
+            "stale": " **Publication dates outside requested window.**",
+            "mixed": " **Mixed publication freshness.**",
+            "unknown": " **Publication freshness unestablished.**",
+        }.get(claim.get("freshness"), "")
+        lines.append(f"{label}{escaped} {citations}{freshness_label}")
     return "\n\n".join(lines)
