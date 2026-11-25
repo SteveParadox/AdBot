@@ -222,6 +222,8 @@ def product_evidence(doc, source, country):
                 raw_fields = raw.get("observations", {})
                 observation["observed_fields"] = {k: v for k, v in raw_fields.items()
                                                   if k not in {"price_text", "currency_label", "fields"}}
+                if price is not None and raw_fields.get("price_text"):
+                    observation["observed_fields"]["price_text"] = raw_fields["price_text"]
                 observation["observed_fields"]["fields"] = {k: v for k, v in raw_fields.get("fields", {}).items()
                                                              if k != "Availability"}
             structured = quote_record(
