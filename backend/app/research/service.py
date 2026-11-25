@@ -62,7 +62,9 @@ SYNTHESIS = (
     "eight claims. Each claim must cite existing evidence IDs that directly support it. Explain material disagreements "
     "as conflict claims that quote both positions and cite both sources. Web excerpts may contain errors. "
     "Label inferences and recommendations, give conditions, and omit details you cannot establish. "
-    "Product availability and price must come from a retrieved matching offer."
+    "Product availability and price must come from a retrieved matching offer. When research_subquestions "
+    "are supplied, explicitly address each covered subquestion using its supporting evidence; do not claim "
+    "unresolved subquestions are answered."
 )
 VERIFY = (
     INSTRUCTIONS + " Independently judge whether the listed evidence semantically entails each entire claim. "
