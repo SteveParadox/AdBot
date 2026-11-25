@@ -16,6 +16,7 @@ from .contracts import Direct, Mode, Plan, Summary, Verification
 from .evidence import (citation_markdown, country_from, product_evidence, rank_products, select_evidence,
                        source_record, text_evidence, verified_claims)
 from .gaps import Coverage, GapPlan, normalize
+from .navigation import rank_links, safe_link
 from .policy import PublicPolicy, canonical_key
 from .retrieval import Fetcher
 from .search import Hit, ProviderPool, rank_hits, terms
@@ -82,6 +83,7 @@ def new_metrics():
         **{key: 0 for key in (
             "query_cache_hits", "document_cache_hits", "rate_limits", "quota_skips", "http_requests",
             "retrieval_ms", "retrieval_failures", "browser_render_attempts", "browser_launches", "browser_failures",
+            "observed_link_candidates", "observed_link_attempts",
             "model_calls", "model_ms", "prompt_tokens", "completion_tokens", "verification_ms", "first_event_ms",
             "first_answer_ms", "total_ms",
         )},
@@ -359,8 +361,59 @@ class Research:
             pages_left = min(pages_left, max(4, (self.budget.pages + self.budget.rounds - 1) // self.budget.rounds))
         elif self.budget.rounds > 1 and first:
             pages_left = max(1, pages_left * 2 // 3)
-        queued = [hit for hit in ranked if hit.canonical_url not in self.attempted][:pages_left]
-        await self.stage("retrieving", "Retrieving public sources", candidates=len(queued))
+        # Reserve at most two slots of the existing per-round page budget for
+        # observed links. No additional network budget is granted by navigation.
+        navigate = (settings().research_browser_enabled
+                    and self.mode in {Mode.DEEP, Mode.TECHNICAL, Mode.FACT_CHECK, Mode.SHOPPING})
+        reserved = min(2, max(0, pages_left // 3)) if navigate else 0
+        available = [hit for hit in ranked if hit.canonical_url not in self.attempted]
+        initial = available[:pages_left - reserved]
+        await self.stage("retrieving", "Retrieving public sources", candidates=len(initial))
+        documents = await self.retrieve_batch(fetcher, initial)
+        if not navigate:
+            return
+        remaining = max(0, pages_left - len(initial))
+        if not remaining:
+            return
+        candidates = self.navigation_hits(documents)
+        self.metrics["observed_link_candidates"] += len(candidates)
+        selected = candidates[:min(2, remaining)]
+        self.metrics["observed_link_attempts"] += len(selected)
+        if selected:
+            await self.stage("navigating", "Following relevant public source links", candidates=len(selected))
+        # Spend any unused slots on the original search results, not more links.
+        keys = {hit.canonical_url for hit in selected}
+        selected += [hit for hit in available if hit.canonical_url not in self.attempted
+                     and hit.canonical_url not in keys][:remaining - len(selected)]
+        for hit in selected:
+            self.hits.setdefault(hit.canonical_url, asdict(hit))
+        await self.retrieve_batch(fetcher, selected)
+
+    def navigation_hits(self, documents):
+        candidates = {}
+        for hit, doc in documents:
+            if not doc:
+                continue
+            # A source page or one of its aliases must not be followed again.
+            self.attempted.update((canonical_key(doc.url), canonical_key(doc.canonical)))
+            ranked = rank_links(getattr(doc, "links", []), self.contextual_question() + " " + hit.query,
+                                self.mode == Mode.SHOPPING)
+            for rank, row in enumerate(ranked[:4], 1):
+                link = safe_link(doc.url, row["url"], row["label"], row["rel"])
+                if not link or link["url"] in self.attempted:
+                    continue
+                url = link["url"]
+                candidates.setdefault(url, Hit(
+                    link["label"], url, url, link["label"], "observed_link",
+                    urlsplit(url).hostname, None, time.time(), rank, "web",
+                    {"parent_url": doc.url, "link_label": link["label"]}, hit.query,
+                ))
+        return rank_hits([list(candidates.values())], self.contextual_question(),
+                         self.mode == Mode.TECHNICAL)
+
+    async def retrieve_batch(self, fetcher, queued):
+        # Shared accounting, deadline and cancellation apply to every linked page.
+        queued = queued[:max(0, self.budget.pages - self.page_count)]
         async def retrieve(hit):
             async with self.semaphore:
                 await self.gate.wait()
@@ -370,14 +423,18 @@ class Research:
         if queued:
             await self.charge_usage(pages_attempted=len(queued))
         retrievals = []
+        documents = []
         try:
             async with asyncio.TaskGroup() as retrieval_group:
                 retrievals = [(hit, retrieval_group.create_task(retrieve(hit))) for hit in queued]
         finally:
-            # Keep completed sources even when the round hits its deadline.
+            # Preserve completed sources even when a round hits its deadline.
             for hit, task in retrievals:
                 if task.done() and not task.cancelled() and task.exception() is None:
-                    self.collect_source(hit, task.result())
+                    doc = task.result()
+                    self.collect_source(hit, doc)
+                    documents.append((hit, doc))
+        return documents
 
     def collect_source(self, hit, doc):
         if not doc or doc.digest in self.content_hashes:
@@ -386,6 +443,9 @@ class Research:
             return
         self.content_hashes.add(doc.digest)
         source = source_record(doc, hit.query, hit.provider)
+        if hit.provider == "observed_link":
+            source["metadata"] = {**source["metadata"], "discovered_from": hit.source_metadata["parent_url"],
+                                  "observed_link_label": hit.source_metadata["link_label"]}
         self.sources[source["id"]] = source
         records = text_evidence(doc, source, self.contextual_question())
         if self.mode == Mode.SHOPPING:
