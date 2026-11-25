@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from ..agent.model import ModelError, bounded_request_text
 from .contracts import Mode, Summary, Verification
 from .evidence import citation_markdown
-from .search import terms
+from .ranking import lexical_scores
 
 
 @dataclass(frozen=True)
@@ -31,10 +31,12 @@ def profile_for(mode, output_tokens):
 
 def evidence_rows(records, sources, objective, preferred, quote_chars):
     """Keep evidence IDs and exact displayed text; deduplicate copied passages."""
-    words = terms(objective)
-    ordered = sorted(records, key=lambda r: (
-        r["id"] not in preferred, -len(words & terms(r["quote"])), r["id"],
-    ))
+    scores = lexical_scores(objective, [record["quote"] for record in records])
+    ordered = [record for _, record in sorted(zip(scores, records), key=lambda pair: (
+        pair[1]["id"] not in preferred,
+        -pair[0] * (1 + sources[pair[1]["source_id"]].get("credibility", {}).get("ranking_adjustment", 0)),
+        pair[1]["id"],
+    ))]
     groups = {}
     seen = set()
     for record in ordered:
