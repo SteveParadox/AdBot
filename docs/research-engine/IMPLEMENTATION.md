@@ -186,3 +186,43 @@ not unlimited prose generation or a global semantic contradiction proof.
 No new dependency or migration is required. Focused regression tests:
 `python -m pytest -q tests/test_research_synthesis.py` from the backend
 directory. Test execution and live-provider/model verification remain pending.
+
+
+## Public PDF and document research
+
+The HTTP retrieval tier now accepts application/pdf and checks the actual PDF
+signature before parsing. The existing public URL, DNS, robots, redirect,
+credential, cache and egress rules still apply. HTML and browser subresource
+byte limits are unchanged; a PDF response has an 8,000,000-byte cap.
+
+PDF text and ruled tables are extracted by a separate Python process using
+pdfplumber 0.11.10. Input and output are bounded, no document-provided actions
+or attachments are executed, and the process receives a reduced environment.
+Linux sets a 512 MiB virtual-address-space cap, an eight-second CPU soft
+limit and nine-second hard limit; a 15-second wall-clock deadline applies
+on supported asyncio subprocess platforms. At most one PDF parser runs per
+Fetcher. This is resource isolation, not a full OS security sandbox.
+
+Extraction examines the first 40 physical pages, at most 12,000 text
+characters per page and 180,000 total, with at most 160 complete ruled-table
+rows across the document and a 900,000-byte parser output cap. Tables retain
+page, table and row positions, and observed first-row context is distinguished
+from the data cells. No header meaning or missing numerical values are
+invented. Malformed, encrypted and extraction-restricted PDFs fail closed.
+Scanned documents without extractable text need OCR, which is not provided.
+
+Evidence records preserve physical page numbers and normalized text line or
+table-row locations. Citations are deterministically generated as source
+number plus page, with a #page=N fragment on the stored source URL. The UI
+validates these against the matching PDF source and examined page count.
+PDF metadata reports pages examined, page count and extraction limits.
+Publication dates are not inferred from PDF creation dates or file timestamps.
+Incomplete extraction, missing usable PDF text, or parse failure is disclosed
+as partial research. Existing plain text and HTML document support is retained.
+
+Run the dedicated regression suite from backend:
+`python -m pytest -q tests/test_research_pdf.py`.
+The standalone parser was smoke-tested with the locally available pdfplumber
+0.11.9 using generated PDFs (text/table extraction, 40-page truncation,
+malformed and encrypted inputs). The pinned 0.11.10 environment and full
+application/browser integration tests remain to be executed.
