@@ -171,16 +171,21 @@ def supporting_groups(ids, evidence, sources):
 
     Do not treat shared structured product fields as copied articles.
     """
-    groups = {}
+    union = Independence()
+    groups = set()
     seen = {}
     for identifier in ids:
         row = evidence[identifier]
         group = sources[row["source_id"]]["independence_group"]
+        groups.add(group)
+        union.root(group)
         quote = row["quote"]
         words = TOKEN.findall(quote.casefold())
         if row.get("kind") != "structured" and len(words) >= 12:
             normalized = " ".join(words)
             key = hashlib.sha256(normalized.encode()).hexdigest()
-            group = seen.setdefault(key, group)
-        groups[identifier] = group
-    return set(groups.values())
+            if key in seen:
+                union.union(group, seen[key])
+            else:
+                seen[key] = group
+    return {union.root(group) for group in groups}
