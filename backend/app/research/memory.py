@@ -14,7 +14,7 @@ MAX_SOURCES = 40
 RESET = re.compile(r"\b(?:new topic|unrelated question|start over|forget (?:the )?(?:previous|earlier) (?:context|requirements))\b", re.I)
 FOLLOW = re.compile(
     r"\b(?:those|these|them|that (?:claim|one|product|source|report|answer)|previous|earlier|above|"
-    r"what about|how about|more recent|other retailers|cheapest|same (?:budget|requirements|country)|"
+    r"what about|how about|more recent|other retailers|same (?:budget|requirements|country)|"
     r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|\d{1,2}(?:st|nd|rd|th)) "
     r"(?:one|product|option|source|result)|(?:product|option|source|result) (?:#\s*)?\d{1,2}|"
     r"(?:increase|raise|lower|reduce|change|remove|drop|keep) (?:the |my )?(?:budget|ram|storage|vram|requirements|country)|"
@@ -46,14 +46,22 @@ def followup(text, history):
         return False
     if REFERENCE.search(text) or FOLLOW.search(text):
         return True
+    if re.fullmatch(r"\s*(?:which (?:is )?(?:the )?|the )?cheapest(?: one)?[?.! ]*", text, re.I):
+        return True
     if re.search(r"\b(?:that claim|sources?|verify it|explain it)\b", text, re.I) and len(terms(text)) <= 8:
         return True
-    return any(len(p.get("name") or "") >= 5 and p["name"].casefold() in text.casefold()
-               for turn in history for p in turn.get("products", [])) and len(terms(text)) <= 12
+    names = [p.get("name") or "" for turn in history for p in turn.get("products", [])]
+    names += [p.get("title") or "" for turn in history for p in turn.get("sources", [])]
+    return any(len(name) >= 5 and name.casefold() in text.casefold() for name in names) and len(terms(text)) <= 12
 
 
 def relevant_turns(text, history):
     """Recency breaks lexical ties; prefer matched names for older entities."""
+    # A deliberate reset starts a new implicit context. Explicit earlier
+    # references may still search the bounded history in this conversation.
+    if not re.search(r"\b(?:earlier|previous topic)\b", text, re.I):
+        boundary = next((i for i in range(len(history) - 1, -1, -1) if RESET.search(history[i]["question"])), 0)
+        history = history[boundary:]
     query = terms(text)
     scored = []
     for index, turn in enumerate(history):
@@ -146,6 +154,15 @@ def resolve_references(text, anchor):
                          "turn_id": anchor.get("id", "")})
         elif len(matches) > 1:
             unresolved.append("ambiguous product name")
+        else:
+            sources = [s for s in anchor.get("sources", []) if len(s.get("title") or "") >= 5
+                       and s["title"].casefold() in text.casefold()]
+            if len(sources) == 1:
+                row = sources[0]
+                refs.append({"kind": "source", "index": anchor["sources"].index(row) + 1,
+                             "name": row["title"], "url": row.get("url"), "turn_id": anchor.get("id", "")})
+            elif len(sources) > 1:
+                unresolved.append("ambiguous source title")
     return refs[:4], unresolved[:4]
 
 
@@ -155,6 +172,8 @@ def build_context(question, history, intent, mode):
     selected = relevant_turns(text, history) if intent == "follow_up" and not RESET.search(text) else []
     anchor = selected[0] if selected else {}
     old = anchor.get("memory") or {}
+    if old.get("version") != 1:
+        old = {}
     country = country_from(text, question.country) or (old.get("country") if old else anchor.get("country"))
     if re.search(r"\b(?:any country|worldwide|globally|remove (?:the )?country)\b", text, re.I) and not question.country:
         country = None
