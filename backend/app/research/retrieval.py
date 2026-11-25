@@ -7,7 +7,7 @@ import os
 import re
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
@@ -17,10 +17,12 @@ from lxml import etree, html
 from playwright.async_api import Error as PlaywrightError, async_playwright
 from protego import Protego
 
+from ..agent.semantics import METADATA
 from ..concurrency import database_call
 from ..config import settings
 from ..egress import egress_proxy
 from ..security import PolicyError
+from .navigation import UNSAFE, safe_link, static_links
 from .policy import PublicPolicy
 from .search import Cache, bounded_bytes
 
@@ -92,6 +94,7 @@ class Response:
     encoding: str
     headers: dict
     status: int = 200
+    observed_links: list[dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ class Document:
     last_modified: str | None
     cache_headers: dict
     cacheable: bool = True
+    links: list[dict] = field(default_factory=list)
 
 
 def cache_max_age(headers, default):
@@ -143,7 +147,7 @@ def check_robots_directives(directives):
 
 def extract(response, shopping):
     text = response.body.decode(response.encoding, "replace")
-    metadata, products = {}, []
+    metadata, products, links = {}, [], []
     directives = robots_directives(response.headers.get("x-robots-tag", ""))
     canonical = response.url
     if response.mime != "text/plain":
@@ -170,6 +174,7 @@ def extract(response, shopping):
                     canonical = candidate
             except ValueError:
                 pass
+        links = static_links(tree, response.url) if response.observed_links is None else response.observed_links
         if shopping:
             products = structured_products(tree)
             # Persist only supported product fields, with a strict bound on nested input.
@@ -187,6 +192,7 @@ def extract(response, shopping):
         time.time(), hashlib.sha256(response.body).hexdigest(), blocks, products, metadata,
         response.headers.get("etag"), response.headers.get("last-modified"),
         {name: response.headers[name] for name in ("cache-control", "vary", "age") if name in response.headers},
+        links=links,
     )
 
 
@@ -358,11 +364,11 @@ class Fetcher:
                 else:
                     doc = await database_call(extract, response, shopping)
             if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
-                    and not doc.products and sum(map(len, doc.blocks)) < 200):
+                    and not doc.products and (shopping or sum(map(len, doc.blocks)) < 200)):
                 # Shell validators cannot refresh scripts or API data. Keep
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
-            if not doc.blocks and not doc.products:
+            if not doc.blocks and not doc.products and not doc.links:
                 DOCUMENTS.discard(cache_key)
                 return None
             if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")
@@ -412,7 +418,7 @@ class Fetcher:
                         self.metrics["browser_launches"] += 1
                     rendered = await self.render_in_context(response)
                     document = await database_call(extract, rendered, shopping)
-                    return document if document.blocks or document.products else doc
+                    return document if document.blocks or document.products or document.links else doc
             except PolicyError:
                 raise
             except (PlaywrightError, etree.LxmlError, TimeoutError, ValueError):
@@ -468,7 +474,34 @@ class Fetcher:
                 await page.wait_for_load_state("networkidle", timeout=1200)
             except PlaywrightError:
                 pass
+            # Reuse the existing agent's semantic DOM metadata, but never its
+            # action controller. Only observe actual visible, enabled anchors.
+            # The research service will fetch selected links as separate pages.
+            observed = await page.locator(
+                "main a[href], article a[href], [role=main] a[href]"
+            ).evaluate_all(
+                """(nodes) => nodes.slice(0, 150).flatMap(e => {
+                    if (e.closest('form,aside,[hidden],[aria-hidden=true],[inert],[data-ad]') ||
+                        e.hasAttribute('download') || e.hasAttribute('onclick')) return [];
+                    const data = (METADATA_FUNCTION)(e);
+                    if (!data.actionable || data.role !== 'link' || data.blocked_by_modal) return [];
+                    const context = [];
+                    for (let p=e; p && context.length < 20; p=p.parentElement)
+                        context.push([p.id, p.getAttribute('class'), p.getAttribute('aria-label')].join(' '));
+                    return [{href: data.href, label: data.name, rel: e.rel, context: context.join(' ')}];
+                })""".replace("METADATA_FUNCTION", METADATA)
+            )
+            links = {}
+            for item in observed:
+                if UNSAFE.search(item["context"]):
+                    continue
+                link = safe_link(response.url, item["href"], item["label"], item["rel"])
+                if link:
+                    links.setdefault(link["url"], link)
+                if len(links) >= 30:
+                    break
             content = (await page.content()).encode()
             if len(content) > MAX_HTML_BYTES:
                 raise ValueError("Rendered content exceeded byte limit")
-            return Response(response.url, content, "text/html", "utf-8", response.headers)
+            return Response(response.url, content, "text/html", "utf-8", response.headers,
+                            observed_links=list(links.values()))
