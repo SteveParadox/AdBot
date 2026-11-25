@@ -5,13 +5,14 @@ Verified on November 25, 2026 from the feature branch. The research feature suit
 | Check | Result |
 | --- | --- |
 | Backend research suites | 41 passed, including a real Chromium renderer and fixture-based search, model, shopping, authorization, cancellation and replay. |
+| Non-browser backend regression | 369 passed, 1 skipped. |
 | Focused backend regression | 44 passed when the research suite ran with three migration compatibility tests. |
-| PostgreSQL 16 | Feature migration upgrade, downgrade to `021a00000001` and upgrade passed. The non-browser research suite was also exercised against an actual local server. |
+| PostgreSQL 16 | Feature migration upgrade, downgrade to `021a00000001` and upgrade passed. 40 non-browser research tests passed against an actual local server. |
 | SQLite | Feature migration upgrade, downgrade and upgrade passed. Existing user-agent, content and automation migration history tests passed. |
 | Backend Ruff | Passed. |
 | Frontend unit tests | 59 passed. |
 | TypeScript and Vite build | Passed. The research workspace is loaded as a separate route chunk. |
-| Dedicated browser UI tests | 2 passed, including mobile citations, evidence inspection and recovery from an interrupted stream. |
+| Dedicated browser UI tests | 2 passed, including mobile citations, paginated evidence inspection and recovery from an interrupted stream. |
 | Full backend regression run | 426 passed, 1 skipped and 3 errors before all browser runtimes were installed. The targeted Firefox rerun passed. Two targeted WebKit cases remained blocked by missing runtime libraries including GTK 4 and Graphene. |
 | Full frontend browser run | 23 passed and one existing workspace test timed out waiting for `networkidle`. The same test timed out on baseline `142a518`. |
 | Live provider smoke | Pending. No configured live search provider or model credentials were available in this workspace. |

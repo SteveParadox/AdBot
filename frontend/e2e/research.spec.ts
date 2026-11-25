@@ -31,10 +31,16 @@ test("researches without a website and displays citations and evidence on mobile
         `id: ${i + 1}\nevent: progress\ndata: ${JSON.stringify({id: i + 1, event_type, message: event_type, details: {}, timestamp: 1})}\n\n`).join("");
       return route.fulfill({contentType: "text/event-stream", body: events});
     }
-    if (path.endsWith("/evidence")) return route.fulfill({json: {
-      items: [{id: "quote-1", source_id: "study", quote: "A quantum processor detected and corrected errors.", location: "normalized-text:block-1", retrieved_at: 1770000000}],
-      total: 1,
-    }});
+    if (path.endsWith("/evidence")) {
+      const offset = new URL(route.request().url()).searchParams.get("offset");
+      const first = offset === "0";
+      return route.fulfill({json: {
+        items: [{id: first ? "quote-1" : "quote-2", source_id: "study", retrieved_at: 1770000000,
+          quote: first ? "A quantum processor detected and corrected errors." : "A second passage describes the study protocol.",
+          location: first ? "normalized-text:block-1" : "normalized-text:block-2"}],
+        total: 2,
+      }});
+    }
     if (path.endsWith(id)) return route.fulfill({json: {
       ...task, status: "completed", result: {quality: "complete", answer: "Quantum processors can correct errors. [1](https://example.com/study)", sources: [source]},
     }});
@@ -49,6 +55,7 @@ test("researches without a website and displays citations and evidence on mobile
   await expect(page.getByRole("link", {name: "1", exact: true})).toHaveAttribute("href", source.url);
   await page.getByText("Sources and evidence (1)").click();
   await expect(page.getByText("A quantum processor detected and corrected errors.")).toBeVisible();
+  await expect(page.getByText("A second passage describes the study protocol.")).toBeVisible();
   await expect(page.getByRole("link", {name: source.title})).toHaveAttribute("rel", "noreferrer noopener");
   await expect(page.getByLabel("Question")).toHaveAttribute("placeholder", "Ask a follow-up question");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

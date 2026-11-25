@@ -91,9 +91,22 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
   useEffect(() => {
     if (!open || !sources.length) return;
     const controller = new AbortController();
-    api<Collection<Evidence>>(`${ROOT}/tasks/${task.id}/evidence?limit=200`, token, "GET", undefined, undefined, controller.signal)
-      .then(list => {setEvidence(list.items); setEvidenceError("");})
-      .catch(error => {if (!controller.signal.aborted) setEvidenceError((error as Error).message);});
+    async function load() {
+      const records: Evidence[] = [];
+      let offset = 0;
+      while (!controller.signal.aborted) {
+        const page = await api<Collection<Evidence>>(
+          `${ROOT}/tasks/${task.id}/evidence?limit=200&offset=${offset}`, token, "GET", undefined, undefined, controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        records.push(...page.items);
+        setEvidence([...records]);
+        setEvidenceError("");
+        offset += page.items.length;
+        if (!page.items.length || offset >= page.total) return;
+      }
+    }
+    void load().catch(error => {if (!controller.signal.aborted) setEvidenceError((error as Error).message);});
     return () => controller.abort();
   }, [open, token, task.id, sources.length]);
 
@@ -262,7 +275,7 @@ export default function Research() {
         {active && <div className="research-running"><div role="status" aria-live="polite">
           <strong>{status?.message || "Research queued"}</strong>
           {stream === "backoff" && <small> Reconnecting to progress updates.</small>}
-          {chunks.map(chunk => <div key={chunk.id}><Markdown skipHtml components={{a: ({href, children}) =>
+          {chunks.map(chunk => <div key={chunk.id}><Markdown skipHtml disallowedElements={["img", "input"]} components={{a: ({href, children}) =>
             <SourceLink href={href || ""}>{children}</SourceLink>}}>{String(chunk.details.text)}</Markdown></div>)}
         </div><button type="button" className="research-button" disabled={busy} onClick={() => void control(active, "cancel")}><Square size={14}/> Stop</button></div>}
         {error && <p className="research-error" role="alert">{error}</p>}
