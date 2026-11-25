@@ -463,7 +463,7 @@ class Research:
     def sufficient(self):
         if self.mode == Mode.SHOPPING:
             offers = rank_products(self.products, self.contextual_question(), self.country)
-            eligible = [p for p in offers if p["price"] and p["within_budget"] is not False
+            eligible = [p for p in offers if p["price"] and (not p["budget_requested"] or p["within_budget"] is True)
                         and p["availability"] not in {"Out of stock", "Sold out", "Discontinued"}
                         and p["suitability"]["status"] in {"met", "not_requested"}]
             domains = {self.sources[p["source_id"]]["independence_group"] for p in eligible}
@@ -627,7 +627,7 @@ class Research:
             if not self.products:
                 self.notes.append("No retrieved offers had usable product and market details.")
                 self.result_quality = "partial"
-            elif not any(p["price"] and p["within_budget"] is not False
+            elif not any(p["price"] and (not p["budget_requested"] or p["within_budget"] is True)
                          and p["suitability"]["status"] in {"met", "not_requested"}
                          and p["availability"] not in {"Out of stock", "Sold out", "Discontinued"}
                          for p in self.products):
