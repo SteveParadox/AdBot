@@ -17,6 +17,7 @@ Set `ADBOT_RESEARCH_ENABLED=true` in the API and worker environment. Configure a
 | `ADBOT_RESEARCH_CACHE_SECONDS` | 300 seconds. Shopping and freshness-sensitive documents use at most 60 seconds. Origin cache directives can shorten that window. |
 | `ADBOT_RESEARCH_PARALLELISM` | 4 parallel operations per research task. |
 | `ADBOT_RESEARCH_EXCLUDED_DOMAINS` | Empty. Comma-separated exact hosts or `*.example.org` patterns for public source access. |
+| `ADBOT_RESEARCH_SEMANTIC_RANKING_ENABLED` | `false`. Optional existing-model relevance scoring for up to 12 first-round candidates in Deep, Technical and Fact Check modes, when budgets permit. |
 | `ADBOT_RESEARCH_BROWSER_ENABLED` | `false`. Enables optional Chromium fallback. The worker image includes Chromium, and the runtime must support its sandbox. |
 | `ADBOT_RESEARCH_BUDGETS` | Empty JSON object. Keys select individual mode overrides. |
 | `ADBOT_AI_PROVIDER`, `ADBOT_AI_MODEL` | Use the existing Groq, Ollama or compatible configuration. See the repository's provider settings. |
