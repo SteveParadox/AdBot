@@ -19,7 +19,7 @@ type Source = {
   content_hash: string; query: string;
   credibility?: { role_hint: string; signals: string[]; assessment: string };
   independence_assessment?: { registrable_domain: string; possible_shared_origin: boolean; method: string };
-  metadata?: { document_type?: string; page_count?: number; pages_examined?: number; extraction_truncated?: boolean; pages_with_text?: number[] };
+  metadata?: { document_type?: string; page_count?: number; pages_examined?: number; extraction_truncated?: boolean; pages_with_text?: number[]; publication_provenance?: { status: string; observations: [string, string][] } };
 };
 type Evidence = { id: string; source_id: string; quote: string; location: string; retrieved_at: number; page?: number };
 type SuitabilityCheck = { requirement: string; observed: string | null; status: "met" | "not_met" | "unknown" };
@@ -196,7 +196,9 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
       <ol>{sources.map(source => <li key={source.id}>
         <SourceLink href={source.url}>{source.title} <ExternalLink size={13} /></SourceLink>
         {source.metadata?.document_type === "pdf" && <p>PDF · {source.metadata.pages_examined} of {source.metadata.page_count} pages examined{source.metadata.extraction_truncated ? " · extraction limited" : ""}</p>}
-        <p>{source.domain} · Retrieved {readDate(source.retrieved_at)}{source.published_at ? ` · Published ${source.published_at.slice(0, 10)}` : ""}</p>
+        <p>{source.domain} · Retrieved {readDate(source.retrieved_at)}{source.published_at ? ` · Publisher-declared publication ${source.published_at.slice(0, 10)}` : ""}</p>
+        {source.metadata?.publication_provenance?.status === "conflicting" && <p>Conflicting publication dates; freshness unestablished.</p>}
+        {source.metadata?.publication_provenance?.status === "invalid_or_future" && <p>Invalid or future-dated publication metadata.</p>}
         {!!source.credibility?.signals.length && <p>Source signals (heuristic): {source.credibility.signals.join(" · ")}</p>}
         {source.independence_assessment?.possible_shared_origin && <p>Possible shared origin with another source; not counted as independent corroboration.</p>}
         {evidence.filter(row => row.source_id === source.id).map(row =>
