@@ -19,7 +19,7 @@ def restrict_resources():
     if sys.platform.startswith("linux"):
         import resource
 
-        memory = 384 * 1024 * 1024
+        memory = 512 * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
         resource.setrlimit(resource.RLIMIT_CPU, (8, 9))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -37,6 +37,8 @@ def parse(body):
     pages = []
     remaining = MAX_TOTAL_TEXT
     truncated = False
+    output_bytes = 4096  # Reserve metadata and JSON envelope space.
+    total_rows = 0
     with pdfplumber.open(io.BytesIO(body)) as pdf:
         if pdf.doc.encryption is not None or not pdf.doc.is_extractable:
             raise ValueError("Encrypted or extraction-restricted PDF")
@@ -66,11 +68,27 @@ def parse(body):
                             if len(row) > 12:
                                 truncated = True
                                 continue
+                            # Never cite a truncated cell as an observed number.
+                            if any(len(clean(cell, MAX_CELL + 1)) > MAX_CELL for cell in row):
+                                truncated = True
+                                continue
                             cells = [clean(cell, MAX_CELL) for cell in row]
-                            truncated |= any(len(clean(cell, MAX_CELL + 1)) > MAX_CELL for cell in row)
                             if any(cells):
+                                if total_rows >= 160:
+                                    truncated = True
+                                    continue
                                 tables.append({"table": table_number, "row": index, "cells": cells})
-                pages.append({"page": page.page_number, "text": text, "tables": tables})
+                                total_rows += 1
+                record = {"page": page.page_number, "text": text, "tables": tables}
+                size = len(json.dumps(record, ensure_ascii=True, separators=(",", ":")).encode("ascii")) + 1
+                if output_bytes + size > MAX_OUTPUT:
+                    record["tables"] = []
+                    truncated = True
+                    size = len(json.dumps(record, ensure_ascii=True, separators=(",", ":")).encode("ascii")) + 1
+                if output_bytes + size > MAX_OUTPUT:
+                    break
+                output_bytes += size
+                pages.append(record)
             finally:
                 page.close()
         metadata = pdf.metadata or {}
