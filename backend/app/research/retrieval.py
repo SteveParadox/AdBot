@@ -206,7 +206,7 @@ def extract(response, shopping):
 
 def product_fields(product, origin="json-ld"):
     result = {key: clean(product.get(key), 250) for key in
-              ("name", "model", "sku", "mpn", "gtin", "gtin13", "gtin14", "color", "size", "description")}
+              ("name", "model", "sku", "mpn", "gtin", "gtin13", "gtin14", "color", "size", "description", "category", "itemCondition")}
     result["origin"] = origin
     result["observations"] = product.get("_observations", {}) if origin == "dom" else {}
     brand = product.get("brand")
