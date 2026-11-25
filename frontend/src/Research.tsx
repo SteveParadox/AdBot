@@ -17,6 +17,8 @@ type Mode = keyof typeof MODES;
 type Source = {
   id: string; url: string; title: string; domain: string; published_at: string | null; retrieved_at: number;
   content_hash: string; query: string;
+  credibility?: { role_hint: string; signals: string[]; assessment: string };
+  independence_assessment?: { registrable_domain: string; possible_shared_origin: boolean; method: string };
   metadata?: { document_type?: string; page_count?: number; pages_examined?: number; extraction_truncated?: boolean; pages_with_text?: number[] };
 };
 type Evidence = { id: string; source_id: string; quote: string; location: string; retrieved_at: number; page?: number };
@@ -195,6 +197,8 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
         <SourceLink href={source.url}>{source.title} <ExternalLink size={13} /></SourceLink>
         {source.metadata?.document_type === "pdf" && <p>PDF · {source.metadata.pages_examined} of {source.metadata.page_count} pages examined{source.metadata.extraction_truncated ? " · extraction limited" : ""}</p>}
         <p>{source.domain} · Retrieved {readDate(source.retrieved_at)}{source.published_at ? ` · Published ${source.published_at.slice(0, 10)}` : ""}</p>
+        {!!source.credibility?.signals.length && <p>Source signals (heuristic): {source.credibility.signals.join(" · ")}</p>}
+        {source.independence_assessment?.possible_shared_origin && <p>Possible shared origin with another source; not counted as independent corroboration.</p>}
         {evidence.filter(row => row.source_id === source.id).map(row =>
           <figure key={row.id}><blockquote>{row.quote}</blockquote><figcaption>{row.location}{row.page && pdfPageURL(source, row.page) && <> · <SourceLink href={pdfPageURL(source, row.page)!}>Open page {row.page}</SourceLink></>}</figcaption></figure>)}
       </li>)}</ol>
