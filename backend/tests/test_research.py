@@ -878,3 +878,31 @@ async def test_dynamic_shopping_semantics_with_long_static_text(research, monkey
             assert doc.links == [{"url": "https://science.example.org/quantum/laptop",
                                   "label": "Quantum laptop specifications", "rel": ""}]
     assert stats["browser_render_attempts"] == 1
+
+
+async def test_conversation_memory_is_owner_scoped_and_retry_context_is_frozen(client, research, monkeypatch):
+    from app.research.runner import previous_turns
+
+    mock_network(monkeypatch, research)
+    first = client.post(API + "/query", json={"question": "Latest quantum processor research", "mode": "quick",
+                                             "freshness": "week"}).json()
+    await run_job(first["id"])
+    thread = first["conversation_id"]
+    follow = client.post(f"{API}/conversations/{thread}/messages",
+                         json={"question": "Explain that claim"}).json()
+    with Session() as session:
+        original = session.get(Job, follow["id"]).snapshot["research_context"]
+        owner = session.get(Job, first["id"]).owner
+        assert original["anchor_id"] == first["id"]
+        assert original["freshness"] == "week"
+        assert previous_turns(session, thread, owner)
+        assert previous_turns(session, thread, "different-owner") == []
+    assert client.post(f"{API}/conversations/{thread}/messages", headers=OTHER_AUTH,
+                       json={"question": "Explain that claim"}).status_code == 404
+    await run_job(follow["id"])
+    newer = client.post(f"{API}/conversations/{thread}/messages",
+                        json={"question": "New topic: calculate 2 + 2", "mode": "direct"}).json()
+    await run_job(newer["id"])
+    retry = client.post(f"{API}/tasks/{follow['id']}/retry").json()
+    with Session() as session:
+        assert session.get(Job, retry["id"]).snapshot["research_context"] == original
