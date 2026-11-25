@@ -98,7 +98,12 @@ def fingerprint(blocks):
     words = TOKEN.findall(text)[:8000]
     if len(words) < 80:
         return None
-    shingles = frozenset(tuple(words[i:i + 5]) for i in range(len(words) - 4))
+    # Deterministic bounded shingle sketches are also safe to checkpoint:
+    # no raw document text needs to be persisted for duplicate detection.
+    shingles = frozenset(sorted({
+        hashlib.sha256(" ".join(words[i:i + 5]).encode()).hexdigest()[:16]
+        for i in range(len(words) - 4)
+    })[:1024])
     if len(shingles) < 40:
         return None
     return shingles
