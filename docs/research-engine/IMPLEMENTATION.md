@@ -66,8 +66,7 @@ independent semantic guarantee of answer completeness.
 
 Quick Search and the other modes retain their existing planning and stopping
 behavior. Deep research plans persist at task completion, not as restartable
-per-round checkpoints. Long-form synthesis and broader evidence batching are
-separate follow-up work. The focused regression suite is
+per-round checkpoints. Long-form synthesis and broader evidence batching are described below. The focused regression suite is
 `python -m pytest -q tests/test_research_gaps.py` from the backend directory;
 execution on the full deployment and live providers remains pending.
 
@@ -144,3 +143,46 @@ does not add a live FX service, image loading, review-text sentiment analysis,
 general-purpose semantic product matching or guaranteed checkout pricing.
 The regression suite is `python -m pytest -q tests/test_research_shopping.py`
 from the backend directory. Runtime verification is pending.
+
+
+## Mode-specific verified answer synthesis
+
+Quick Search retains its single compact synthesis and verification pair.
+Deep Research can use up to three synthesis/verification batches; Technical,
+Fact Check and Shopping can use up to two. A profile bounds evidence rows per
+batch, quote length and claim counts. The per-batch claim ceiling also adapts
+to the configured model output token limit. At the default 800 output tokens,
+Deep can propose up to five claims per batch (15 total when all three batches
+fit); this is a ceiling, not a minimum or a performance guarantee.
+
+Evidence is prioritized by topic relevance and planned subquestion/product
+evidence IDs, interleaved across domain groups, and de-duplicated. Each batch
+is sized using the existing transport's actual serialized schema, prompt and
+payload cap, including a conservative verification envelope. Structured
+product observations are not cut into partial JSON. Shopping assessments
+are scoped to the exact evidence IDs offered in each batch.
+
+Every proposed claim is verified against the same batch of evidence actually
+presented to the model; deterministic verification never relies on omitted
+text for numerical corroboration. Accepted findings survive failure of a
+later batch. Exact duplicate claims are removed without automatically merging
+their citations. A deterministic reducer assembles a structured Deep report
+with findings, implications, recommendations, source disagreements and
+explicitly labeled excerpts when appropriate. No final free-form model
+rewrite can introduce new uncited claims. Model-reported limitations and
+unprocessed evidence cause partial quality, and budget exhaustion is
+disclosed. Existing provider quotas and durable task call/token accounting
+remain authoritative; search time reserves more room for synthesis in
+expanded modes.
+
+The completed result exposes synthesis batch and evidence counters in
+metrics, along with proposed/verified claims and citation coverage. Coverage
+is the proportion of proposals accepted before duplicate removal, not the
+fraction of the user's question answered. Independent verification is
+model-based; conflicting claims across distinct batches may still require
+additional research. This is bounded extractive/claim-based report assembly,
+not unlimited prose generation or a global semantic contradiction proof.
+
+No new dependency or migration is required. Focused regression tests:
+`python -m pytest -q tests/test_research_synthesis.py` from the backend
+directory. Test execution and live-provider/model verification remain pending.
