@@ -109,7 +109,11 @@ async def test_diagnostic_reports_schema_path_without_raw_response_or_secret(mon
     assert "secret-fixture-key" not in json.dumps(events)
 
 
-async def test_classification_response_fails_over_after_invalid_schema(monkeypatch):
+@pytest.mark.parametrize("bad_record", [
+    {"id": 1, "classification": "match", "evidence": 2},
+    {"id": 2, "classification": "match", "evidence": 1},
+])
+async def test_classification_response_fails_over_after_invalid_references(monkeypatch, bad_record):
     cfg = settings()
     for name, value in {"ai_provider": "groq", "ai_provider_order": "groq,openrouter",
                         "groq_base_url": "https://primary.test/v1", "openrouter_base_url": "https://secondary.test/v1",
@@ -117,7 +121,7 @@ async def test_classification_response_fails_over_after_invalid_schema(monkeypat
         monkeypatch.setattr(cfg, name, value)
     original = httpx.AsyncClient
     providers = []
-    answer = {"records": [{"id": "one", "classification": "match", "quote": "Answers questions in a conversation."}]}
+    answer = {"records": [{"id": 1, "classification": "match", "evidence": 1}]}
 
     def respond(request):
         host = request.url.host
@@ -125,11 +129,12 @@ async def test_classification_response_fails_over_after_invalid_schema(monkeypat
         body = json.loads(request.content)
         assert json.loads(body["messages"][-1]["content"])["purpose"] == "classify"
         assert body["response_format"]["json_schema"]["name"] == "AssessmentBatch"
-        value = {"records": [{"id": "one", "classification": "invalid"}]} if host == "primary.test" else answer
+        value = {"records": [bad_record]} if host == "primary.test" else answer
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(value)}}]})
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
-    result = await ModelClient().request("classify", {"records": []}, AssessmentBatch, lambda *args: (1, 1))
+    payload = {"records": [{"id": 1, "excerpts": ["Answers questions in a conversation."]}]}
+    result = await ModelClient().request("classify", payload, AssessmentBatch, lambda *args: (1, 1))
     assert result.model_dump() == answer
     assert providers == ["primary.test", "secondary.test"]
 

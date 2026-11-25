@@ -365,33 +365,32 @@ class AgentRunner(Runner):
         state = directory.state
         if config.ai_provider == "disabled" or not config.agent_classification_max_calls:
             return
-        candidates = [row for row in state["records"].values()
-                      if row["classification"] == "unknown" and not row.get("classification_conflict")]
-        # Leave prompt room for the response schema and agent instructions even
-        # when an operator configures a very small request window.
-        batch_size = min(
-            config.agent_classification_batch_rows,
-            max(1, (config.ai_max_request_chars - 3500) // 1200),
-            max(1, (config.ai_max_output_tokens - 80) // 150),
-        )
-        for offset in range(0, len(candidates), batch_size):
-            if state.get("classification_calls", 0) >= config.agent_classification_max_calls or self.deadline - time.time() <= 8:
-                break
-            rows = candidates[offset:offset + batch_size]
-            state["classification_calls"] = state.get("classification_calls", 0) + 1
-            try:
-                assessments = await self.ask_model("classify", assessment_payload(directory.entity, rows),
-                                                   AssessmentBatch, wait_for_provider=False)
-            except (ModelError, ModelBudgetExceeded):
-                break
-            grounded = [dict(row) for row in rows]
-            apply_assessments(grounded, assessments)
-            for original, candidate in zip(rows, grounded):
-                growth = directory.record_size(candidate) - directory.record_size(original)
-                if state["record_bytes"] + growth <= directory.max_bytes:
-                    original.update(candidate)
-                    state["record_bytes"] += growth
-            await self.checkpoint(controller)
+        for expanded in (False, True):
+            candidates = [row for row in state["records"].values()
+                          if row["classification"] == "unknown" and not row.get("classification_conflict")]
+            batch_size = min(
+                config.agent_classification_batch_rows,
+                max(1, (config.ai_max_request_chars - 3000) // (1500 if expanded else 950)),
+                max(1, (config.ai_max_output_tokens - 96) // 75),
+            )
+            for offset in range(0, len(candidates), batch_size):
+                if state.get("classification_calls", 0) >= config.agent_classification_max_calls or self.deadline - time.time() <= 8:
+                    return
+                rows = candidates[offset:offset + batch_size]
+                payload = assessment_payload(directory.entity, rows, expanded=expanded)
+                state["classification_calls"] = state.get("classification_calls", 0) + 1
+                try:
+                    assessments = await self.ask_model("classify", payload, AssessmentBatch, wait_for_provider=False)
+                except (ModelError, ModelBudgetExceeded):
+                    return
+                grounded = [dict(row) for row in rows]
+                apply_assessments(grounded, payload, assessments)
+                for original, candidate in zip(rows, grounded, strict=True):
+                    growth = directory.record_size(candidate) - directory.record_size(original)
+                    if state["record_bytes"] + growth <= directory.max_bytes:
+                        original.update(candidate)
+                        state["record_bytes"] += growth
+                await self.checkpoint(controller)
 
     async def execute_page(self, page, context):
         controller = Controller(self, context, page, self.memory)

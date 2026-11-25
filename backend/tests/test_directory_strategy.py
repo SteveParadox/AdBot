@@ -1,6 +1,6 @@
 ﻿import pytest
 
-from app.agent.classification import AssessmentBatch, apply_assessments
+from app.agent.classification import AssessmentBatch, apply_assessments, assessment_payload
 from app.agent.context import retrieve_evidence
 from app.agent.directory import DirectoryCollection, directory_intent, directory_result
 from app.agent.memory import semantic_action_key
@@ -72,15 +72,55 @@ def test_inferred_inventory_keeps_literal_scope():
 
 def test_semantic_classification_requires_exact_quotes_and_ids():
     quote = "Answers follow-up questions in a conversation."
-    rows = [{"id": "one", "quote": quote, "classification": "unknown"},
-            {"id": "two", "quote": "Unknown product type.", "classification": "unknown"}]
-    answer = {"id": "one", "quote": quote, "classification": "match"}
+    rows = [{"name": "One", "category": "AI", "quote": quote, "classification": "unknown"},
+            {"name": "Two", "category": "AI", "quote": "Unknown product type.", "classification": "unknown"}]
+    payload = assessment_payload("ai chatbots", rows)
+    answer = {"id": 1, "evidence": 1, "classification": "match"}
     invalid = AssessmentBatch(records=[answer, answer])
-    assert apply_assessments(rows, invalid) == 0
-    grounded = AssessmentBatch(records=[answer, {**answer, "id": "two"}])
-    assert apply_assessments(rows, grounded) == 1
+    with pytest.raises(ValueError, match="record IDs"):
+        apply_assessments(rows, payload, invalid)
+    invalid = AssessmentBatch(records=[answer, {**answer, "id": 2, "evidence": 3}])
+    with pytest.raises(ValueError, match="observed excerpt"):
+        apply_assessments(rows, payload, invalid)
+    grounded = AssessmentBatch(records=[answer, {"id": 2, "classification": "unknown", "evidence": 0}])
+    assert apply_assessments(rows, payload, grounded) == 1
     assert rows[0]["classification_quote"] == quote
     assert rows[1]["classification"] == "unknown"
+
+
+def test_classification_expands_evidence_without_inventing_text():
+    first = "Tool Alpha automates customer interactions."
+    last = "Users can ask follow-up questions and receive contextual answers."
+    candidate = {**row("Alpha", "AI"), "description": first, "quote": f"{first} {last}"}
+    assert assessment_payload("ai chatbots", [candidate])["records"][0]["excerpts"] == [first]
+    assert assessment_payload("ai chatbots", [candidate], expanded=True)["records"][0]["excerpts"] == [first, last]
+
+
+@pytest.mark.parametrize("quote", [
+    "Bot is a live streaming platform with overlays, chat tools and alerts.",
+    "Bot is a code editor built around AI workflows.",
+    "Bot integrates an AI assistant into its analytics dashboard.",
+    "Built for research and editing with fewer mistakes.",
+])
+def test_chatbot_match_requires_more_than_an_exact_quote(quote):
+    rows = [{**row("Bot", "AI"), "classification": "unknown", "description": quote, "quote": quote}]
+    payload = assessment_payload("ai chatbots", rows)
+    result = AssessmentBatch(records=[{"id": 1, "classification": "match", "evidence": 1}])
+    assert apply_assessments(rows, payload, result) == 0
+    assert rows[0]["classification"] == "unknown"
+
+
+@pytest.mark.parametrize("description", [
+    "Bot is an AI chatbot builder for sales teams.",
+    "Unlike Product X, which is an AI chatbot, Bot builds dashboards.",
+])
+def test_chatbot_mention_cannot_prove_the_product_is_a_chatbot(description):
+    state = {}
+    strategy = DirectoryCollection("ai chatbots", state)
+    candidate = {**row("Bot", "AI"), "description": description, "quote": description}
+    _, reason = strategy.advance(observation([candidate]), 1, Policy())
+    assert "could not be classified" in reason
+    assert not directory_result(state, reason)["claims"]
 
 
 def test_collection_budgets_return_partial_and_keep_observed_rows():

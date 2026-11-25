@@ -17,6 +17,17 @@ def home():
     return '<main><h1>Reference website</h1><a href="/execution-fixture/tools">Tools</a></main>'
 
 
+@router.get("/execution-fixture/rankings", response_class=HTMLResponse)
+def rankings():
+    return (
+        '<nav><a href="/execution-fixture/tools">Tools</a><a href="/execution-fixture/articles">Articles</a></nav>'
+        '<main><h1>Best AI tool lists</h1><p>Showing 2 of 4 matching rankings.</p>'
+        '<ul><li><a href="/execution-fixture/rankings/one">Best AI chatbots</a><p>Ranked products for teams.</p></li>'
+        '<li><a href="/execution-fixture/rankings/two">Best AI assistants</a><p>Ranked products for personal use.</p></li></ul>'
+        '<a rel="next" href="/execution-fixture/rankings?page=2">Next</a></main>'
+    )
+
+
 @router.get("/execution-fixture/tools", response_class=HTMLResponse)
 def tools(page: Annotated[int, Query(ge=1, le=8)] = 1,
           case: Literal["normal", "cycle", "unknown", "mismatch", "recovery"] = "normal"):

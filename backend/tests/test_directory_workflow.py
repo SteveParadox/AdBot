@@ -11,14 +11,14 @@ from app.db import AgentStep, transaction
 from app.jobs import claim
 from app.worker import execute
 from test_browser import fixture_server  # noqa: F401
-from testsupport.directory_fixture import CONVERSATION_DESCRIPTION, EXPECTED, RECORD_COUNT, TRANSCRIPTION_DESCRIPTION, router
+from testsupport.directory_fixture import CONVERSATION_DESCRIPTION, EXPECTED, RECORD_COUNT, router
 
 fixture.app.include_router(router)
 
 
 @pytest.mark.browser
 @pytest.mark.parametrize("case,steps,completed", [
-    ("normal", 20, True), ("cycle", 20, False), ("normal", 3, False), ("recovery", 20, True),
+    ("normal", 20, True), ("cycle", 20, False), ("normal", 3, False), ("recovery", 20, True), ("rankings", 20, True),
 ])
 async def test_directory_workflow(client, target, fixture_server, monkeypatch, case, steps, completed):  # noqa: F811
     from app.agent.model import ModelClient
@@ -38,6 +38,8 @@ async def test_directory_workflow(client, target, fixture_server, monkeypatch, c
         url += "/tools?case=cycle"
     elif case == "recovery":
         url += "/recovery"
+    elif case == "rankings":
+        url += "/rankings"
     data.update(base_url=url, authorized=True)
     data["configuration"] = {**data["configuration"], "delay_seconds": 0.1, "max_pages": 20,
                              "max_duration_seconds": 180, "screenshots": False}
@@ -69,6 +71,10 @@ async def test_directory_workflow(client, target, fixture_server, monkeypatch, c
         trace = session.scalars(select(AgentStep).where(AgentStep.job_id == identifier)).all()
         assert all(step.observation["observation_metrics"]["included"] <= 24 for step in trace)
         assert not any("All tags" in step.decision.get("reason", "") for step in trace)
+        if case == "rankings":
+            first = min(trace, key=lambda step: step.number)
+            assert first.observation["directory"]["kind"] == "rankings"
+            assert first.decision["url"].endswith("/execution-fixture/tools")
         max_observation = max(step.observation["observation_metrics"]["characters"] for step in trace)
         phase_ms = Counter()
         for step in trace:
@@ -115,7 +121,7 @@ async def test_unlandmarked_extraction(client, target, fixture_server, monkeypat
         assert request_kind == "classify" and len(payload["records"]) == 2
         return AssessmentBatch(records=[
             {"id": row["id"], "classification": "match" if row["name"] == "Ask" else "excluded",
-             "quote": CONVERSATION_DESCRIPTION if row["name"] == "Ask" else TRANSCRIPTION_DESCRIPTION}
+             "evidence": 1}
             for row in payload["records"]
         ])
 

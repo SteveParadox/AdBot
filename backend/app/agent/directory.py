@@ -5,6 +5,7 @@ import json
 import re
 from urllib.parse import parse_qsl, urlsplit
 
+from .classification import primary_chatbot_role
 from .contracts import Decision, Target
 from .routing import directory_intent  # noqa: F401
 
@@ -13,6 +14,8 @@ _NEGATIVE_TYPES = {"image generator", "video editor", "audio editor", "seo tool"
                    "analytics tool", "transcription tool", "design tool"}
 _FORWARD = re.compile(r"(?:next(?: page| results| products| tools| articles)?(?:[ \u2192\u203a\u00bb]+)?|(?:load|show) more(?: results| tools| products| articles| entries)?)", re.I)
 _PAGE = re.compile(r"(?:page\s+)?(\d+)", re.I)
+_PRODUCT_ENTITIES = {"ai chatbots", "ai tools", "products"}
+_NON_PRODUCT_KINDS = {"articles", "rankings", "guides", "collections", "reviews"}
 
 
 def pagination_element(element):
@@ -30,7 +33,7 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
  const visible = e => !e.closest('[hidden],[inert],[aria-hidden=true],form,dialog,[role=dialog],nav,aside,footer') &&
    e.getClientRects().length && ['visible',''].includes(getComputedStyle(e).visibility);
  const clean = s => (s || '').replace(/\s+/g, ' ').trim();
- const totalPattern = /^(?:showing\s+(?:\d+\s*[-\u2013]\s*)?\d+\s+(?:of|out of)\s+|total:\s*)?([\d,]+)\s+(?:matching\s+)?(tools|products|results|entries|articles|items|rows)(?:\s+found)?[.]?$/i;
+ const totalPattern = /^(?:showing\s+(?:\d+\s*[-\u2013]\s*)?\d+\s+(?:of|out of)\s+|total:\s*)?([\d,]+)\s+(?:matching\s+)?(tools|products|results|entries|articles|items|rows|rankings|guides|collections|reviews)(?:\s+found)?[.]?$/i;
  const totals = [...scope.querySelectorAll('p,output,[role=status],[aria-live],[data-total-results]')].slice(0, 500)
    .filter(e=>visible(e) && !e.closest('article,[role=listitem],li,tr,[itemscope]'))
    .map(e=>totalPattern.exec(clean(e.innerText).slice(0, 160))).filter(Boolean);
@@ -52,7 +55,9 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
  const enabled = e=>!e.matches(':disabled,[aria-disabled=true]') && !e.closest('[aria-disabled=true]');
  const busy = !!scope.querySelector('[aria-busy=true]');
  const heading = clean(scope.querySelector('h1,[role=heading]')?.textContent);
- const kind = total?.[2]?.toLowerCase() || (/\b(?:tools|products|articles)\b/i.exec(heading)?.[0]?.toLowerCase() || null);
+ const kind = total?.[2]?.toLowerCase() ||
+   (/\b(?:rankings|guides|collections|reviews|articles)\b/i.exec(heading)?.[0]?.toLowerCase()) ||
+   (/\b(?:tools|products)\b/i.exec(heading)?.[0]?.toLowerCase() || null);
  const availableForward = new Set([...forward,...numbered].filter(enabled)).size;
  if (table) {
    const tables = [...scope.querySelectorAll('table')].filter(visible);
@@ -137,18 +142,19 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
 
 def _classify(entity, row):
     if entity.startswith("semantic:"):
-        return "unknown"
+        return "unknown", None
     if not entity.startswith("ai chatbot"):
-        return "match"
+        return "match", None
     category = row["category"].strip().casefold()
     description = row["description"]
-    if _CHATBOT.fullmatch(category) or re.search(
-        r"\bis\s+(?:an?\s+)?(?:ai(?:-powered)?\s+)?(?:chatbot|conversational agent)\b", description, re.I
-    ):
-        return "match"
+    primary, quote = primary_chatbot_role(row)
+    if primary != "unknown":
+        return primary, quote
+    if _CHATBOT.fullmatch(category):
+        return "match", None
     if category in _NEGATIVE_TYPES and not _CHATBOT.search(description):
-        return "excluded"
-    return "unknown"
+        return "excluded", None
+    return "unknown", None
 
 
 def _action(action, reason, **kwargs):
@@ -156,9 +162,10 @@ def _action(action, reason, **kwargs):
                     confidence=1, expected_result="Advance the directory collection", **kwargs)
 
 
-def _directory_link(element):
+def directory_link(element, entity=None):
     name = element.get("name", "").casefold()
-    return re.match(r"^(?:(?:browse|view|explore)\s+(?:all\s+)?)?(?:ai\s+)?(?:tools|products|directory|articles|tables)(?:$|\s+browse\b|\s+directory\b)", name)
+    match = re.match(r"^(?:(?:browse|view|explore)\s+(?:all\s+)?)?(?:ai\s+)?(tools|products|directory|articles|tables)(?:$|\s+browse\b|\s+directory\b)", name)
+    return bool(match and (entity not in _PRODUCT_ENTITIES or match[1] in {"tools", "products", "directory"}))
 
 
 def _collection_path(path):
@@ -186,13 +193,15 @@ class DirectoryCollection:
         batch = observation.get("directory")
         if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
             return None, "A dialog obstructs the directory" if state["pages"] else None
-        if not batch:
+        wrong_kind = self.entity in _PRODUCT_ENTITIES and batch and batch.get("kind") in _NON_PRODUCT_KINDS
+        if not batch or wrong_kind:
             if state["pages"]:
-                return None, "Directory records disappeared before coverage could be verified"
+                return None, ("The visible collection changed to a different record type" if wrong_kind else
+                              "Directory records disappeared before coverage could be verified")
             links = {}
             for element in controls:
                 href = element.get("href")
-                if element.get("actionable") and element.get("role") == "link" and href and _directory_link(element):
+                if element.get("actionable") and element.get("role") == "link" and href and directory_link(element, self.entity):
                     try:
                         href = policy.check(href)
                     except ValueError:
@@ -240,13 +249,15 @@ class DirectoryCollection:
                 if batch.get("unpaginated"):
                     key += f":{row['row_index']}"
             record_ids.add(key)
-            observed = _classify(self.entity, row)
+            observed, classification_quote = _classify(self.entity, row)
             entry = {key: row[key] for key in ("name", "category", "description", "quote")}
             if self.entity == "table rows":
                 entry.update(cells=row["cells"], headers=row["headers"])
             entry.update({"source_url": source, "observed_url": url, "classification": observed,
                      "method": "visible_directory", "observed_at": datetime.now(timezone.utc).isoformat(),
                      "step_id": step_id, "id": "directory-" + hashlib.sha256(key.encode()).hexdigest()[:24]})
+            if classification_quote:
+                entry["classification_quote"] = classification_quote
             prior = state["records"].get(key)
             if prior:
                 if prior["method"] == "semantic_directory":
@@ -255,6 +266,7 @@ class DirectoryCollection:
                         prior.pop("classification_quote", None)
                 elif prior["classification"] != observed:
                     prior.update(classification="unknown", classification_conflict=True)
+                    prior.pop("classification_quote", None)
             elif not prior:
                 size = self.record_size(entry)
                 if len(state["records"]) >= self.max_rows or state["record_bytes"] + size > self.max_bytes:

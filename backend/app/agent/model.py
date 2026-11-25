@@ -605,6 +605,9 @@ class ModelClient:
                         message = data["message"]["content"] if native else data["choices"][0]["message"]["content"]
                         # Parse JSON only; never repair fences, invent fields or evaluate content.
                         result = validate_response(message, schema)
+                        if kind == "classify":
+                            from .classification import validate_assessments
+                            validate_assessments(payload, result)
                         self.models_used.add(model)
                         return result
                     except ModelDeadlineExceeded:

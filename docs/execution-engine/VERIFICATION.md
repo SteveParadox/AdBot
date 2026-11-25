@@ -1,5 +1,11 @@
 # Verification and benchmark
 
+## Live acceptance from the original XavKit start page
+
+The merged PR #16 baseline ran the original objective, "list all ai chatbots", from the public [XavKit rankings page](https://xavkit.com/best). It treated 26 ranking entries as products, used 6,523 tokens, and failed verification. The follow-up skips recognized ranking inventories and follows the observed Tools link. Numbered excerpts keep classification responses compact and allow the provider chain to reject invalid record or evidence references. The acceptance check for chatbot matches also rejects citations that describe features in streaming or editing products.
+
+The final isolated run used the normal API, worker, local Chromium, configured cloud providers, and the default 60,000-token budget. It followed the product directory through all eight batches, recovered from one repeated batch, and finished with status `completed` and verification `complete: true` in 37.14 seconds. It classified all 119 advertised records, returned five sources for Kimi, Perplexity, ChatGPT, Claude and Gemini, and left 44,053 tokens available. The reported token usage was 12,553 input and 3,394 output tokens across 10 model calls. The matches represent products presented as assistants or answer engines in the visible directory. The source audit excluded streaming or editing products whose listing mentioned chat as a feature.
+
 ## Follow-up verification on November 25, 2026
 
 The normal Chromium fixture accepted the paraphrase "Give me a comprehensive list of conversational AI platforms." It collected 119 unique records, produced 23 cited matches, and completed in 10.14 seconds with zero model calls or tokens. The stalled Next fixture revisited the first batch, recovered through an observed numbered page, and met the same coverage and evidence checks in 6.38 seconds. The unrecoverable cycle fixture retained 105 unique records and 21 cited matches as a partial result.
