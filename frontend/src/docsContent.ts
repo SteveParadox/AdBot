@@ -3,6 +3,26 @@ export type DocPage = { slug: string; title: string; group: string; description:
 
 export const docs: DocPage[] = [
   {
+    slug: "web-research",
+    title: "Web Research",
+    group: "Workspace tools",
+    description: "Ask a question, compare products and inspect the public sources behind the answer.",
+    sections: [
+      {id: "start", title: "Start a research conversation", paragraphs: [
+        "Open Web Research in the dashboard and enter a question. AdBot discovers relevant public sources using the search providers your operator configured."
+      ], steps: ["Choose Auto for routing, or choose a specific research mode.", "Use the country and freshness controls to narrow the search.", "Expand Sources and evidence to inspect the quotations, source URLs and retrieval times."]},
+      {id: "modes", title: "Choose a mode", paragraphs: [
+        "Direct Answer uses the configured model without web retrieval. Quick Search limits search and page retrieval. Deep Research runs additional bounded rounds. Shopping extracts supported product offers. Fact Check looks for independent sources. Technical Research prioritizes technical references. Website Agent opens the existing authorized browser workspace."
+      ], steps: []},
+      {id: "quality", title: "Interpret results", paragraphs: [
+        "Inline numbers link to supporting sources. Partial results may contain retrieved excerpts, missing publication dates or sources that could not be accessed. Product prices and availability reflect the retailer data recorded at the retrieval time. Country and currency hints are distinct from a retailer's stated shipping destination."
+      ], steps: []},
+      {id: "continue", title: "Continue, stop or retry", paragraphs: [
+        "Select a saved conversation to continue it. Use Stop to cancel active work, or Retry to repeat a cancelled, failed or partial turn. AdBot rechecks time-sensitive sources when their cache expires."
+      ], steps: []}
+    ]
+  },
+  {
     "slug": "introduction",
     "title": "Welcome to AdBot",
     "group": "Start here",
