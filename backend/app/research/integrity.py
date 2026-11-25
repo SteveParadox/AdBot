@@ -3,6 +3,7 @@
 A recent publication is not proof that the events it describes are recent.
 All date observations are publisher declarations, not independent validation.
 """
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -50,12 +51,14 @@ def parse_date(value, now=None):
     if instant > now:
         return None
     # A date-only or timezone-free declaration cannot prove hour-level timing.
-    return value if len(value) == 10 else instant.isoformat()
+    return value if len(value) == 10 else instant.date().isoformat() if datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None else instant.isoformat()
 
 
 def publication_date(observations, now=None):
     """Resolve explicit date declarations; conflict means no accepted date."""
     valid = [(origin, parsed) for origin, value in observations if (parsed := parse_date(value, now))]
+    if observations and not valid:
+        return None, {"status": "invalid_or_future", "observations": []}
     days = {datetime.fromisoformat(date).date() for _, date in valid}
     if len(days) > 1:
         return None, {"status": "conflicting", "observations": valid[:8]}
@@ -147,5 +150,38 @@ def numerical_support(claim, quotes):
     expected = quantities(claim)
     observed = set()
     for quote in quotes:
-        observed.update(quantities(quote))
+        # Structured evidence is parsed, not treated as arbitrary JSON
+        # punctuation. Bind retailer price to its declared currency.
+        try:
+            data = json.loads(quote) if quote.startswith("{") else None
+        except (ValueError, RecursionError):
+            data = None
+        if isinstance(data, dict):
+            offer = data.get("offer")
+            if isinstance(offer, dict):
+                price, currency = offer.get("price"), offer.get("priceCurrency")
+                if isinstance(price, str) and isinstance(currency, str) and currency:
+                    observed.update(quantities(currency + " " + price))
+                data = {**data, "offer": {k: v for k, v in offer.items()
+                                           if k not in {"price", "priceCurrency"}}}
+            stack = [data]
+            while stack:
+                value = stack.pop()
+                if isinstance(value, dict):
+                    stack.extend(value.values())
+                elif isinstance(value, list):
+                    stack.extend(value)
+                elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                    observed.update(quantities(str(value)))
+        else:
+            observed.update(quantities(quote))
     return expected <= observed
+
+def quoted_support(claim, quotes):
+    # Require literal support for explicitly quoted multiword phrases;
+    # single-word emphasis and apostrophes are not treated as quotations.
+    normalized = [" ".join(quote.casefold().split()) for quote in quotes]
+    phrases = re.findall(r'["“]([^"”\n]{3,240})["”]', claim)
+    return all(any(" ".join(phrase.casefold().split()) in quote for quote in normalized)
+               for phrase in phrases if len(phrase.split()) > 1)
+
