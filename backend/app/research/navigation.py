@@ -17,9 +17,10 @@ UNSAFE = re.compile(
 
 
 def safe_link(base, href, label, rel=""):
-    if not isinstance(href, str) or not isinstance(label, str) or not href or not label:
+    if not isinstance(href, str) or not isinstance(label, str) or not href or not label.strip():
         return None
-    if len(href) > 1000 or UNSAFE.search(label) or UNSAFE.search(rel):
+    if (len(href) > 1000 or any(ord(char) < 32 for char in href) or "\\" in href
+            or UNSAFE.search(label) or UNSAFE.search(rel)):
         return None
     if href.startswith("#") or "nofollow" in rel.casefold().split():
         return None
@@ -28,11 +29,14 @@ def safe_link(base, href, label, rel=""):
         origin, target = urlsplit(base), urlsplit(url)
         if (origin.scheme, origin.netloc) != (target.scheme, target.netloc):
             return None
-        if UNSAFE.search(unquote(target.path)) or canonical_key(url) == canonical_key(base):
+        decoded = unquote(target.path)
+        if '%' in decoded or '\\' in decoded or UNSAFE.search(decoded) or canonical_key(url) == canonical_key(base):
             return None
         # Only explicit numeric pagination is allowed on discovered links.
-        if target.query and not all(k in {"page", "p"} and re.fullmatch(r"[1-9]\d{0,2}", v)
-                                    for k, v in parse_qsl(target.query, keep_blank_values=True)):
+        params = parse_qsl(target.query, keep_blank_values=True)
+        if target.query and (len(params) != 1 or not all(
+            k in {"page", "p"} and re.fullmatch(r"[1-9]\d{0,2}", v) for k, v in params
+        )):
             return None
         return {"url": canonical_key(url), "label": " ".join(label.split())[:200], "rel": rel[:100]}
     except (ValueError, TypeError):
