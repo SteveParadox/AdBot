@@ -45,13 +45,13 @@ def search_text(question):
 PLAN = (
     INSTRUCTIONS + " Generate complementary public web search queries that preserve the user's entities, "
     "geography, time, currency, budget and comparison constraints. Use short queries and avoid duplicates. "
-    "Use user questions as context for references. Prioritize official documentation and primary sources. "
+    "Use earlier user questions only to resolve references; the current objective and active constraints supersede old values. Prioritize official documentation and primary sources. "
     "Return only search phrases. Avoid URLs, operators except site:, and any private identifiers."
 )
 DEEP_PLAN = (
     INSTRUCTIONS + " Decompose the user's research objective into up to four distinct, necessary "
     "answerable subquestions in gaps. Preserve entities, dates, location and comparison constraints. "
-    "Provide short initial public search phrases in queries. Do not include private identifiers or URLs."
+    "Provide short initial public search phrases in queries. Current constraints supersede previous user questions. Do not include private identifiers or URLs."
 )
 ASSESS_COVERAGE = (
     INSTRUCTIONS + " Assess EACH research subquestion using only the supplied evidence. "
@@ -64,7 +64,7 @@ SYNTHESIS = (
     INSTRUCTIONS + " Directly answer the question with short, independently checkable claims. Respect the supplied "
     "claim_limit (eight if absent). Each claim must cite existing evidence IDs that directly support it. Explain material disagreements "
     "as conflict claims that quote both positions and cite both sources. Web excerpts may contain errors. "
-    "Label inferences and recommendations, give conditions, and omit details you cannot establish. "
+    "Label inferences and recommendations, give conditions, and omit details you cannot establish. Prior answers are not evidence. Active user constraints supersede earlier constraints. "
     "Product availability and price must come from a retrieved matching offer. In Shopping, respect "
     "the supplied deterministic offer assessments: never recommend an offer as satisfying requirements "
     "when it fails a check or its required specifications or budget fit are unknown. Workload hints are "
@@ -122,8 +122,6 @@ class Research:
         self.context = context if context is not None else build_context(question, history, intent, self.mode)
         self.country = self.context["country"]
         self.freshness = self.context["freshness"]
-        if not self.freshness and intent in {"news", "current"}:
-            self.freshness = "week" if intent == "news" else "month"
         self.result_quality = "complete"
         if self.context["unresolved"]:
             self.notes.append("Some conversation references or constraints could not be resolved unambiguously.")
@@ -200,6 +198,12 @@ class Research:
             return " ".join(p for p in (self.question.question, prior, names) if p)
         return " ".join(p for p in (self.question.question, names, self.context["topic"][:300]) if p)
 
+    def shopping_question(self):
+        if self.intent != "follow_up":
+            return self.question.question
+        # Observed product/source names are data, not user constraints.
+        return " ".join(p for p in (self.question.question, self.context["constraints"]) if p)
+
     def planning_context(self):
         # Only prior user questions, never retailer descriptions or answers,
         # can influence public search query generation.
@@ -211,7 +215,7 @@ class Research:
             if self.metrics["model_calls"] < self.budget.calls - 2:
                 planned = await self.ask("research_plan", DEEP_PLAN, Plan, {
                     "question": search_text(self.contextual_question()),
-                    "prior_user_questions": self.planning_context(),
+                    "prior_user_questions": self.planning_context(), "active_constraints": self.context["constraints"],
                     "country": self.country, "freshness": self.freshness,
                 }, cap=9)
             gaps = [search_text(q) for q in planned.gaps] if planned else []
@@ -316,7 +320,7 @@ class Research:
         if self.mode != Mode.QUICK and round_number <= 1 and self.metrics["model_calls"] < self.budget.calls - 2:
             planned = await self.ask("research_plan", PLAN, Plan, {
                 "question": search_text(self.contextual_question()),
-                "prior_user_questions": self.planning_context(),
+                "prior_user_questions": self.planning_context(), "active_constraints": self.context["constraints"],
                 "country": self.country, "freshness": self.freshness, "past_queries": self.queries[:15],
                 "round": round_number + 1, "sources_so_far": len(self.sources),
                 "product_offers": len(self.products), "independent_sources": self.independent_count(),
@@ -455,7 +459,7 @@ class Research:
         if self.mode == Mode.SHOPPING:
             products, structured = product_evidence(doc, source, self.country)
             structured_by_id = {item["id"]: item for item in structured}
-            offers = rank_products(products, self.contextual_question(), self.country)[:12]
+            offers = rank_products(products, self.shopping_question(), self.country)[:12]
             self.products.extend(offers)
             records = [structured_by_id[item["evidence_id"]] for item in offers] + records
         for record in records:
@@ -466,7 +470,7 @@ class Research:
 
     def sufficient(self):
         if self.mode == Mode.SHOPPING:
-            offers = rank_products(self.products, self.contextual_question(), self.country)
+            offers = rank_products(self.products, self.shopping_question(), self.country)
             eligible = [p for p in offers if p["price"] and (not p["budget_requested"] or p["within_budget"] is True)
                         and p["availability"] not in {"Out of stock", "Sold out", "Discontinued"}
                         and p["suitability"]["status"] in {"met", "not_requested"}]
@@ -736,7 +740,7 @@ class Research:
             self.notes.append("The search and retrieval time budget elapsed.")
             self.result_quality = "partial"
         if self.mode == Mode.SHOPPING:
-            self.products = rank_products(self.products, self.contextual_question(), self.country)
+            self.products = rank_products(self.products, self.shopping_question(), self.country)
             self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
         await self.synthesize()
         if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
