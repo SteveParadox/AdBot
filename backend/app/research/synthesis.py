@@ -52,6 +52,7 @@ def evidence_rows(records, sources, objective, preferred, quote_chars):
         groups.setdefault(source, []).append({
             "id": record["id"], "source": source, "quote": quote,
             "date": record["published_at"], "kind": record["kind"],
+            **({"page": record["page"]} if record.get("page") else {}),
         })
     # Interleave domains so the first batch does not consist of a single site.
     return [rows[i] for i in range(max((len(v) for v in groups.values()), default=0))
