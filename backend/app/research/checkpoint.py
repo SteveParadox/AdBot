@@ -12,7 +12,7 @@ from .policy import PublicPolicy
 from .ranking import Independence
 from .shared_cache import digest
 
-VERSION = 1
+VERSION = 2
 MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024
 COUNTERS = ("provider_requests", "provider_failures", "provider_ms", "provider_rate_limits")
 
