@@ -4,6 +4,7 @@ Redis is an optional acceleration tier, not an authoritative task store.
 Fixed hashed slots bound per-conversation cardinality and permit deletion
 without KEYS/SCAN. Collisions are ordinary misses.
 """
+import asyncio
 import hashlib
 import json
 import time
@@ -55,7 +56,8 @@ class SharedCache:
     async def __aexit__(self, *exc):
         if self.client:
             try:
-                await self.client.aclose()
+                async with asyncio.timeout(1):
+                    await self.client.aclose()
             except (RedisError, OSError, TimeoutError):
                 self.error()
 
@@ -71,7 +73,8 @@ class SharedCache:
             return None
         address, fingerprint = self.address(kind, key)
         try:
-            raw = await self.client.get(address)
+            async with asyncio.timeout(1):
+                raw = await self.client.get(address)
             if not raw or len(raw) > MAX_BYTES:
                 return None
             record = json.loads(raw)
@@ -94,7 +97,8 @@ class SharedCache:
             raw = json.dumps({"key": fingerprint, "stored": time.time(), "value": value},
                              ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode()
             if len(raw) <= MAX_BYTES:
-                await self.client.set(address, raw, ex=max(1, min(3600, int(ttl))))
+                async with asyncio.timeout(1):
+                    await self.client.set(address, raw, ex=max(1, min(3600, int(ttl))))
         except (RedisError, OSError, TimeoutError):
             self.error()
         except (ValueError, TypeError, OverflowError):
@@ -106,7 +110,8 @@ class SharedCache:
         address, _ = self.address(kind, key)
         try:
             # Evicting a colliding entry is harmless; it only causes a miss.
-            await self.client.delete(address)
+            async with asyncio.timeout(1):
+                await self.client.delete(address)
         except (RedisError, OSError, TimeoutError):
             self.error()
 
