@@ -644,9 +644,10 @@ class Research:
             # not use every slot in the first call when more batches are possible.
             count = min(profile.rows, max(1, (len(remaining) + max_batches - index - 1) // (max_batches - index)))
             limit = profile.claims_per_batch
+            batch_number = batches + 1
 
             def payload_for(rows):
-                return {**self.synthesis_payload(rows), "claim_limit": limit, "batch": batches + 1}
+                return {**self.synthesis_payload(rows), "claim_limit": limit, "batch": batch_number}
 
             rows, pending = batch_rows(
                 remaining, payload_for, batch_prompt, cfg.ai_max_request_chars, count,
