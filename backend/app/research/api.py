@@ -159,7 +159,13 @@ def task(identifier: str, owner: Owner):
 @router.get("/tasks/{identifier}/events")
 async def events(identifier: str, owner: Owner, request: Request,
                  last_event_id: Annotated[str | None, Header()] = None, after: int = Query(default=0, ge=0)):
-    await database_call(task, identifier, owner)
+    def authorized():
+        with Session() as session:
+            if not session.scalar(select(Job.id).where(
+                Job.id == identifier, Job.owner == owner, Job.job_type == "research"
+            )):
+                raise HTTPException(404, "Research task not found")
+    await database_call(authorized)
     from ..main import events as job_events
     return await job_events(identifier, request, owner, last_event_id, after)
 

@@ -117,12 +117,16 @@ def extract(response, shopping):
     if response.mime != "text/plain":
         tree = html.fromstring(text or "<html></html>")
         for field in tree.xpath("//meta[@content]")[:100]:
-            key = (field.get("property") or field.get("name") or "").lower()
+            key = (field.get("property") or field.get("name") or field.get("itemprop") or "").lower()
             if key in {"robots", settings().user_agent_default.split("/", 1)[0].casefold()}:
                 directives.update(robots_directives(field.get("content", "")))
             if key in {"og:title", "og:site_name", "og:description", "og:type", "article:published_time",
                        "article:modified_time", "date", "datepublished", "datemodified", "description"}:
                 metadata.setdefault(key, clean(field.get("content"), 350))
+        for key in ("datepublished", "datemodified"):
+            times = tree.xpath(f"//time[translate(@itemprop, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{key}']/@datetime")
+            if times and normalized_date(times[0]):
+                metadata.setdefault(key, clean(times[0], 80))
         metadata.setdefault("title", clean(tree.findtext(".//title"), 200))
         if re.search(r"^(access denied|just a moment|verify (?:that )?you are human|security check|sign in|log in)\b",
                      metadata.get("title", ""), re.I):

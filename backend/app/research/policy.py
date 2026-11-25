@@ -21,6 +21,12 @@ def public_ip(value):
     return True
 
 
+AUTH_QUERY_KEYS = {
+    "access_token", "api_key", "apikey", "auth", "authorization", "jwt", "password",
+    "secret", "session", "session_id", "signature", "token", "x-amz-signature", "x-goog-signature",
+}
+
+
 class PublicPolicy:
     def check(self, url, navigation=True):
         if not isinstance(url, str) or any(char in url for char in "<>"):
@@ -31,6 +37,8 @@ class PublicPolicy:
         value = normalize(url)
         parsed = urlsplit(value)
         host = parsed.hostname
+        if any(key.casefold() in AUTH_QUERY_KEYS for key, _ in parse_qsl(parsed.query, keep_blank_values=True)):
+            raise PolicyError("Credential-bearing research URL is forbidden")
         if "%" in host or parsed.port not in (None, 80 if parsed.scheme == "http" else 443):
             raise PolicyError("Research requires standard public HTTP(S) ports")
         try:
