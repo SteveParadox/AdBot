@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pydantic import Field
 
 from .contracts import Strict
+from .ranking import supporting_groups
 
 
 class GapCheck(Strict):
@@ -72,7 +73,7 @@ class GapPlan:
                 continue
             if any(i not in offered or i not in evidence or evidence[i]["source_id"] not in sources for i in ids):
                 continue
-            groups = {sources[evidence[i]["source_id"]]["independence_group"] for i in ids}
+            groups = supporting_groups(ids, evidence, sources)
             if check.status == "conflicting" and len(groups) < 2:
                 continue
             q.status, q.evidence = check.status, ids
