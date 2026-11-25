@@ -164,13 +164,21 @@ def extract(response, shopping):
             if key in {"robots", settings().user_agent_default.split("/", 1)[0].casefold()}:
                 directives.update(robots_directives(field.get("content", "")))
             if key in {"og:title", "og:site_name", "og:description", "og:type", "article:published_time",
-                       "article:modified_time", "date", "datepublished", "datemodified", "description"}:
+                       "article:modified_time", "date", "datepublished", "datemodified", "description", "author"}:
                 metadata.setdefault(key, clean(field.get("content"), 350))
         for key in ("datepublished", "datemodified"):
             times = tree.xpath(f"//time[translate(@itemprop, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{key}']/@datetime")
             if times and normalized_date(times[0]):
                 metadata.setdefault(key, clean(times[0], 80))
         metadata.setdefault("title", clean(tree.findtext(".//title"), 200))
+        # These are publisher-declared observations, never verified identity.
+        metadata["published_date_observed"] = bool(normalized_date(
+            metadata.get("article:published_time") or metadata.get("datepublished") or metadata.get("date")
+        ))
+        metadata["sponsored_marker"] = bool(tree.xpath(
+            "//meta[(@name='sponsored' or @property='article:sponsored') and "
+            "(@content='true' or @content='1')]"
+        ))
         if re.search(r"^(access denied|just a moment|verify (?:that )?you are human|security check|sign in|log in)\b",
                      metadata.get("title", ""), re.I):
             raise PolicyError("Source requires authentication or verification")
