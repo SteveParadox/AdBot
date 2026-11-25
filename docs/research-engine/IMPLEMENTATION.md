@@ -263,3 +263,46 @@ references outside the window may not resolve, and complex topic changes
 or mixed references can remain ambiguous. Run the regression tests in
 `tests/test_research_memory.py` and the API retry/isolation case in
 `tests/test_research.py`. Runtime validation remains pending.
+
+
+## Explainable ranking and source independence
+
+Search ranking combines bounded BM25-style term weighting, weighted query
+coverage, phrase proximity, reciprocal provider ranks and a penalty for
+repeated registrable domains. Government/academic namespace and documentation
+path signals are small relevance-gated adjustments, not verified authority.
+Publisher-declared bylines, dates and sponsorship markers are observable
+signals, not independently verified identities or editorial assessments.
+Evidence selection also uses weighted lexical relevance and source signals.
+
+With `ADBOT_RESEARCH_SEMANTIC_RANKING_ENABLED=true`, the first search round
+in Deep, Technical or Fact Check mode can request one bounded relevance
+assessment from the existing configured model. At most 12 candidates are
+offered; the model rates their relationship to the objective on a 0–4 scale.
+It is not asked to determine truth or credibility. All candidate indexes
+must be present exactly once; invalid responses fall back to deterministic
+ranking. The scores have limited influence, unrated candidates remain
+neutral, explicit user-supplied URLs retain priority, and existing request,
+token, call and time caps apply. Quick and Shopping do not incur the extra
+model call. No new model or service dependency is required.
+
+The task-local independence index groups registered domains and substantially
+overlapping normalized article text using bounded five-word shingles. Union
+operations are transitive and update the groups of already collected sources.
+Short common phrases do not cluster entire documents. Exact byte duplicates
+continue to use the existing retrieval deduplication. Shopping disables
+document-content clustering because identical manufacturer specifications
+can legitimately occur at distinct retailers. Independently, sufficiently
+long identical claim excerpts cannot establish multiple corroborating
+groups; structured retailer evidence is excluded from this excerpt test.
+Conflict verification, gap assessment and completion use these conservative
+groups. Different groups are only potentially independent, not proof of
+distinct editorial ownership. No attribution of original authorship is made.
+
+Source results expose credibility and independence_assessment objects and
+the research UI displays the observed signals and possible shared origin.
+Task metrics include semantic_rank_attempts, semantic_rank_successes and
+shared_origin_sources. These are diagnostics, not accuracy metrics.
+
+Focused tests: `python -m pytest -q tests/test_research_ranking.py`.
+Full application and live relevance evaluation remain pending.
