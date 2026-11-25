@@ -17,8 +17,9 @@ type Mode = keyof typeof MODES;
 type Source = {
   id: string; url: string; title: string; domain: string; published_at: string | null; retrieved_at: number;
   content_hash: string; query: string;
+  metadata?: { document_type?: string; page_count?: number; pages_examined?: number; extraction_truncated?: boolean; pages_with_text?: number[] };
 };
-type Evidence = { id: string; source_id: string; quote: string; location: string; retrieved_at: number };
+type Evidence = { id: string; source_id: string; quote: string; location: string; retrieved_at: number; page?: number };
 type SuitabilityCheck = { requirement: string; observed: string | null; status: "met" | "not_met" | "unknown" };
 type Product = {
   name: string; brand: string; model: string; retailer: string; price: string | null; currency: string | null;
@@ -60,12 +61,22 @@ function SourceLink({ href, children }: { href: string; children: React.ReactNod
   return safe ? <a href={safe} target="_blank" rel="noreferrer noopener">{children}</a> : <span>{children}</span>;
 }
 
+function pdfPageURL(source: Source | undefined, page: number): string | undefined {
+  const url = safeURL(source?.url);
+  if (!url || source?.metadata?.document_type !== "pdf" || !Number.isSafeInteger(page) || page < 1 ||
+      page > (source.metadata.pages_examined ?? 0)) return undefined;
+  const parsed = new URL(url);
+  parsed.hash = `page=${page}`;
+  return parsed.href;
+}
+
 function AnswerMarkup({ text, sources = [], direct = false }: {text: string; sources?: Source[]; direct?: boolean}) {
   return <Markdown remarkPlugins={[remarkGfm]} skipHtml disallowedElements={["img", "input"]}
     components={{a: ({href, children}) => {
-      const index = typeof children === "string" && /^[1-9]\d*$/.test(children) ? Number(children) - 1 : -1;
-      const citation = sources[index];
-      return direct || (citation && safeURL(href) === safeURL(citation.url))
+      const match = typeof children === "string" ? /^([1-9]\d*)(?: p\. ([1-9]\d*))?$/.exec(children) : null;
+      const citation = match ? sources[Number(match[1]) - 1] : undefined;
+      const expected = match?.[2] ? pdfPageURL(citation, Number(match[2])) : safeURL(citation?.url);
+      return direct || (expected && safeURL(href) === expected)
         ? <SourceLink href={href || ""}>{children}</SourceLink>
         : <span>{children}</span>;
     }}}>{text}</Markdown>;
@@ -168,9 +179,10 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
       {evidenceError && <p role="alert">{evidenceError}</p>}
       <ol>{sources.map(source => <li key={source.id}>
         <SourceLink href={source.url}>{source.title} <ExternalLink size={13} /></SourceLink>
+        {source.metadata?.document_type === "pdf" && <p>PDF · {source.metadata.pages_examined} of {source.metadata.page_count} pages examined{source.metadata.extraction_truncated ? " · extraction limited" : ""}</p>}
         <p>{source.domain} · Retrieved {readDate(source.retrieved_at)}{source.published_at ? ` · Published ${source.published_at.slice(0, 10)}` : ""}</p>
         {evidence.filter(row => row.source_id === source.id).map(row =>
-          <figure key={row.id}><blockquote>{row.quote}</blockquote><figcaption>{row.location}</figcaption></figure>)}
+          <figure key={row.id}><blockquote>{row.quote}</blockquote><figcaption>{row.location}{row.page && pdfPageURL(source, row.page) && <> · <SourceLink href={pdfPageURL(source, row.page)!}>Open page {row.page}</SourceLink></>}</figcaption></figure>)}
       </li>)}</ol>
     </details>}
     {(task.status === "failed" || task.status === "cancelled" || task.result.quality === "partial") &&
