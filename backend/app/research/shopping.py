@@ -287,12 +287,37 @@ def suitability(product, question):
             checks.append({"requirement": f"GPU {wanted.upper()}", "observed": actual,
                            "status": "unknown" if not models else
                            "met" if re.sub(r"\s+", "", wanted.casefold()) in models else "not_met"})
+    # For common categories, distinguish an observed device from an accessory.
+    # Unknown category information is not evidence of an exact match.
+    categories = {
+        "laptop": (r"\b(?:laptops?|notebooks?|macbooks?|chromebooks?)\b",
+                   r"\b(?:laptops?|notebooks?|macbooks?|chromebooks?)\b"),
+        "phone": (r"\b(?:phones?|smartphones?|iphones?)\b",
+                  r"\b(?:phones?|smartphones?|iphones?)\b"),
+        "monitor": (r"\bmonitors?\b", r"\bmonitors?\b"),
+        "tablet": (r"\b(?:tablets?|ipads?)\b", r"\b(?:tablets?|ipads?)\b"),
+    }
+    requested = [key for key, (pattern, _) in categories.items() if re.search(pattern, question, re.I)]
+    accessory = r"\b(?:cases?|covers?|bags?|sleeves?|chargers?|adapters?|stands?|screen protectors?)\b"
+    if len(requested) == 1 and not re.search(accessory, question, re.I):
+        key = requested[0]
+        name = product.get("name", "")
+        matching = bool(re.search(categories[key][1], name, re.I))
+        # No inference from a missing product category or from a model name.
+        if matching and re.search(accessory, name, re.I):
+            category_status = "not_met"
+        elif matching:
+            category_status = "met"
+        else:
+            category_status = "unknown"
+        checks.append({"requirement": f"Product category: {key}", "observed": name or None,
+                       "status": category_status})
     # A condition preference is explicit only in ordinary purchase wording.
     # Comparisons and alternatives do not require every offer to be new.
     condition = product.get("variant", {}).get("condition", "unknown")
     if not re.search(r"\b(?:compare|versus|vs\.?|or)\b", question, re.I):
         wanted = None
-        if re.search(r"\b(?:new only|brand new|not (?:used|refurbished)|new (?:laptops?|phones?|products?))\b", question, re.I):
+        if re.search(r"\b(?:new only|brand new|new (?:laptops?|phones?|products?))\b", question, re.I):
             wanted = "new"
         elif re.search(r"\b(?:refurbished only|refurbished (?:laptops?|phones?|products?))\b", question, re.I):
             wanted = "refurbished"
