@@ -290,6 +290,8 @@ def cancel_job(identifier: str, owner: Owner):
         if changed:
             emit(session, identifier, "cancellation_requested", "Cancellation requested")
         session.refresh(item)
+        if item.job_type == "research" and item.status == "cancelled":
+            item.execution_state = {k: v for k, v in item.execution_state.items() if k != "research_checkpoint"}
         return output(item)
 
 
