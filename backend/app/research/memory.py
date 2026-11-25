@@ -48,7 +48,7 @@ def followup(text, history):
         return True
     if re.search(r"\b(?:that claim|sources?|verify it|explain it)\b", text, re.I) and len(terms(text)) <= 8:
         return True
-    return any(len(p.get("name", "")) >= 5 and p["name"].casefold() in text.casefold()
+    return any(len(p.get("name") or "") >= 5 and p["name"].casefold() in text.casefold()
                for turn in history for p in turn.get("products", [])) and len(terms(text)) <= 12
 
 
@@ -57,8 +57,8 @@ def relevant_turns(text, history):
     query = terms(text)
     scored = []
     for index, turn in enumerate(history):
-        names = [p.get("name", "") for p in turn.get("products", [])]
-        titles = [s.get("title", "") for s in turn.get("sources", [])]
+        names = [p.get("name") or "" for p in turn.get("products", [])]
+        titles = [s.get("title") or "" for s in turn.get("sources", [])]
         lexical = len(query & terms(turn["question"] + " " + " ".join(names + titles)))
         named = any(len(name) >= 5 and name.casefold() in text.casefold() for name in names + titles)
         scored.append((int(named), lexical, index, turn))
@@ -132,13 +132,13 @@ def resolve_references(text, anchor):
         if 1 <= number <= len(rows):
             row = rows[number - 1]
             refs.append({"kind": "source" if kind == "source" else "product",
-                         "index": number, "name": row.get("title") or row.get("name", ""),
+                         "index": number, "name": row.get("title") or row.get("name") or "",
                          "url": row.get("url"), "turn_id": anchor.get("id", "")})
         else:
             unresolved.append(match.group()[:80])
     # A literal name can resolve a unique product, never a fuzzy invented one.
     if not refs and not unresolved:
-        matches = [p for p in anchor.get("products", []) if len(p.get("name", "")) >= 5
+        matches = [p for p in anchor.get("products", []) if len(p.get("name") or "") >= 5
                    and p["name"].casefold() in text.casefold()]
         if len(matches) == 1:
             refs.append({"kind": "product", "index": anchor["products"].index(matches[0]) + 1,
@@ -161,6 +161,8 @@ def build_context(question, history, intent, mode):
     freshness = question.freshness or next((name for name, pattern in FRESHNESS if re.search(pattern, text, re.I)), None)
     if not freshness:
         freshness = old.get("freshness") if old else anchor.get("freshness")
+    if not freshness and intent in {"news", "current"}:
+        freshness = "week" if intent == "news" else "month"
     if re.search(r"\b(?:any date|no date limit|remove (?:the )?freshness)\b", text, re.I) and not question.freshness:
         freshness = None
     slots = dict(old.get("slots", {})) if old else user_slots(anchor.get("question", ""), country) if anchor else {}
@@ -186,7 +188,7 @@ def build_context(question, history, intent, mode):
     urls = [r["url"] for r in refs if r.get("url")]
     if anchor and not alternative and not urls and not unresolved:
         urls = [s.get("url") for s in anchor.get("sources", [])[:4] if s.get("url")]
-    if alternative:
+    if alternative or (prior_country and country != prior_country):
         urls = []
     # Keep old user wording as a separate model context field. Never append
     # historical prices or product descriptions to provider search queries.
