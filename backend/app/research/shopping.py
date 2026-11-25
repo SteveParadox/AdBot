@@ -131,7 +131,8 @@ def visible_products(tree):
     for scope in scopes[:16]:
         if not visible(scope):
             continue
-        headings = scope.xpath(".//*[@itemprop='name' and not(self::meta)] | .//h1 | .//h2 | .//h3")
+        names = scope.xpath(".//*[@itemprop='name' and not(self::meta)]")
+        headings = names or scope.xpath(".//h1") or scope.xpath(".//h2") or scope.xpath(".//h3")
         name = one(text_of(n) for n in headings[:20] if visible(n))
         # Multiple distinct headings in a purported offer are ambiguous.
         if not name:
@@ -222,7 +223,10 @@ def comparable_identity(product):
 
 
 def capacity(value):
-    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(GB|TB|MB)\s*", value or "", re.I)
+    # Permit common unambiguous annotations without interpreting multiple
+    # capacities, model names or marketing claims as an observed amount.
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(GB|TB|MB)(?:\s+(?:DDR[345]|GDDR[456X]+|LPDDR[45X]+|SSD|NVME|HDD|RAM|VRAM))*\s*",
+                         value or "", re.I)
     if not match:
         return None
     return Decimal(match[1]) * {"gb": 1, "tb": 1024, "mb": Decimal(1) / 1024}[match[2].lower()]
@@ -231,24 +235,25 @@ def capacity(value):
 def requirements(question):
     text = question.casefold()
     found = {}
-    # Match explicit units adjacent to a named specification, not arbitrary
-    # numbers in the title or price. Explicit maxima and exact requests differ.
     spec = r"(?:vram|graphics memory|gpu memory|video memory|ram|system memory|storage|ssd)"
     amount = r"(\d+(?:\.\d+)?)\s*(gb|tb|mb)"
-    for pattern, reverse in ((rf"\b({spec})\s*(?:of|:|at least|minimum|under|up to|exactly|>=|<=)?\s*{amount}\b", False),
-                             (rf"\b{amount}\s*(?:of\s+)?({spec})\b", True)):
+    modifier = r"(at least|minimum(?: of)?|at most|maximum(?: of)?|no more than|under|up to|exactly|>=|<=)?"
+    patterns = (
+        (rf"\b({spec})\s*(?:of|:)?\s*{modifier}\s*{amount}\b", False),
+        (rf"{modifier}\s*\b{amount}\s*(?:of\s+)?({spec})\b", True),
+    )
+    for pattern, reverse in patterns:
         for match in re.finditer(pattern, text):
-            label, num, unit = (match[3], match[1], match[2]) if reverse else match.groups()
+            label, mod, num, unit = (match[4], match[1], match[2], match[3]) if reverse else match.groups()
             key = SPEC_NAMES[label]
-            prefix = text[max(0, match.start()-18):match.end()]
-            operator = ("max" if re.search(r"\b(?:at most|under|up to|maximum|no more than)\b|<=", prefix)
-                        else "exact" if "exactly" in prefix else "min")
-            rule = (operator, capacity(num + unit))
-            if key in found and found[key] != rule:
-                found[key] = None
-            else:
-                found[key] = rule
-    return {k: v for k, v in found.items() if v is not None and v[1] is not None}
+            op = ("max" if mod and (mod.startswith("maximum") or mod in
+                  {"at most", "no more than", "under", "up to", "<="})
+                  else "exact" if mod == "exactly" else "min")
+            found.setdefault(key, set()).add((op, capacity(num + unit)))
+    # Preserve multiple compatible bounds rather than letting one overwrite
+    # another; contradictory user requirements cannot all be satisfied.
+    return [(key, op, target) for key, values in sorted(found.items())
+            for op, target in sorted(values) if target is not None]
 
 
 def suitability(product, question):
@@ -259,19 +264,30 @@ def suitability(product, question):
     observed = {key: one(values) for key, values in specs.items()}
     rules = requirements(question)
     checks = []
-    for key, (op, target) in rules.items():
+    for key, op, target in rules:
         actual = capacity(observed.get(key))
         status = ("unknown" if actual is None else "met" if
                   (actual >= target if op == "min" else actual <= target if op == "max" else actual == target)
                   else "not_met")
         checks.append({"requirement": f"{key} {op} {target} GB", "observed": observed.get(key),
                        "status": status})
+    # Named GPU constraints use only the explicitly observed graphics field.
+    # A name in the query is not a license to infer specifications.
+    requested_gpu = set(re.findall(r"\b(?:rtx|gtx|rx)\s*\d{3,4}(?:\s*(?:ti|super|xt|xtx))?\b", question, re.I))
+    if requested_gpu and not re.search(r"\b(?:compare|versus|vs\.?|or)\b", question, re.I):
+        actual = observed.get("GPU")
+        models = {re.sub(r"\s+", "", m.casefold()) for m in
+                  re.findall(r"\b(?:rtx|gtx|rx)\s*\d{3,4}(?:\s*(?:ti|super|xtx|xt))?\b", actual or "", re.I)}
+        for wanted in sorted(requested_gpu):
+            checks.append({"requirement": f"GPU {wanted.upper()}", "observed": actual,
+                           "status": "unknown" if not models else
+                           "met" if re.sub(r"\s+", "", wanted.casefold()) in models else "not_met"})
     # A workload heuristic, not a benchmark or claim of model compatibility.
     ai = bool(re.search(r"\b(?:ai engineering|machine learning|deep learning|local llms?|ai training)\b", question, re.I))
     workload = []
     if ai:
         for key, threshold in (("RAM", 16), ("VRAM", 8)):
-            if key in rules:
+            if any(rule[0] == key for rule in rules):
                 continue
             actual = capacity(observed.get(key))
             workload.append({"requirement": f"{key} heuristic ≥ {threshold} GB", "observed": observed.get(key),
