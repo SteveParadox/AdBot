@@ -19,6 +19,7 @@ from .contracts import Mode, Question, Strict, budget_for, route
 from .memory import build_context
 from .runner import previous_turns
 from .search import configured_providers
+from .shared_cache import purge_conversation
 
 router = APIRouter(prefix="/api/research/v1", tags=["web research"])
 Key = Annotated[str | None, Header(alias="Idempotency-Key", min_length=1, max_length=160)]
@@ -274,6 +275,9 @@ def delete_conversation(identifier: str, owner: Owner):
             raise HTTPException(409, "Stop active research before deleting this conversation")
         session.execute(delete(Job).where(Job.id.in_(identifiers), Job.owner == owner))
         session.delete(item)
+    # SQL deletion is authoritative. If Redis is unavailable, its bounded TTL
+    # expires the inaccessible conversation namespace independently.
+    purge_conversation(owner, identifier)
 
 
 def recent_runs(owner):
