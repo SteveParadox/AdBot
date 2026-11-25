@@ -18,7 +18,7 @@ from .shared_cache import SharedCache
 from .evidence import (product_evidence, rank_products, select_evidence, valid_reference,
                        source_record, text_evidence, verified_claims)
 from .gaps import Coverage, GapPlan, normalize
-from .integrity import WINDOWS, claim_freshness
+from .integrity import WINDOWS, claim_freshness, offer_is_current
 from .memory import build_context
 from .navigation import rank_links, safe_link
 from .policy import PublicPolicy, canonical_key
@@ -802,6 +802,11 @@ class Research:
                 self.metrics["invalid_citation_claims"] += 1
                 self.result_quality = "partial"
                 continue
+            offers = [self.evidence[i].get("offer_observation", {}) for i in ids]
+            if any(o.get("volatile_fields") and not offer_is_current(o.get("observed_at"), o.get("valid_until")) for o in offers):
+                self.notes = list(dict.fromkeys([*self.notes, "Claims using expired retailer observations were omitted."]))
+                self.result_quality = "partial"
+                continue
             if self.freshness:
                 claim["freshness"] = claim_freshness(ids, self.evidence, self.sources, self.freshness)
             valid.append(claim)
@@ -937,6 +942,7 @@ class Research:
             self.metrics["research_subquestions"] = len(self.gap_plan.questions)
             self.metrics["research_subquestions_answered"] = len(self.gap_plan.questions) - len(unresolved)
         if self.mode == Mode.SHOPPING:
+            self.products = rank_products(self.products, self.shopping_question(), self.country)
             if not self.products:
                 self.notes.append("No retrieved offers had usable product and market details.")
                 self.result_quality = "partial"
