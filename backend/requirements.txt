@@ -16,3 +16,4 @@ pillow==12.3.0
 trafilatura==2.0.0
 pycountry==24.6.1
 Protego==0.7.0
+pdfplumber==0.11.10
