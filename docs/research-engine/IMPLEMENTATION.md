@@ -34,3 +34,39 @@
 4. For a material claim, switch to Fact Check and ask for more independent evidence.
 
 An answer using Current Information, Shopping or Fact Check may be marked partial when sources are missing, reports conflict, or the checked evidence covers only part of the request.
+
+
+## Evidence-driven Deep Research
+
+Deep mode now records the original objective and up to four distinct model-planned
+subquestions. Each subquestion has a stable task-local ID, targeted-query count,
+coverage status (missing, partial, covered or conflicting), and supporting evidence IDs.
+The original objective is retained so a narrow model-generated decomposition cannot
+silently replace the user's question.
+
+After each retrieval round, the engine selects a bounded, relevance-prioritized
+evidence sample and requests a separate structured coverage assessment. It rejects
+duplicate assessments, invented or unoffered evidence IDs, and conflict assessments
+without evidence from two independent domain groups. Uncovered and disputed
+subquestions drive subsequent search queries; previously attempted queries are not
+repeated. Source counts alone cannot stop deep research. Early completion requires
+coverage of every subquestion and evidence from at least two domain groups.
+Existing round, page, provider, browser, token and time limits remain in force,
+with two model calls reserved for synthesis and verification where possible.
+
+The final task result persists `research_plan` and `coverage_rounds` with existing
+evidence and claims. Each plan row includes `used_in_answer`, which indicates that
+at least one evidence ID from a covered subquestion appears in a verified claim.
+The research workspace displays this coverage and missing or conflicting topics.
+If a subquestion remains uncovered or its evidence is not used in the verified
+answer, the task is marked partial even when many sources were collected.
+Coverage assessments are model judgments, and shared evidence is not proof that
+every aspect of a subquestion appears in the final prose. This is not an
+independent semantic guarantee of answer completeness.
+
+Quick Search and the other modes retain their existing planning and stopping
+behavior. Deep research plans persist at task completion, not as restartable
+per-round checkpoints. Long-form synthesis and broader evidence batching are
+separate follow-up work. The focused regression suite is
+`python -m pytest -q tests/test_research_gaps.py` from the backend directory;
+execution on the full deployment and live providers remains pending.
