@@ -139,3 +139,24 @@ def test_unconvertible_currency_is_not_within_budget():
     result = rank_products([item], "Laptop under ₦1.5 million")[0]
     assert result["budget_requested"] is True
     assert result["within_budget"] is None
+
+
+
+def test_budget_parser_does_not_treat_specifications_as_money():
+    from app.research.shopping import budget_constraint
+
+    assert budget_constraint("Laptops in Nigeria with storage up to 1 TB and RAM under 32 GB", "NG") == (False, None)
+    assert budget_constraint("Laptop under ₦1.5 million with VRAM up to 8 GB", "NG") == (
+        True, ("NGN", Decimal("1500000")),
+    )
+    assert budget_constraint("Laptop under 500 USD", "NG") == (True, ("USD", Decimal("500")))
+    assert budget_constraint("Laptop under $500", "NG") == (True, None)
+
+
+def test_category_and_condition_do_not_promote_accessories_or_refurbished_offers():
+    accessory = {"name": "Laptop charger", "variant": {"condition": "new"}, "specifications": {}}
+    used = {"name": "Laptop", "variant": {"condition": "refurbished"}, "specifications": {}}
+    matching = {"name": "Laptop", "variant": {"condition": "new"}, "specifications": {}}
+    assert suitability(accessory, "Find brand new laptops")["status"] == "not_met"
+    assert suitability(used, "Find brand new laptops")["status"] == "not_met"
+    assert suitability(matching, "Find brand new laptops")["status"] == "met"
