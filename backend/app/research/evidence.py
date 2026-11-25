@@ -15,6 +15,7 @@ from courlan import extract_domain
 from .policy import PublicPolicy, canonical_key
 from .retrieval import clean
 from .search import terms
+from .shopping import comparable_identity, condition_value, suitability
 
 
 def source_domain(url):
@@ -152,6 +153,7 @@ def product_evidence(doc, source, country):
                 status = None
             gtin = raw["gtin"] or raw["gtin13"] or raw["gtin14"]
             variant = {k: raw[k] for k in ("sku", "mpn", "color", "size") if raw[k]}
+            variant["condition"] = condition_value(offer.get("itemCondition"))
             data = {
                 "name": raw["name"], "brand": raw["brand"], "model": raw["model"], "gtin": gtin, "variant": variant,
                 "specifications": {k: v for k, v in raw["specs"].items() if v},
@@ -160,12 +162,16 @@ def product_evidence(doc, source, country):
                 "warranty": offer.get("warranty") or None, "shipping": offer.get("shipping") or None,
                 "review_summary": raw["rating"], "last_verified": doc.retrieved,
                 "geographic_match": geo, "market": country, "source_id": source["id"],
+                "extraction_method": raw.get("origin", "json-ld"),
             }
+            origin = raw.get("origin", "json-ld")
+            observation = {"product": raw["name"], "offer": offer, "brand": raw["brand"], "model": raw["model"],
+                           "variant": variant, "specifications": data["specifications"]}
+            if origin == "dom":
+                observation["observed_fields"] = raw.get("observations", {})
             structured = quote_record(
-                source,
-                json.dumps({"product": raw["name"], "brand": raw["brand"], "model": raw["model"],
-                            "offer": offer, "variant": variant, "specifications": data["specifications"]}, ensure_ascii=False),
-                f"json-ld:Product[{index}].offers[{offer_index}]", "structured",
+                source, json.dumps(observation, ensure_ascii=False),
+                f"{origin}:Product[{index}].offers[{offer_index}]", "structured",
             )
             data["evidence_id"] = structured["id"]
             products.append(data)
@@ -173,7 +179,7 @@ def product_evidence(doc, source, country):
     return products, evidence
 
 
-def rank_products(products, question):
+def rank_products(products, question, country=None):
     # Exact offer identity preserves storage, memory, condition and seller
     # differences. The same variation can still be compared across retailers.
     text = question.casefold()
@@ -182,7 +188,7 @@ def rank_products(products, question):
     if amount:
         symbol, value, scale = amount.groups()
         currency = {"₦": "NGN", "$": "USD", "€": "EUR", "£": "GBP"}.get(symbol or "", (symbol or "").strip().upper())
-        if not currency and country_from(question) == "NG":
+        if not currency and country_from(question, country) == "NG":
             currency = "NGN"
         try:
             target = (currency, Decimal(value.replace(",", "")) * {"million": 1000000, "m": 1000000, "k": 1000, "thousand": 1000}.get(scale, 1))
@@ -195,11 +201,31 @@ def rank_products(products, question):
                json.dumps(product["variant"], sort_keys=True), json.dumps(product["specifications"], sort_keys=True))
         price = Decimal(product["price"]) if product["price"] else None
         product["within_budget"] = price <= target[1] if target and target[0] == product["currency"] and price is not None else None
+        product["suitability"] = suitability(product, question)
+        product["comparison_group"] = comparable_identity(product)
         unique.setdefault(key, product)
-    return sorted(unique.values(), key=lambda p: (
-        p["within_budget"] is not True, p["within_budget"] is False, p["currency"] or "~",
+    candidates = list(unique.values())
+    status_rank = {"met": 0, "not_requested": 0, "unknown": 1, "not_met": 2}
+    unavailable = {"Out of stock", "Sold out", "Discontinued"}
+    cheapest = bool(re.search(r"\b(?:cheapest|lowest price|least expensive)\b", text))
+    ordered = sorted(candidates, key=lambda p: (
+        p["availability"] in unavailable,
+        p["within_budget"] is False,
+        status_rank[p["suitability"]["status"]],
+        p["within_budget"] is not True,
+        p["price"] is None,
+        0 if cheapest else -p["suitability"]["score"],
+        p["currency"] or "~",
         Decimal(p["price"]) if p["price"] else Decimal("Infinity"),
     ))[:20]
+    groups = {}
+    for item in ordered:
+        identity = item["comparison_group"]
+        if identity:
+            groups.setdefault((identity, item["currency"]), set()).add(item["source_id"])
+    for item in ordered:
+        item["comparable_sources"] = len(groups.get((item["comparison_group"], item["currency"]), ()))
+    return ordered
 
 
 def select_evidence(evidence, sources, char_budget):
