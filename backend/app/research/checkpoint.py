@@ -44,7 +44,10 @@ def capture(engine):
 
 def freeze(engine):
     # Round-trip to detach mutable state before handing it to the IO thread.
-    raw = json.dumps(capture(engine), ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    try:
+        raw = json.dumps(capture(engine), ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    except (ValueError, TypeError, OverflowError):
+        return None
     if len(raw.encode("ascii")) > MAX_CHECKPOINT_BYTES:
         return None
     return json.loads(raw)
@@ -71,7 +74,10 @@ def restore(engine, state):
             return False
         if any(p["evidence_id"] not in state["evidence"] for p in state["products"]):
             return False
-        if any(i not in state["evidence"] for c in state["claims"] for i in c["evidence"]):
+        progress = state["synthesis_state"] or {}
+        if any(row["id"] not in state["evidence"] for row in progress.get("presented", [])):
+            return False
+        if any(i not in state["evidence"] for c in state["claims"] + progress.get("accepted", []) for i in c["evidence"]):
             return False
         independence = Independence()
         index = state["independence"]
