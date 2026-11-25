@@ -70,3 +70,43 @@ per-round checkpoints. Long-form synthesis and broader evidence batching are
 separate follow-up work. The focused regression suite is
 `python -m pytest -q tests/test_research_gaps.py` from the backend directory;
 execution on the full deployment and live providers remains pending.
+
+
+## Bounded semantic source navigation
+
+With `ADBOT_RESEARCH_BROWSER_ENABLED=true`, Shopping, Technical, Fact Check
+and Deep modes can follow relevant links observed in public article/main
+landmarks. Static HTML links use the lightweight extractor; rendered pages
+reuse the existing agent's semantic DOM metadata for visible, actionable
+anchors and their accessible-label fallback. The worker ranks the observed
+labels and paths against the research objective. It follows at most two
+links per retrieval round, one level deep, within the existing page,
+browser, deadline and cancellation budgets. Unused reserved page slots
+remain available to ordinary search candidates. Quick Search is unchanged.
+
+Each observed destination is retrieved independently through the existing
+credential-free HTTP/browser pipeline; its evidence is cited against its
+own URL, not the parent page. Source metadata records the discovery parent
+and link label. Research progress includes a navigation event and metrics
+include observed link candidates and attempts.
+
+Shopping pages lacking structured offers now qualify for browser rendering
+even when their introductory text exceeds 200 characters. Browser attempts
+remain opt-in, sandboxed, and capped. The existing browser process is reused
+within the task and each render gets a fresh isolated context.
+
+Navigation deliberately does not invoke the general-purpose agent action
+controller, click buttons, submit forms, enter text, use authenticated sessions
+or activate ads. Observed links must be same-origin; commercial-action and
+sponsored markers, credential-bearing and ambiguous paths, arbitrary query
+parameters and unsafe destinations are excluded. Only a single bounded
+numeric pagination parameter is accepted. Every redirect and cached
+destination is checked again, with existing robots, DNS, egress, content-type
+and request limits preserved. This is a conservative filter, not proof that
+every website implements GET without side effects. Site policies still apply.
+
+This implementation does not support JavaScript-only pagination buttons,
+interactive filters, multi-hop crawling, cross-origin link traversal, or
+arbitrary browser actions. No new external dependency or database migration
+is required. Focused regression cases were added to test_research.py but
+execution and live-site validation are pending.
