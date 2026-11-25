@@ -46,12 +46,18 @@ class SharedCache:
 
     async def __aenter__(self):
         if self.enabled:
-            self.client = AsyncRedis.from_url(settings().redis_url, **client_options())
+            try:
+                self.client = AsyncRedis.from_url(settings().redis_url, **client_options())
+            except (RedisError, OSError, ValueError):
+                self.error()
         return self
 
     async def __aexit__(self, *exc):
         if self.client:
-            await self.client.aclose()
+            try:
+                await self.client.aclose()
+            except (RedisError, OSError, TimeoutError):
+                self.error()
 
     def address(self, kind, key):
         return slot(self.owner, self.conversation, kind, key)
@@ -115,5 +121,5 @@ def purge_conversation(owner, conversation):
         with Redis.from_url(settings().redis_url, **client_options()) as client:
             client.delete(*keys)
         return True
-    except (RedisError, OSError, TimeoutError):
+    except (RedisError, OSError, TimeoutError, ValueError):
         return False
