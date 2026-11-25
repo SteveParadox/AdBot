@@ -88,6 +88,7 @@ def new_metrics():
             "query_cache_hits", "document_cache_hits", "rate_limits", "quota_skips", "http_requests",
             "retrieval_ms", "retrieval_failures", "browser_render_attempts", "browser_launches", "browser_failures",
             "observed_link_candidates", "observed_link_attempts",
+            "pdf_parse_attempts", "pdf_pages_examined", "pdf_no_text",
             "model_calls", "model_ms", "prompt_tokens", "completion_tokens", "verification_ms", "first_event_ms",
             "first_answer_ms", "total_ms",
         )},
@@ -733,6 +734,12 @@ class Research:
             self.products = rank_products(self.products, self.contextual_question(), self.country)
             self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
         await self.synthesize()
+        if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
+            self.notes.append("One or more PDF sources exceeded extraction limits; only examined pages and rows were considered.")
+            self.result_quality = "partial"
+        if self.metrics.get("pdf_no_text"):
+            self.notes.append("One or more PDFs lacked usable text or tables. Scanned documents require OCR, which is not supported.")
+            self.result_quality = "partial"
         if self.mode == Mode.DEEP:
             if self.gap_plan is None:
                 self.gap_plan = GapPlan(search_text(self.contextual_question()))
