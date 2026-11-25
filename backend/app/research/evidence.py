@@ -7,7 +7,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import pycountry
 from courlan import extract_domain
@@ -43,7 +43,45 @@ def quote_record(source, quote, location, kind="quote"):
     }
 
 
+def pdf_evidence(doc, source, question):
+    keywords = terms(question) | terms(source["query"])
+    candidates = []
+    for block, loc in zip(doc.blocks, doc.block_locations):
+        for offset, quote in enumerate(re.split(r"(?<=[.!?])\s+", block), 1):
+            quote = quote[:460].strip()
+            score = len(terms(quote) & keywords)
+            if score and len(quote) >= 25:
+                candidates.append((score, loc["page"], quote,
+                                   f"pdf:page-{loc['page']}:line-{loc['line']}:sentence-{offset}", "quote"))
+    # Keep the observed first row as context, not an inferred semantic header.
+    headers = {(row["page"], row["table"]): row["cells"] for row in doc.table_rows if row["row"] == 1}
+    for row in doc.table_rows:
+        page, table, number = row["page"], row["table"], row["row"]
+        observed = {"cells": row["cells"]}
+        if number != 1 and (page, table) in headers:
+            observed["first_row"] = headers[page, table]
+        quote = json.dumps(observed, ensure_ascii=False, separators=(",", ":"))
+        score = len(terms(quote) & keywords)
+        if score and len(quote) <= 1400:
+            candidates.append((score, page, quote, f"pdf:page-{page}:table-{table}:row-{number}", "structured"))
+    candidates.sort(key=lambda row: (-row[0], row[1], row[3]))
+    unique = {}
+    per_page = Counter()
+    # Diversity prevents one long page from overwhelming a multi-page report.
+    for _, page, quote, location, kind in candidates:
+        key = (page, quote.casefold())
+        if key in unique or per_page[page] >= 3:
+            continue
+        unique[key] = {**quote_record(source, quote, location, kind), "page": page}
+        per_page[page] += 1
+        if len(unique) >= 12:
+            break
+    return list(unique.values())
+
+
 def text_evidence(doc, source, question):
+    if doc.metadata.get("document_type") == "pdf":
+        return pdf_evidence(doc, source, question)
     keywords = terms(question) | terms(source["query"])
     scored = []
     for block_number, block in enumerate(doc.blocks, 1):
@@ -286,8 +324,20 @@ def citation_markdown(claims, evidence, sources):
     numbers = {source: i for i, source in enumerate(sources, 1)}
     lines = []
     for claim in claims:
-        source_ids = list(dict.fromkeys(evidence[identifier]["source_id"] for identifier in claim["evidence"]))
-        citations = " ".join(f'[{numbers[source]}](<{sources[source]["url"]}>)' for source in source_ids)
+        references = []
+        for identifier in claim["evidence"]:
+            record = evidence[identifier]
+            source = sources[record["source_id"]]
+            page = record.get("page")
+            if (source.get("metadata", {}).get("document_type") == "pdf" and type(page) is int
+                    and 1 <= page <= source["metadata"].get("pages_examined", 0)):
+                url = urlunsplit(urlsplit(source["url"])._replace(fragment=f"page={page}"))
+                label = f"{numbers[record['source_id']]} p. {page}"
+            else:
+                url = source["url"]
+                label = str(numbers[record["source_id"]])
+            references.append(f"[{label}](<{url}>)")
+        citations = " ".join(dict.fromkeys(references))
         # Model text cannot inject additional Markdown claims, links or HTML.
         escaped = re.sub(r"([\\\x60*_\[\]{}()<>#+!|])", r"\\\1", clean(claim["text"], 520))
         label = {"inference": "**Inference.** ", "recommendation": "**Recommendation.** ",
