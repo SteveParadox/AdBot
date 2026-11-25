@@ -13,6 +13,8 @@ import pycountry
 from ..agent.model import ModelBudgetExceeded, ModelClient, ModelError
 from ..config import settings
 from .contracts import Direct, Mode, Plan, RelevanceRatings, Summary, Verification
+from .checkpoint import freeze, restore
+from .shared_cache import SharedCache
 from .evidence import (product_evidence, rank_products, select_evidence,
                        source_record, text_evidence, verified_claims)
 from .gaps import Coverage, GapPlan, normalize
@@ -105,7 +107,7 @@ def new_metrics():
 
 
 class Research:
-    def __init__(self, owner, question, mode, intent, budget, deadline, history, emit, gate, *, model=None, usage=None, charge=None, context=None):
+    def __init__(self, owner, question, mode, intent, budget, deadline, history, emit, gate, *, model=None, usage=None, charge=None, context=None, conversation=None, checkpoint=None, saved=None):
         self.owner, self.question, self.mode, self.intent = owner, question, Mode(mode), intent
         self.budget, self.deadline, self.history = budget, deadline, history
         self.emit, self.gate = emit, gate
@@ -136,6 +138,25 @@ class Research:
             self.notes.append("Some conversation references or constraints could not be resolved unambiguously.")
             self.result_quality = "partial"
         self.semaphore = asyncio.Semaphore(settings().research_parallelism)
+        self.conversation, self.checkpoint = conversation, checkpoint
+        self.next_round, self.round_page_start, self.round_page_limit = 0, 0, 0
+        self.pending_ranked = None
+        self.search_done = self.synthesis_done = False
+        self.synthesis_state = None
+        self.resumed = bool(saved and restore(self, saved))
+        if saved and not self.resumed:
+            self.notes.append("Prior research progress could not be restored under the current policy; charged usage was retained.")
+            self.result_quality = "partial"
+
+    async def save_checkpoint(self):
+        if self.checkpoint is None:
+            return
+        state = freeze(self)
+        if state is None:
+            self.metrics["checkpoint_oversized"] = self.metrics.get("checkpoint_oversized", 0) + 1
+            return
+        await self.checkpoint(state)
+        self.metrics["checkpoints_saved"] = self.metrics.get("checkpoints_saved", 0) + 1
 
     async def stage(self, event, message, **details):
         await self.gate.wait()
@@ -393,34 +414,44 @@ class Research:
         return {candidates[r.candidate].canonical_url: r.relevance / 4 for r in ratings.ratings}
 
     async def search_round(self, pool, fetcher, queries, first):
-        self.queries.extend(queries)
-        await self.stage("searching", "Searching configured providers", queries=len(queries), providers=len(pool.names))
-        async def find(index, query):
-            async with self.semaphore:
-                await self.gate.wait()
-                return await pool.search(query, self.country, self.freshness,
-                                         diversify=self.mode == Mode.DEEP and index % 2 == 1)
-        async with asyncio.TaskGroup() as search_group:
-            searches = [search_group.create_task(find(i, query)) for i, query in enumerate(queries)]
-        groups = [task.result() for task in searches]
-        supplied = self.initial_hits() if first else []
-        ranked = rank_hits([*groups, supplied], self.contextual_question(), self.mode == Mode.TECHNICAL)
-        if first:
-            semantic = await self.semantic_ranking(ranked)
-            if semantic:
-                ranked = rank_hits([*groups, supplied], self.contextual_question(),
-                                   self.mode == Mode.TECHNICAL, semantic=semantic)
-        # Explicit user URLs retain priority and their provenance.
-        ranked = list({hit.canonical_url: hit for hit in [*ranked, *supplied]}.values())
-        explicit = {hit.canonical_url: index for index, hit in enumerate(supplied)}
-        ranked.sort(key=lambda hit: (hit.canonical_url not in explicit, explicit.get(hit.canonical_url, 0)))
-        for hit in ranked:
-            self.hits.setdefault(hit.canonical_url, asdict(hit))
-        pages_left = self.budget.pages - self.page_count
-        if self.mode == Mode.DEEP:
-            pages_left = min(pages_left, max(4, (self.budget.pages + self.budget.rounds - 1) // self.budget.rounds))
-        elif self.budget.rounds > 1 and first:
-            pages_left = max(1, pages_left * 2 // 3)
+        if self.pending_ranked is None:
+            self.queries.extend(queries)
+            await self.stage("searching", "Searching configured providers", queries=len(queries), providers=len(pool.names))
+            async def find(index, query):
+                async with self.semaphore:
+                    await self.gate.wait()
+                    return await pool.search(query, self.country, self.freshness,
+                                             diversify=self.mode == Mode.DEEP and index % 2 == 1)
+            async with asyncio.TaskGroup() as search_group:
+                searches = [search_group.create_task(find(i, query)) for i, query in enumerate(queries)]
+            groups = [task.result() for task in searches]
+            supplied = self.initial_hits() if first else []
+            ranked = rank_hits([*groups, supplied], self.contextual_question(), self.mode == Mode.TECHNICAL)
+            if first:
+                semantic = await self.semantic_ranking(ranked)
+                if semantic:
+                    ranked = rank_hits([*groups, supplied], self.contextual_question(),
+                                       self.mode == Mode.TECHNICAL, semantic=semantic)
+            # Explicit user URLs retain priority and their provenance.
+            ranked = list({hit.canonical_url: hit for hit in [*ranked, *supplied]}.values())
+            explicit = {hit.canonical_url: index for index, hit in enumerate(supplied)}
+            ranked.sort(key=lambda hit: (hit.canonical_url not in explicit, explicit.get(hit.canonical_url, 0)))
+            for hit in ranked:
+                self.hits.setdefault(hit.canonical_url, asdict(hit))
+            pages_left = self.budget.pages - self.page_count
+            if self.mode == Mode.DEEP:
+                pages_left = min(pages_left, max(4, (self.budget.pages + self.budget.rounds - 1) // self.budget.rounds))
+            elif self.budget.rounds > 1 and first:
+                pages_left = max(1, pages_left * 2 // 3)
+            self.pending_ranked = [asdict(hit) for hit in ranked]
+            self.round_page_start = self.page_count
+            self.round_page_limit = pages_left
+            await self.save_checkpoint()
+        else:
+            ranked = [Hit(**row) for row in self.pending_ranked]
+            pages_left = min(self.budget.pages - self.page_count,
+                             self.round_page_limit - (self.page_count - self.round_page_start))
+        pages_left = max(0, pages_left)
         # Reserve at most two slots of the existing per-round page budget for
         # observed links. No additional network budget is granted by navigation.
         navigate = (settings().research_browser_enabled
@@ -494,6 +525,7 @@ class Research:
                     doc = task.result()
                     self.collect_source(hit, doc)
                     documents.append((hit, doc))
+        await self.save_checkpoint()
         return documents
 
     def collect_source(self, hit, doc):
@@ -763,6 +795,9 @@ class Research:
         if self.context["turns"]:
             await self.stage("context", "Resolving conversation context", turns=len(self.context["turns"]),
                              references=len(self.context["references"]), unresolved=len(self.context["unresolved"]))
+        if self.resumed:
+            self.metrics["checkpoint_recoveries"] = self.metrics.get("checkpoint_recoveries", 0) + 1
+            await self.stage("research_resumed", "Restored durable research progress", sources=len(self.sources), round=self.next_round)
         if self.mode == Mode.DIRECT:
             reply = await self.ask("research_direct", DIRECT, Direct, {
                 "question": self.question.question, "history": [
@@ -777,35 +812,51 @@ class Research:
         synthesis_reserve = min(65 if self.mode == Mode.DEEP else 35 if self.mode != Mode.QUICK else 18,
                                 self.budget.seconds / 3)
         search_deadline = max(0.1, self.deadline - time.monotonic() - synthesis_reserve)
-        try:
-            async with asyncio.timeout(search_deadline):
-                async with ProviderPool(self.owner, self.metrics, self.reserve_search) as pool:
-                    if not pool.names:
-                        self.notes.append("No web search provider is configured.")
-                        self.result_quality = "partial"
-                    if pool.names or self.initial_hits():
-                        async with Fetcher(
-                            self.owner, self.metrics, max(0, self.budget.browsers - self.browser_count), self.reserve_browser
-                        ) as fetcher:
-                            for round_number in range(self.budget.rounds):
-                                queries = await self.plan(round_number) if pool.names else []
-                                if not queries and round_number:
-                                    break
-                                await self.search_round(pool, fetcher, queries, first=round_number == 0)
-                                if self.mode == Mode.DEEP:
-                                    await self.assess_coverage()
-                                if self.sufficient() or self.page_count >= self.budget.pages or self.search_count >= self.budget.requests:
-                                    break
-                    if pool.names and not self.hits:
-                        self.notes.append("The configured search providers returned no usable results within the available budget.")
-                        self.result_quality = "partial"
-        except TimeoutError:
-            self.notes.append("The search and retrieval time budget elapsed.")
-            self.result_quality = "partial"
+        if not self.search_done:
+            try:
+                async with asyncio.timeout(search_deadline):
+                    async with SharedCache(self.owner, self.conversation, self.metrics) as shared:
+                        async with ProviderPool(self.owner, self.metrics, self.reserve_search,
+                                                shared=shared, conversation=self.conversation) as pool:
+                            if not pool.names and self.pending_ranked is None:
+                                self.notes.append("No web search provider is configured.")
+                                self.result_quality = "partial"
+                            if pool.names or self.initial_hits() or self.pending_ranked is not None:
+                                async with Fetcher(
+                                    self.owner, self.metrics, max(0, self.budget.browsers - self.browser_count),
+                                    self.reserve_browser, shared=shared, conversation=self.conversation
+                                ) as fetcher:
+                                    for round_number in range(self.next_round, self.budget.rounds):
+                                        if self.page_count >= self.budget.pages:
+                                            break
+                                        queries = (await self.plan(round_number)
+                                                   if pool.names and self.pending_ranked is None else [])
+                                        if not queries and round_number and self.pending_ranked is None:
+                                            break
+                                        await self.search_round(pool, fetcher, queries, first=round_number == 0)
+                                        if self.mode == Mode.DEEP:
+                                            await self.assess_coverage()
+                                        self.next_round = round_number + 1
+                                        self.pending_ranked = None
+                                        await self.save_checkpoint()
+                                        if self.sufficient() or self.page_count >= self.budget.pages or self.search_count >= self.budget.requests:
+                                            break
+                            if pool.names and not self.hits:
+                                self.notes.append("The configured search providers returned no usable results within the available budget.")
+                                self.result_quality = "partial"
+            except TimeoutError:
+                self.notes.append("The search and retrieval time budget elapsed.")
+                self.result_quality = "partial"
+            self.search_done = True
+            self.pending_ranked = None
+            await self.save_checkpoint()
         if self.mode == Mode.SHOPPING:
             self.products = rank_products(self.products, self.shopping_question(), self.country)
             self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
-        await self.synthesize()
+        if not self.synthesis_done:
+            await self.synthesize()
+            self.synthesis_done = True
+            await self.save_checkpoint()
         if self.metrics["shared_origin_sources"]:
             self.notes.append("Some retrieved sources contain substantially overlapping text and were grouped as a possible shared origin, not independent corroboration.")
         if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
