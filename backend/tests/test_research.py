@@ -906,3 +906,29 @@ async def test_conversation_memory_is_owner_scoped_and_retry_context_is_frozen(c
     retry = client.post(f"{API}/tasks/{follow['id']}/retry").json()
     with Session() as session:
         assert session.get(Job, retry["id"]).snapshot["research_context"] == original
+
+
+async def test_research_checkpoint_write_is_lease_fenced(client, research):
+    from app.research.runner import ResearchRunner
+
+    task = client.post(API + "/query", json={"question": "Research battery technology", "mode": "deep"}).json()
+    job_id, old_token = claim()
+    assert job_id == task["id"]
+    runner = ResearchRunner(job_id, old_token)
+    marker = {"version": 1, "marker": "durable"}
+    runner.record_checkpoint(marker)
+    runner.record_usage({"pages_attempted": 2, "model_calls": 1})
+    with transaction() as session:
+        session.execute(update(Job).where(Job.id == job_id).values(lease_until=0))
+        assert session.get(Job, job_id).execution_state["research_checkpoint"] == marker
+    recover_expired()
+    with Session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "queued"
+        assert job.execution_state["research_checkpoint"] == marker
+        assert session.get(ResearchTask, job_id).usage["pages_attempted"] == 2
+    with pytest.raises(InterruptedError):
+        runner.record_checkpoint({"version": 1, "marker": "stale worker"})
+    assert client.post(f"{API}/tasks/{job_id}/cancel").json()["status"] == "cancelled"
+    with Session() as session:
+        assert "research_checkpoint" not in session.get(Job, job_id).execution_state
