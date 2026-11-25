@@ -15,9 +15,10 @@ from ..config import settings
 from .contracts import Direct, Mode, Plan, Summary, Verification
 from .evidence import (citation_markdown, country_from, product_evidence, rank_products, select_evidence,
                        source_record, text_evidence, verified_claims)
+from .gaps import Coverage, GapPlan, normalize
 from .policy import PublicPolicy, canonical_key
 from .retrieval import Fetcher
-from .search import Hit, ProviderPool, rank_hits
+from .search import Hit, ProviderPool, rank_hits, terms
 
 INSTRUCTIONS = (
     "Return only one compact JSON object matching the schema. The user question defines the task. "
@@ -43,6 +44,18 @@ PLAN = (
     "geography, time, currency, budget and comparison constraints. Use short queries and avoid duplicates. "
     "Use user questions as context for references. Prioritize official documentation and primary sources. "
     "Return only search phrases. Avoid URLs, operators except site:, and any private identifiers."
+)
+DEEP_PLAN = (
+    INSTRUCTIONS + " Decompose the user's research objective into up to four distinct, necessary "
+    "answerable subquestions in gaps. Preserve entities, dates, location and comparison constraints. "
+    "Provide short initial public search phrases in queries. Do not include private identifiers or URLs."
+)
+ASSESS_COVERAGE = (
+    INSTRUCTIONS + " Assess EACH research subquestion using only the supplied evidence. "
+    "Mark covered only when the evidence answers the entire subquestion, partial when it answers only "
+    "part, missing when relevant support is absent, and conflicting when independent sources materially "
+    "disagree on the same question. Cite only supplied evidence IDs that support the status. "
+    "A large number of sources is not evidence of completeness. Return one check per question ID."
 )
 SYNTHESIS = (
     INSTRUCTIONS + " Directly answer the question with short, independently checkable claims. Write no more than "
@@ -94,6 +107,8 @@ class Research:
         self.attempted, self.content_hashes = set(), set()
         self.claims = []
         self.notes = []
+        self.gap_plan = None
+        self.coverage_rounds = 0
         self.country = country_from(question.question, question.country)
         if not self.country and self.intent == "follow_up" and history:
             self.country = history[-1].get("country")
@@ -170,6 +185,82 @@ class Research:
         prior = " ".join(turn["question"][:180] for turn in self.history[-2:])
         return prior + " " + self.question.question
 
+    async def deep_plan(self, round_number, plain, country_text):
+        if self.gap_plan is None:
+            planned = None
+            if self.metrics["model_calls"] < self.budget.calls - 2:
+                planned = await self.ask("research_plan", DEEP_PLAN, Plan, {
+                    "question": search_text(self.question.question),
+                    "prior_user_questions": [search_text(row["question"][:300]) for row in self.history[-3:]],
+                    "country": self.country, "freshness": self.freshness,
+                }, cap=9)
+            gaps = [search_text(q) for q in planned.gaps] if planned else []
+            self.gap_plan = GapPlan(plain, gaps)
+            if not planned or not gaps:
+                self.notes.append("The research planner did not return distinct subquestions; coverage is limited to the original objective.")
+                self.result_quality = "partial"
+            initial = planned.queries if planned else []
+        else:
+            initial = []
+        candidates = []
+        seen = {normalize(q) for q in self.queries}
+        for q in self.gap_plan.pending():
+            topic = search_text(q.question).strip()
+            suffix = ""
+            if round_number:
+                suffix = (" independent conflicting findings" if q.status == "conflicting"
+                          else " primary evidence" if q.searches % 2 == 0 else " independent documented findings")
+            query = " ".join(f"{topic[:260]} {country_text}{suffix}".split())[:350]
+            if query and normalize(query) not in seen:
+                candidates.append(query)
+                seen.add(normalize(query))
+                q.searches += 1
+            if len(candidates) == 4:
+                break
+        # Use model-suggested discovery phrases only during the initial round.
+        for raw in initial:
+            query = " ".join(search_text(raw).split())[:350]
+            if query and normalize(query) not in seen and len(candidates) < 4:
+                candidates.append(query)
+                seen.add(normalize(query))
+        return candidates
+
+    def coverage_evidence(self):
+        # Round-robin relevant excerpts so one broad subquestion cannot consume
+        # the entire model context. Never send page text to a search provider.
+        records = list(self.evidence.values())
+        ranked = []
+        for q in self.gap_plan.questions:
+            keywords = terms(q.question)
+            ranked.append(sorted(records, key=lambda e: (
+                -len(keywords & terms(e["quote"])), e["id"],
+            )))
+        chosen = {}
+        for index in range(min(6, len(records))):
+            for group in ranked:
+                record = group[index]
+                chosen.setdefault(record["id"], record)
+        return select_evidence(list(chosen.values()), self.sources, 4500)[:12]
+
+    async def assess_coverage(self):
+        if self.gap_plan is None:
+            self.gap_plan = GapPlan(search_text(self.contextual_question()))
+        evidence = self.coverage_evidence()
+        assessment = None
+        if evidence and self.metrics["model_calls"] < self.budget.calls - 2:
+            assessment = await self.ask("research_coverage", ASSESS_COVERAGE, Coverage, {
+                "question": self.question.question,
+                "subquestions": [{"id": q.id, "question": q.question} for q in self.gap_plan.questions],
+                "country": self.country, "freshness": self.freshness,
+                "evidence": evidence,
+            }, cap=12)
+        self.gap_plan.apply(assessment, {row["id"] for row in evidence}, self.sources, self.evidence)
+        self.coverage_rounds += 1
+        await self.stage("coverage", "Assessing research subquestion coverage",
+                         covered=sum(q.status == "covered" for q in self.gap_plan.questions),
+                         total=len(self.gap_plan.questions),
+                         unresolved=len(self.gap_plan.pending()))
+
     async def plan(self, round_number):
         await self.stage("planning", "Generating search queries", round=round_number + 1)
         question = self.contextual_question()
@@ -178,6 +269,8 @@ class Research:
         plain = search_text(question).strip()
         if not plain:
             return []
+        if self.mode == Mode.DEEP:
+            return await self.deep_plan(round_number, plain, country_text)
         candidates = [f"{plain} {country_text}".strip()]
         if self.mode == Mode.TECHNICAL:
             candidates += [f"{plain} official documentation", f"{plain} benchmark comparison"]
@@ -185,8 +278,6 @@ class Research:
             candidates += [f"{plain} {country_text} retailer price availability", f"{plain} manufacturer specifications warranty"]
         elif self.mode == Mode.FACT_CHECK:
             candidates += [f"{plain} original source official statement", f"{plain} independent reporting evidence"]
-        elif self.mode == Mode.DEEP:
-            candidates += [f"{plain} primary sources research evidence", f"{plain} competing findings limitations"]
         elif round_number == 0:
             candidates += [f"{plain} official source"]
         if round_number:
@@ -195,7 +286,7 @@ class Research:
                 else f"{plain} independent corroboration conflicting evidence",
                 f"{plain} {country_text} primary source documented findings",
             ]
-        if self.mode != Mode.QUICK and (round_number <= 1 or self.mode == Mode.DEEP) and self.metrics["model_calls"] < self.budget.calls - 2:
+        if self.mode != Mode.QUICK and round_number <= 1 and self.metrics["model_calls"] < self.budget.calls - 2:
             planned = await self.ask("research_plan", PLAN, Plan, {
                 "question": search_text(self.question.question),
                 "prior_user_questions": [search_text(row["question"][:300]) for row in self.history[-3:]],
@@ -207,7 +298,7 @@ class Research:
             if planned and planned.queries:
                 candidates = [*candidates[:1], *planned.queries, *candidates[1:]]
         unique = dict.fromkeys(" ".join(query.split())[:350] for query in candidates)
-        ceiling = 2 if self.mode == Mode.QUICK else 4 if self.mode == Mode.DEEP else 3
+        ceiling = 2 if self.mode == Mode.QUICK else 3
         return [q for q in unique if q and q not in self.queries][:ceiling]
 
     def initial_hits(self):
@@ -306,13 +397,17 @@ class Research:
         if self.mode == Mode.FACT_CHECK:
             return False
         if self.mode == Mode.DEEP:
-            return self.independent_count() >= 5 and len(self.evidence) >= 20
+            return bool(self.gap_plan and self.gap_plan.complete() and self.independent_count() >= 2)
         return self.independent_count() >= 3 and len(self.evidence) >= 8
 
     async def synthesize(self):
         await self.stage("comparing", "Comparing evidence across sources", sources=len(self.sources), evidence=len(self.evidence))
         compact = min(4500, max(550, settings().ai_max_request_chars - len(self.question.question) - 2400))
-        evidence = select_evidence(list(self.evidence.values()), self.sources, compact)[:12]
+        records = list(self.evidence.values())
+        if self.gap_plan:
+            preferred = {identifier for q in self.gap_plan.questions for identifier in q.evidence}
+            records.sort(key=lambda e: e["id"] not in preferred)
+        evidence = select_evidence(records, self.sources, compact)[:12]
         proposals = []
         proposed_total = rejected_citations = 0
         if evidence:
@@ -324,6 +419,7 @@ class Research:
                 if self.intent == "follow_up" and self.history else [],
                 "mode": self.mode.value, "country": self.country, "freshness": self.freshness,
                 "evidence": evidence,
+                **({"research_subquestions": self.gap_plan.snapshot()} if self.gap_plan else {}),
             })
             ids = {row["id"] for row in evidence}
             if summary:
@@ -390,6 +486,8 @@ class Research:
             "answer": answer, "quality": self.result_quality, "notes": self.notes,
             "queries": self.queries, "search_results": list(self.hits.values()), "sources": list(self.sources.values()),
             "evidence": list(self.evidence.values()), "claims": self.claims, "products": self.products, "metrics": self.metrics,
+            **({"research_plan": self.gap_plan.snapshot(), "coverage_rounds": self.coverage_rounds}
+               if self.gap_plan else {}),
         }
 
     async def run(self):
@@ -421,6 +519,8 @@ class Research:
                                 if not queries and round_number:
                                     break
                                 await self.search_round(pool, fetcher, queries, first=round_number == 0)
+                                if self.mode == Mode.DEEP:
+                                    await self.assess_coverage()
                                 if self.sufficient() or self.page_count >= self.budget.pages or self.search_count >= self.budget.requests:
                                     break
                     if pool.names and not self.hits:
@@ -430,6 +530,17 @@ class Research:
             self.notes.append("The search and retrieval time budget elapsed.")
             self.result_quality = "partial"
         await self.synthesize()
+        if self.mode == Mode.DEEP:
+            if self.gap_plan is None:
+                self.gap_plan = GapPlan(search_text(self.contextual_question()))
+            unresolved = self.gap_plan.unanswered(self.claims)
+            if unresolved:
+                self.result_quality = "partial"
+                self.notes.append(f"{len(unresolved)} of {len(self.gap_plan.questions)} research subquestions lack covered evidence used in verified claims.")
+            if any(q.status == "conflicting" for q in self.gap_plan.questions):
+                self.notes.append("Conflicting evidence remains unresolved in the research plan.")
+            self.metrics["research_subquestions"] = len(self.gap_plan.questions)
+            self.metrics["research_subquestions_answered"] = len(self.gap_plan.questions) - len(unresolved)
         if self.mode == Mode.SHOPPING:
             self.products = rank_products(self.products, self.contextual_question())
             self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
