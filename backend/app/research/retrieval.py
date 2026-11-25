@@ -435,7 +435,11 @@ class Fetcher:
             if doc is None and response.mime == "application/pdf":
                 async with self.pdf_lock:
                     self.metrics["pdf_parse_attempts"] = self.metrics.get("pdf_parse_attempts", 0) + 1
-                    doc = await extract_pdf(response)
+                    try:
+                        doc = await extract_pdf(response)
+                    except (ValueError, OSError, TimeoutError):
+                        self.metrics["pdf_parse_failures"] = self.metrics.get("pdf_parse_failures", 0) + 1
+                        raise
                     self.metrics["pdf_pages_examined"] = self.metrics.get("pdf_pages_examined", 0) + doc.metadata["pages_examined"]
                     if not doc.blocks and not doc.table_rows:
                         self.metrics["pdf_no_text"] = self.metrics.get("pdf_no_text", 0) + 1
