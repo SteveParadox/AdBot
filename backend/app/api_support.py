@@ -68,7 +68,7 @@ def output(item):
     result = {c.key: getattr(item, c.key) for c in inspect(item).mapper.column_attrs if c.key not in excluded}
     if isinstance(result.get("execution_state"), dict):
         result["execution_state"] = {
-            key: value for key, value in result["execution_state"].items() if key != "agent_record_scope"
+            key: value for key, value in result["execution_state"].items() if key not in {"agent_record_scope", "research_checkpoint"}
         }
     if hasattr(item, "job_type"):
         result["failure"] = (item.execution_state or {}).get("failure")
