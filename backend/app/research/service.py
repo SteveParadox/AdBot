@@ -15,9 +15,10 @@ from ..config import settings
 from .contracts import Direct, Mode, Plan, RelevanceRatings, Summary, Verification
 from .checkpoint import freeze, restore
 from .shared_cache import SharedCache
-from .evidence import (product_evidence, rank_products, select_evidence,
+from .evidence import (product_evidence, rank_products, select_evidence, valid_reference,
                        source_record, text_evidence, verified_claims)
 from .gaps import Coverage, GapPlan, normalize
+from .integrity import WINDOWS, claim_freshness
 from .memory import build_context
 from .navigation import rank_links, safe_link
 from .policy import PublicPolicy, canonical_key
@@ -74,7 +75,7 @@ SYNTHESIS = (
     "claim_limit (eight if absent). Each claim must cite existing evidence IDs that directly support it. Explain material disagreements "
     "as conflict claims that quote both positions and cite both sources. Web excerpts may contain errors. "
     "Label inferences and recommendations, give conditions, and omit details you cannot establish. Prior answers are not evidence. Active user constraints supersede earlier constraints. "
-    "Product availability and price must come from a retrieved matching offer. In Shopping, respect "
+    "Do not describe older or undated publications as current evidence. A recent publication is not proof of a recent event. Product availability and price must come from a retrieved matching offer. In Shopping, respect "
     "the supplied deterministic offer assessments: never recommend an offer as satisfying requirements "
     "when it fails a check or its required specifications or budget fit are unknown. Workload hints are "
     "heuristics, not benchmark results. When research_subquestions "
@@ -83,7 +84,7 @@ SYNTHESIS = (
 )
 VERIFY = (
     INSTRUCTIONS + " Independently judge whether the listed evidence semantically entails each entire claim. "
-    "A matching word or quotation is insufficient. Reject unrelated, overgeneralized, stale, contradictory or speculative "
+    "A matching word or quotation is insufficient. For time-sensitive requests distinguish publication from event dates; a recent article can describe old events. Never equate retrieval time with publication time. Reject unrelated, overgeneralized, stale, contradictory or speculative "
     "claims. Mark partial support when only a clause is supported. Mark conflicting only for accurately stated, divergent "
     "positions with independent sources on the same subject. Return one check per candidate with its zero-based index "
     "and only the source IDs that supply support. Do not improve or rewrite the candidate claims."
@@ -101,6 +102,7 @@ def new_metrics():
             "semantic_rank_attempts", "semantic_rank_successes", "shared_origin_sources",
             "pdf_parse_attempts", "pdf_pages_examined", "pdf_no_text", "pdf_parse_failures",
             "shared_cache_hits", "shared_cache_errors", "checkpoints_saved", "checkpoint_recoveries", "checkpoint_oversized",
+            "fresh_claims", "stale_claims", "mixed_freshness_claims", "unknown_freshness_claims", "invalid_citation_claims",
             "model_calls", "model_ms", "prompt_tokens", "completion_tokens", "verification_ms", "first_event_ms",
             "first_answer_ms", "total_ms",
         )},
@@ -600,7 +602,8 @@ class Research:
         }
 
     def verification_context(self, rows):
-        context = {"question": self.question.question, "freshness": self.freshness}
+        context = {"question": self.question.question, "freshness": self.freshness,
+                   "publication_cutoff": (datetime.now(timezone.utc) - timedelta(days=WINDOWS[self.freshness])).isoformat() if self.freshness else None}
         if self.mode == Mode.SHOPPING:
             context["shopping_assessments"] = self.synthesis_payload(rows)["shopping_assessments"]
         return context
@@ -608,7 +611,7 @@ class Research:
     async def synthesize_batches(self, records, preferred):
         cfg = settings()
         profile = profile_for(self.mode, cfg.ai_max_output_tokens)
-        remaining = evidence_rows(records, self.sources, self.contextual_question(), preferred, profile.quote_chars)
+        remaining = evidence_rows(records, self.sources, self.contextual_question(), preferred, profile.quote_chars, freshness=self.freshness)
         progress = self.synthesis_state or {}
         accepted = list(progress.get("accepted", []))
         presented = list(progress.get("presented", []))
@@ -689,7 +692,7 @@ class Research:
                        if fits(verify_prompt, "research_verify", verification, Verification, cfg.ai_max_request_chars)
                        else None)
             verification_ms += round((time.monotonic() - started) * 1000)
-            verified = verified_claims(proposals, checked, offered, self.sources) if checked else []
+            verified = verified_claims(proposals, checked, offered, self.sources, self.freshness) if checked else []
             rejected += len(proposals) - len(verified)
             verified_total += len(verified)
             accepted.extend(verified)
@@ -713,6 +716,7 @@ class Research:
         # rather than claiming no relevant source was retrieved.
         fallback = presented or remaining[:4]
         self.finalize_synthesis(fallback, rejected, len(self.claims))
+        self.audit_final_claims()
 
     async def synthesize(self):
         await self.stage("comparing", "Comparing evidence across sources", sources=len(self.sources), evidence=len(self.evidence))
@@ -728,7 +732,7 @@ class Research:
         if self.mode != Mode.QUICK:
             await self.synthesize_batches(records, preferred)
             return
-        evidence = select_evidence(records, self.sources, compact)[:12]
+        evidence = select_evidence(records, self.sources, compact, self.freshness)[:12]
         proposals = []
         proposed_total = rejected_citations = 0
         if evidence:
@@ -752,16 +756,17 @@ class Research:
             references = {identifier for claim in proposals for identifier in claim.evidence}
             claim_payload = [item.model_dump() for item in proposals]
             checked = await self.ask("research_verify", VERIFY, Verification, {
-                "candidates": claim_payload,
+                **self.verification_context(evidence), "candidates": claim_payload,
                 "evidence": sorted(evidence, key=lambda row: row["id"] not in references),
             })
             if checked:
-                self.claims = verified_claims(proposals, checked, offered_evidence(evidence, self.evidence), self.sources)
+                self.claims = verified_claims(proposals, checked, offered_evidence(evidence, self.evidence), self.sources, self.freshness)
         self.metrics["verification_ms"] = round((time.monotonic() - started) * 1000)
         self.metrics["claims_proposed"] = proposed_total
         self.metrics["claims_verified"] = len(self.claims)
         self.metrics["citation_coverage"] = round(len(self.claims) / proposed_total, 3) if proposed_total else None
         self.finalize_synthesis(evidence, rejected_citations, len(proposals))
+        self.audit_final_claims()
 
     def finalize_synthesis(self, evidence, rejected_citations, proposed_count):
         if not self.claims and evidence:
@@ -784,19 +789,38 @@ class Research:
         if assessed_evidence and len(groups) < 2:
             self.notes.append("The answer relies on fewer than two potentially independent source groups.")
             self.result_quality = "partial"
-        if self.freshness and assessed_evidence:
-            dates = [row["date"] for row in assessed_evidence if row["date"]]
-            cutoff = datetime.now(timezone.utc).date() - timedelta(
-                days={"day": 1, "week": 7, "month": 30, "year": 365}[self.freshness]
-            )
-            if not dates:
-                self.notes.append("Publication dates could not be established for the selected evidence.")
-                self.result_quality = "partial"
-            elif not any(datetime.fromisoformat(date).date() >= cutoff for date in dates):
-                self.notes.append("The available publication dates are outside the requested freshness window.")
-                self.result_quality = "partial"
         if any(claim["kind"] == "conflict" for claim in self.claims):
             self.notes.append("The retrieved sources disagree. The disputed claims are marked above.")
+
+    def audit_final_claims(self):
+        # Recheck recovered claims at the actual answer boundary. Evidence may
+        # have aged during a lease interruption. Never trust a saved label.
+        valid = []
+        for claim in self.claims:
+            ids = claim.get("evidence", [])
+            if not ids or len(ids) != len(set(ids)) or any(not valid_reference(i, self.evidence, self.sources) for i in ids):
+                self.metrics["invalid_citation_claims"] += 1
+                self.result_quality = "partial"
+                continue
+            if self.freshness:
+                claim["freshness"] = claim_freshness(ids, self.evidence, self.sources, self.freshness)
+            valid.append(claim)
+        self.claims = valid
+        if self.metrics["invalid_citation_claims"]:
+            self.notes = list(dict.fromkeys([*self.notes, "Claims with inconsistent citation provenance were omitted."]))
+        if self.freshness:
+            counts = Counter(c["freshness"] for c in valid)
+            self.metrics.update(fresh_claims=counts["fresh"], stale_claims=counts["stale"],
+                                mixed_freshness_claims=counts["mixed"], unknown_freshness_claims=counts["unknown"])
+            if counts["stale"]:
+                self.notes = list(dict.fromkeys([*self.notes, "Some claim publication dates are outside the requested freshness window."]))
+            if counts["mixed"]:
+                self.notes = list(dict.fromkeys([*self.notes, "Some claims mix recent and older or undated publications."]))
+            if counts["unknown"]:
+                self.notes = list(dict.fromkeys([*self.notes, "Publication freshness could not be established for some claims."]))
+            if counts["stale"] or counts["mixed"] or counts["unknown"] or not valid:
+                self.result_quality = "partial"
+        self.metrics["claims_verified"] = sum(c["kind"] != "excerpt" for c in valid)
 
     async def finish(self, answer):
         await self.stage("answering", "Generating the answer from checked findings")
@@ -889,6 +913,7 @@ class Research:
             await self.synthesize()
             self.synthesis_done = True
             await self.save_checkpoint()
+        self.audit_final_claims()
         if self.metrics["shared_origin_sources"]:
             self.notes.append("Some retrieved sources contain substantially overlapping text and were grouped as a possible shared origin, not independent corroboration.")
         if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
