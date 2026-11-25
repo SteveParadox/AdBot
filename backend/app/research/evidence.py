@@ -3,16 +3,15 @@
 import hashlib
 import json
 import re
-import time
 from collections import Counter
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import pycountry
 from courlan import extract_domain
 
-from .integrity import claim_freshness, freshness_status, numerical_support, quoted_support
+from .integrity import (claim_freshness, freshness_status, numerical_support, observed_offer_time,
+                        offer_is_current, quoted_support)
 from .policy import PublicPolicy, canonical_key
 from .retrieval import clean
 from .ranking import lexical_scores, source_signals, supporting_groups
@@ -172,13 +171,9 @@ def product_evidence(doc, source, country):
                 continue
             currency = offer.get("priceCurrency", "").upper()
             price, valid_until = None, offer.get("priceValidUntil")
-            expired = False
-            if valid_until:
-                try:
-                    expired = datetime.fromisoformat(valid_until).date() < datetime.now(timezone.utc).date()
-                except ValueError:
-                    expired = True
-            if currency and currency != "XXX" and pycountry.currencies.get(alpha_3=currency) and not expired:
+            observed_at = observed_offer_time(doc.retrieved, doc.cache_headers)
+            current = offer_is_current(observed_at, valid_until)
+            if currency and currency != "XXX" and pycountry.currencies.get(alpha_3=currency) and current:
                 try:
                     raw_price = offer.get("price", "")
                     if not re.fullmatch(r"\d{1,12}(?:\.\d{1,6})?", raw_price):
@@ -191,7 +186,7 @@ def product_evidence(doc, source, country):
             status = None
             if re.fullmatch(r"(?:https?://(?:www\.)?schema\.org/)?[A-Za-z]+", availability):
                 status = AVAILABILITY.get(availability.rsplit("/", 1)[-1])
-            if time.time() - doc.retrieved > 120 or expired:
+            if not current:
                 status = None
             gtin = raw["gtin"] or raw["gtin13"] or raw["gtin14"]
             variant = {k: raw[k] for k in ("sku", "mpn", "color", "size") if raw[k]}
@@ -207,20 +202,34 @@ def product_evidence(doc, source, country):
                 "retailer": offer.get("seller") or source["domain"], "availability": status, "url": product_url,
                 "warranty": offer.get("warranty") or None, "shipping": offer.get("shipping") or None,
                 "review_summary": raw["rating"], "last_verified": doc.retrieved,
+                "offer_observed_at": observed_at, "offer_valid_until": valid_until or None,
+                "offer_freshness": "recent_observation" if current else "stale_or_unknown",
                 "geographic_match": geo, "market": country, "source_id": source["id"],
                 "extraction_method": raw.get("origin", "json-ld"), "category": raw.get("category", ""),
             }
             origin = raw.get("origin", "json-ld")
-            observation = {"product": raw["name"], "offer": {k: v for k, v in offer.items() if v},
+            observed_fields = {k: v for k, v in offer.items() if v and k not in {"price", "priceCurrency", "availability"}}
+            if price is not None:
+                observed_fields.update(price=price, priceCurrency=currency)
+            if status:
+                observed_fields["availability"] = status
+            observation = {"product": raw["name"], "offer": observed_fields,
                            "specifications": data["specifications"], "variant": variant,
                            "brand": raw["brand"], "model": raw["model"], "category": raw.get("category", ""),
                            "product_condition": raw.get("itemCondition", "")}
             if origin == "dom":
-                observation["observed_fields"] = raw.get("observations", {})
+                # Price and stock appear only in the validated offer object.
+                raw_fields = raw.get("observations", {})
+                observation["observed_fields"] = {k: v for k, v in raw_fields.items()
+                                                  if k not in {"price_text", "currency_label", "fields"}}
+                observation["observed_fields"]["fields"] = {k: v for k, v in raw_fields.get("fields", {}).items()
+                                                             if k != "Availability"}
             structured = quote_record(
                 source, json.dumps(observation, ensure_ascii=False),
                 f"{origin}:Product[{index}].offers[{offer_index}]", "structured",
             )
+            structured["offer_observation"] = {"observed_at": observed_at, "valid_until": valid_until or None,
+                                               "volatile_fields": bool(price is not None or status)}
             data["evidence_id"] = structured["id"]
             products.append(data)
             evidence.append(structured)
@@ -234,6 +243,9 @@ def rank_products(products, question, country=None):
     budget_requested, target = budget_constraint(question, country_from(question, country))
     unique = {}
     for product in products:
+        if "offer_observed_at" in product and not offer_is_current(product["offer_observed_at"], product.get("offer_valid_until")):
+            product["price"] = product["currency"] = product["availability"] = None
+            product["offer_freshness"] = "stale_or_unknown"
         key = (canonical_key(product["url"]), product["retailer"], product["price"], product["currency"],
                product["availability"], product["name"], product["model"], product["gtin"],
                json.dumps(product["variant"], sort_keys=True), json.dumps(product["specifications"], sort_keys=True))
