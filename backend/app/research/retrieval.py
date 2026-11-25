@@ -7,7 +7,7 @@ import os
 import re
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
@@ -296,9 +296,10 @@ async def extract_pdf(response):
 
 
 class Fetcher:
-    def __init__(self, owner, metrics, browsers=0, reserve_browser=None):
+    def __init__(self, owner, metrics, browsers=0, reserve_browser=None, shared=None, conversation=None):
         self.owner, self.metrics, self.browsers = owner, metrics, browsers
         self.reserve_browser = reserve_browser
+        self.shared, self.conversation = shared, conversation
         self.policy = PublicPolicy()
         self.stack = AsyncExitStack()
         self.client = None
@@ -379,6 +380,8 @@ class Fetcher:
         parsed = urlsplit(url)
         origin = (parsed.scheme, parsed.netloc)
         cache_key = (self.owner, *origin)
+        if self.conversation:
+            cache_key += (self.conversation, settings().user_agent_default)
         record = ROBOTS.get(cache_key, 600)
         if record is None:
             async with self.robots_locks.setdefault(origin, asyncio.Lock()):
@@ -399,12 +402,38 @@ class Fetcher:
             record.can_fetch, url, settings().user_agent_default
         )
 
+    async def cached_document(self, key):
+        if self.shared and self.shared.enabled:
+            record = await self.shared.get("document", key, 3600)
+            if record:
+                try:
+                    return Document(**record[0]), record[1]
+                except (TypeError, ValueError):
+                    pass
+            return None, 0
+        prior = DOCUMENTS.get(key, 3600)
+        return prior, DOCUMENTS.items[key][0] if prior else 0
+
+    async def discard_document(self, key):
+        if self.shared and self.shared.enabled:
+            await self.shared.discard("document", key)
+        else:
+            DOCUMENTS.discard(key)
+
+    async def store_document(self, key, doc):
+        if self.shared and self.shared.enabled:
+            await self.shared.put("document", key, asdict(doc), 3600)
+        else:
+            DOCUMENTS.put(key, doc)
+
     async def retrieve(self, hit, shopping, freshness):
         cfg = settings()
         navigation_parent = hit.source_metadata.get("parent_url", "") if hit.provider == "observed_link" else None
         parent = urlsplit(navigation_parent) if navigation_parent else None
         origin = (parent.scheme, parent.netloc) if parent else None
         cache_key = (self.owner, hit.url, shopping)
+        if self.conversation:
+            cache_key += (self.conversation, cfg.user_agent_default, cfg.research_excluded_domains, cfg.research_browser_enabled)
         max_age = min(cfg.research_cache_seconds, 60) if shopping or freshness else cfg.research_cache_seconds
         started = time.monotonic()
         try:
@@ -414,7 +443,7 @@ class Fetcher:
                     not navigation_parent or not safe_link(navigation_parent, hit.url, "source")
                 ):
                     raise PolicyError("Unsafe observed research destination")
-                prior = DOCUMENTS.get(cache_key, 3600) if cfg.research_cache_seconds else None
+                prior, stored = await self.cached_document(cache_key) if cfg.research_cache_seconds else (None, 0)
                 headers = {}
                 if prior:
                     self.policy.check(prior.url)
@@ -424,7 +453,7 @@ class Fetcher:
                     if prior.url != hit.url:
                         await self.gate(prior.url, True, origin)
                     origin_age = cache_max_age(prior.cache_headers, max_age)
-                    if origin_age and DOCUMENTS.get(cache_key, origin_age):
+                    if origin_age and 0 <= time.time() - stored < origin_age:
                         self.metrics["document_cache_hits"] += 1
                         return prior
                     if prior.url == hit.url:
@@ -459,16 +488,16 @@ class Fetcher:
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
             if not doc.blocks and not doc.products and not doc.links and not doc.table_rows:
-                DOCUMENTS.discard(cache_key)
+                await self.discard_document(cache_key)
                 return None
             if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")
                     and cache_max_age(doc.cache_headers, max_age) is not None):
-                DOCUMENTS.put(cache_key, doc)
+                await self.store_document(cache_key, doc)
             else:
-                DOCUMENTS.discard(cache_key)
+                await self.discard_document(cache_key)
             return doc
         except (httpx.HTTPError, PlaywrightError, etree.LxmlError, TimeoutError, ValueError, OSError, LookupError):
-            DOCUMENTS.discard(cache_key)
+            await self.discard_document(cache_key)
             self.metrics["retrieval_failures"] += 1
             return None
         finally:
