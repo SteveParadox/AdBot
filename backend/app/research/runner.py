@@ -7,9 +7,10 @@ from sqlalchemy import select
 
 from ..concurrency import database_call
 from ..config import ResearchBudget, settings
-from ..db import Job, ResearchTask, Session, emit, transaction
+from ..db import Job, ResearchConversation, ResearchTask, Session, emit, transaction
 from ..jobs import owned_job
 from .contracts import Question
+from .memory import MAX_ENTITIES, MAX_SOURCES, MAX_TURNS, build_context
 from .service import Research
 
 
@@ -17,14 +18,19 @@ def previous_turns(session, conversation_id, owner, before=float("inf")):
     rows = session.execute(
         select(ResearchTask)
         .join(Job, Job.id == ResearchTask.job_id)
+        .join(ResearchConversation, ResearchConversation.id == ResearchTask.conversation_id)
         .where(ResearchTask.conversation_id == conversation_id, ResearchTask.created_at < before,
-               Job.owner == owner, Job.status == "completed")
-        .order_by(ResearchTask.created_at.desc(), ResearchTask.job_id.desc()).limit(4)
+               ResearchConversation.owner == owner, Job.owner == owner, Job.status == "completed")
+        .order_by(ResearchTask.created_at.desc(), ResearchTask.job_id.desc()).limit(MAX_TURNS)
     ).scalars().all()
     return [{
-        "question": row.question["question"], "mode": row.mode, "country": row.question.get("country"),
-        "answer": row.result.get("answer", "")[:600], "sources": row.result.get("sources", [])[:3],
-        "products": row.result.get("products", [])[:5],
+        "id": row.job_id, "question": row.question["question"], "mode": row.mode,
+        "country": row.question.get("country"), "freshness": row.question.get("freshness"),
+        "answer": row.result.get("answer", "")[:900],
+        "sources": [{k: source.get(k) for k in ("id", "title", "url")} for source in row.result.get("sources", [])[:MAX_SOURCES]],
+        "products": [{k: product.get(k) for k in ("name", "model", "url", "source_id")}
+                     for product in row.result.get("products", [])[:MAX_ENTITIES]],
+        "memory": row.result.get("conversation_memory"),
     } for row in reversed(rows)]
 
 
@@ -43,6 +49,7 @@ class ResearchRunner:
             self.usage = dict(task.usage)
             before = job.snapshot.get("research_history_before", task.created_at)
             self.history = previous_turns(session, task.conversation_id, job.owner, before)
+            self.context = job.snapshot.get("research_context") or build_context(self.question, self.history, self.intent, self.mode)
         self.cfg = {"max_duration_seconds": self.budget.seconds}
         self.result = None
 
@@ -73,7 +80,8 @@ class ResearchRunner:
             raise RuntimeError("Public research is disabled by the operator")
         deadline = time.monotonic() + max(0.1, self.budget.seconds - (time.time() - self.started))
         engine = Research(self.owner, self.question, self.mode, self.intent, self.budget,
-                          deadline, self.history, self.publish, self.gate, usage=self.usage, charge=self.charge)
+                          deadline, self.history, self.publish, self.gate, usage=self.usage, charge=self.charge,
+                          context=self.context)
         self.result = await engine.run()
 
     def persist(self, session):
