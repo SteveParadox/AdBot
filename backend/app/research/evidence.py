@@ -142,7 +142,7 @@ def product_evidence(doc, source, country):
                     if not re.fullmatch(r"\d{1,12}(?:\.\d{1,6})?", raw_price):
                         raise InvalidOperation
                     price = str(Decimal(raw_price).normalize()) if "." in raw_price else raw_price
-                    price = format(Decimal(price), "f")
+                    price = format(Decimal(price), "f") if Decimal(price) > 0 else None
                 except InvalidOperation:
                     pass
             availability = offer.get("availability", "")
@@ -200,6 +200,7 @@ def rank_products(products, question, country=None):
                product["availability"], product["name"], product["model"], product["gtin"],
                json.dumps(product["variant"], sort_keys=True), json.dumps(product["specifications"], sort_keys=True))
         price = Decimal(product["price"]) if product["price"] else None
+        product["budget_requested"] = bool(amount)
         product["within_budget"] = price <= target[1] if target and target[0] == product["currency"] and price is not None else None
         product["suitability"] = suitability(product, question)
         product["comparison_group"] = comparable_identity(product)
@@ -211,6 +212,7 @@ def rank_products(products, question, country=None):
     ordered = sorted(candidates, key=lambda p: (
         p["availability"] in unavailable,
         p["within_budget"] is False,
+        p["budget_requested"] and p["within_budget"] is None,
         status_rank[p["suitability"]["status"]],
         p["within_budget"] is not True,
         p["price"] is None,
@@ -222,7 +224,7 @@ def rank_products(products, question, country=None):
     for item in ordered:
         identity = item["comparison_group"]
         if identity:
-            groups.setdefault((identity, item["currency"]), set()).add(item["source_id"])
+            groups.setdefault((identity, item["currency"]), set()).add(source_domain(item["url"]))
     for item in ordered:
         item["comparable_sources"] = len(groups.get((item["comparison_group"], item["currency"]), ()))
     return ordered
