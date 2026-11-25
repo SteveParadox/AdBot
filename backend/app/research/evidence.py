@@ -276,8 +276,11 @@ def select_evidence(evidence, sources, char_budget):
             continue
         seen.add(key)
         counts[group] += 1
-        row = dict(id=record["id"], source=group, quote=record["quote"][:550],
+        quote = record["quote"] if record.get("page") and record["kind"] == "structured" else record["quote"][:550]
+        row = dict(id=record["id"], source=group, quote=quote,
                    date=record["published_at"], kind=record["kind"])
+        if record.get("page"):
+            row["page"] = record["page"]
         packed.append((counts[group], len(packed), row))
     result = []
     for _, _, row in sorted(packed):
