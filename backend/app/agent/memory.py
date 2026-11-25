@@ -43,6 +43,29 @@ def action_key(decision):
     ).hexdigest()
 
 
+def semantic_action_key(decision, observation):
+    """Track equivalent read-side actions despite changing element IDs or scroll offsets."""
+    action = decision["decision"]
+    if action not in {"CLICK", "SCROLL", "SCROLL_BACK"}:
+        return None
+    target_id = (decision.get("target") or {}).get("element_id")
+    target = next((element for element in observation.get("elements", []) if element["element_id"] == target_id), None)
+    if action == "CLICK" and (not target or target.get("form") or target.get("role") not in {"link", "button"}):
+        return None
+    identity = {key: target.get(key) for key in ("role", "name", "href", "expanded", "selected", "pressed")} if target else {}
+    if target:
+        identity["heading"] = (target.get("context") or {}).get("heading")
+    material = {
+        "url": observation.get("url"), "tab": observation.get("tab_id"), "action": action,
+        "target": identity, "direction": decision.get("direction"),
+        "headings": observation.get("headings", [])[:12],
+        "text": observation.get("text", ""),
+    }
+    if action in {"SCROLL", "SCROLL_BACK"}:
+        material["at_end"] = observation.get("scroll", {}).get("at_end")
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
 def relevant_memories(session, owner, website_id, objective):
     words = set(re.findall(r"\w{3,}", objective.lower()))
     records = session.scalars(

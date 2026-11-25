@@ -26,6 +26,8 @@ def task_for(session, identifier, owner):
 
 def task_output(job, task):
     elapsed = max(0, (job.completed_at or time.time()) - job.started_at) if job.started_at else 0
+    directory = task.memory.get("directory") or {}
+    records = directory.get("records", {})
     return output(job) | {
         "traffic_kind": "automated",
         "automation_session_id": job.id,
@@ -40,6 +42,18 @@ def task_output(job, task):
         "model_calls": task.model_calls,
         "model_latency_ms": task.model_latency_ms,
         "planning": task.memory.get("planning"),
+        "execution": {
+            "strategy": task.memory.get("execution_route", {}).get("name", "directory_collection" if directory.get("pages") else "general"),
+            "unique_records": len(records),
+            "matched_records": sum(row.get("classification") == "match" for row in records.values()),
+            "advertised_total": directory["totals"][0] if len(directory.get("totals", [])) == 1 else None,
+            "directory_pages": len(directory.get("pages", [])),
+            "recovery_actions": directory.get("recovery_actions", 0),
+            "classification_calls": directory.get("classification_calls", 0),
+            "prevented_repetitions": task.memory.get("prevented_repetitions", 0) + directory.get("repeated_pages", 0),
+            "evidence_count": (len(task.result.get("evidence", [])) if task.result else
+                               len(task.memory.get("evidence", [])) + sum(row.get("classification") == "match" for row in records.values())),
+        },
         "budget": {
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, job.snapshot["configuration"]["max_duration_seconds"] - elapsed),
@@ -72,8 +86,6 @@ def configuration(owner: Owner):
 @router.post("/tasks", status_code=201)
 def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | None, Header(max_length=160)] = None):
     cfg = settings()
-    if cfg.ai_provider == "disabled":
-        raise HTTPException(503, "Configure an AI provider on the server before starting an agent task")
     if data.visual_reasoning and not cfg.agent_visual_reasoning:
         raise HTTPException(422, "Visual reasoning is not enabled by the server")
     if data.session_persistence and not cfg.browser_session_persistence:
@@ -101,7 +113,12 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
             from .planning import specification, initial_plan
+            from .routing import directory_intent
 
+            if cfg.ai_provider == "disabled" and not directory_intent(
+                data.objective, options, bool(data.dataset_id or website.configuration.get("extraction_dataset_id"))
+            ):
+                raise HTTPException(503, "This task requires a configured AI provider")
             job = make_job(
                 session, website, priority=data.priority, depends_on=data.depends_on, dataset_id=data.dataset_id
             )

@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ..schemas import Strict
+from .routing import select_route
 
 
 class Ambiguity(Strict):
@@ -79,6 +80,25 @@ class TaskPlan(Strict):
         return self
 
 
+def execution_intent(objective):
+    """Advisory routing metadata. The original specification remains authoritative."""
+    hints = (
+        ("form_interaction", r"\b(?:fill|submit|register|sign up)\b"),
+        ("document_retrieval", r"\b(?:download|retrieve)\b.*\b(?:file|document|pdf)\b"),
+        ("comparison", r"\b(?:compare|comparison|versus)\b"),
+        ("structured_extraction", r"\b(?:list|collect|extract)\b"),
+        ("search", r"\b(?:search|find|look up)\b"),
+        ("research", r"\b(?:research|summarize|explain|verify)\b"),
+        ("navigation", r"\b(?:navigate|open|visit|go to)\b"),
+    )
+    strategy = next((name for name, pattern in hints if re.search(pattern, objective, re.I)), "general")
+    quantifiers = re.findall(
+        r"\b(?:all|every|first|latest|cheapest|highest rated|at least \d+|exactly \d+|between \d+ and \d+)\b",
+        objective, re.I,
+    )
+    return {"category": strategy, "quantifiers": list(dict.fromkeys(word.casefold() for word in quantifiers))}
+
+
 def specification(objective, criteria, options, domains):
     # Keep exact fragments: these are user requirements, not inferred facts.
     clauses = [part.strip() for part in re.split(r"(?<=[.;\n])\s+|\s+(?:and then|then)\s+", objective) if part.strip()]
@@ -133,6 +153,7 @@ def specification(objective, criteria, options, domains):
         )
     return {
         "objective": objective,
+        "execution_intent": execution_intent(objective),
         "instruction_clauses": clauses[:32],
         "constraints": constraints[:32],
         "success_criteria": list(criteria),
@@ -233,6 +254,10 @@ def initial_plan(spec, max_steps=500, dataset=False):
         "stagnant": 0,
         "previous_progress": None,
     }
+    route = select_route(spec["objective"], spec, dataset)
+    state["route"] = route.name
+    if route.name != "general":
+        state["plan"]["subtasks"][0]["description"] = route.guidance
     if spec["output_format"] in {"csv", "json"} and not dataset:
         state["warnings"].append(
             "Export requires a configured, owned extraction dataset. Read-only research may continue."
@@ -287,7 +312,7 @@ def ready(state):
     return [n for n in nodes if n["status"] in {"pending", "active"} and set(n["dependencies"]) <= done]
 
 
-def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False):
+def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False, *, collection_complete=None):
     for node in state["plan"]["subtasks"]:
         if node["status"] in {"failed", "blocked"}:
             continue
@@ -297,7 +322,7 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
             node["kind"] == "research"
             and observation.get("url", "").startswith(("http://", "https://"))
             or node["kind"] == "collect"
-            and bool(evidence)
+            and (bool(evidence) if collection_complete is None else collection_complete)
             or node["kind"] == "dataset"
             and dataset_count > 0
             or node["kind"] == "export"

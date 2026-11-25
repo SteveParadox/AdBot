@@ -17,12 +17,15 @@ type Run = (
   action: () => Promise<unknown>,
   success?: () => void,
 ) => Promise<void>;
-type Evidence = { id: string; url: string; quote: string; step_id: number };
+type Evidence = { id: string; url: string; quote: string; step_id: number; source_url?: string };
 type Claim = { text: string; evidence_ids: string[] };
 type Task = Job & {
   planning?: Planning;
   budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
   objective: string;
+  execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
+    directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
+    classification_calls?: number };
   mode: string;
   options: {
     success_criteria: string[];
@@ -31,6 +34,7 @@ type Task = Job & {
   };
   result: {
     artifact?: { format: string; download_url: string };
+    partial?: boolean;
     claims?: Claim[];
     evidence?: Evidence[];
     verification?: { complete: boolean; explanation: string };
@@ -269,8 +273,7 @@ export default function AgentPanel({
         </details>
         {!config.data?.configured && (
           <div role="status" className="alert error">
-            The AI provider is disabled. Configure a model before starting a
-            task.
+            The AI provider is disabled. Visible directory and table collection can run with supported objectives.
           </div>
         )}
         <form onSubmit={submit} onChange={() => setPreview(null)}>
@@ -419,7 +422,7 @@ export default function AgentPanel({
             </label>
           )}
           <div className="agent-submit-actions">
-          <Button type="submit" disabled={busy || !config.data?.configured}>
+          <Button type="submit" disabled={busy || !config.data}>
             <Play size={15} />
             Start agent task
           </Button>
@@ -647,6 +650,17 @@ function AgentDetail({
           </span>
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
+        {t.execution && t.execution.strategy !== "general" && (
+          <p className="hint">Strategy {t.execution.strategy.replaceAll("_", " ")}</p>
+        )}
+        {t.execution && ["directory_collection", "table_extraction"].includes(t.execution.strategy) && (
+          <p className="hint">
+            {t.execution.unique_records}{t.execution.advertised_total != null ? ` of ${t.execution.advertised_total}` : ""} records read
+            {` ? ${t.execution.matched_records} matches ? ${t.execution.evidence_count} citations`}
+            {` ? ${t.execution.directory_pages} batches ? ${t.execution.recovery_actions ?? 0} recovery actions`}
+          </p>
+        )}
+        {Boolean(t.execution?.prevented_repetitions) && <p className="hint">{t.execution?.prevented_repetitions} repeated actions or pages detected</p>}
         <JobFailure failure={t.failure} />
         {t.error_message && (
           <p className="error" role="alert">
@@ -763,9 +777,9 @@ function AgentDetail({
           <SemanticObservation observation={latest?.observation} />
         </section>
       </div>
-      {t.status === "completed" && t.result.verification?.complete && t.result.claims && (
+      {((t.status === "completed" && t.result.verification?.complete) || t.result.partial) && t.result.claims && (
         <section className="panel form-panel">
-          <h2>Verified task result</h2>
+          <h2>{t.result.partial ? "Partial task result" : "Verified task result"}</h2>
           {t.status === "completed" && t.result.artifact && <Button disabled={busy} onClick={() => run(async () => {
             const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: "Bearer " + token } });
             if (!response.ok) throw new Error("Export unavailable or expired");
@@ -774,6 +788,7 @@ function AgentDetail({
             setTimeout(() => URL.revokeObjectURL(url), 1000);
           })}>Download verified artifact</Button>}
           <p className="hint">{t.result.verification?.explanation}</p>
+          {t.result.partial && t.result.claims.length === 0 && <p>No verified matches were collected.</p>}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
               <p>{claim.text}</p>

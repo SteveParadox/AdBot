@@ -1,0 +1,14 @@
+# Research and design choices
+
+No dependencies or external code were added. License observations refer to the linked upstream repositories as reviewed on November 25, 2026. Since this implementation reuses AdBot's own code and independently implements the techniques, it brings no upstream license obligations into the repository.
+
+| Repository and source | Technique and maintenance | License and decision |
+| --- | --- | --- |
+| [Playwright locator docs](https://github.com/microsoft/playwright/blob/main/docs/src/api/class-locator.md) and [releases](https://github.com/microsoft/playwright/releases) | Maintained role queries, locator actionability, and accessible snapshots | Apache-2.0. Reuse the installed Playwright adapter and live binding. |
+| [Browser Use DOM service](https://github.com/browser-use/browser-use/blob/main/browser_use/dom/service.py) and [license](https://github.com/browser-use/browser-use/blob/main/LICENSE) | Maintained DOM service separates clickable elements from serialization | MIT. Adapt the approach by binding a small set of route and pager controls in directory mode. |
+| [Crawlee request deduplication](https://github.com/apify/crawlee/blob/master/docs/introduction/03-adding-urls.mdx) and [project](https://github.com/apify/crawlee) | Maintained request queue uses stable identity and scope checking | Apache-2.0. Apply the idea to authorized record URLs and sets of record identities. Use the existing lease and checkpoint instead of another queue. |
+| [Crawl4AI extraction strategies](https://github.com/unclecode/crawl4ai/blob/main/docs/md_v2/extraction/no-llm-strategies.md) and [project](https://github.com/unclecode/crawl4ai) | Maintained deterministic extraction works on repeated containers and named fields | Apache-2.0. Keep the existing configured extraction engine. Add independent visible-card discovery for unconfigured directory tasks. |
+| [LangGraph checkpoint packages](https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint) and [project](https://github.com/langchain-ai/langgraph) | Maintained state persistence supports bounded recovery between steps | MIT. Persist directory coverage in the existing lease-checked task checkpoint. |
+| [LiteLLM router](https://github.com/BerriAI/litellm/blob/main/litellm/router.py) and [cooldown handlers](https://github.com/BerriAI/litellm/blob/main/litellm/router_utils/cooldown_handlers.py) | Maintained routing distinguishes context incompatibility from provider failure | MIT core. Reuse AdBot's shared cooldown and ordered fallback. Add context admission with provider- or model-specific limits. |
+
+[Stagehand releases](https://github.com/browserbase/stagehand/releases) were also checked. AdBot already had the relevant separation between accessible observation and action execution, so importing a second browser runtime would duplicate it.

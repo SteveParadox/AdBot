@@ -64,7 +64,7 @@ class Controller:
         if not self.creating:
             asyncio.create_task(page.close())
 
-    async def observe(self):
+    async def observe(self, *, directory=False):
         self.check_page()
         self.prune_tabs()
         planning = self.memory.get("planning", {})
@@ -72,12 +72,14 @@ class Controller:
             (n for n in planning.get("plan", {}).get("subtasks", []) if n["id"] == planning.get("active_subtask")), {}
         )
         data = await self.observer.observe(
-            self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", "")
+            self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", ""),
+            **({"directory": directory} if directory else {}),
         )
         data["tabs"] = [
             {"tab_id": key, "url": tab["page"].url, "purpose": tab["purpose"]} for key, tab in self.tabs.items()
         ]
-        data["screenshot_path"] = await self.runner.screenshot(self.page)
+        data["screenshot_path"] = (await self.runner.screenshot(self.page)
+                                   if not directory or self.runner.options.get("visual_reasoning") else None)
         return data
 
     async def navigate(self, url):
@@ -149,7 +151,7 @@ class Controller:
             "form": {k: live["form"][k] for k in ("method", "action")} if live["form"] else None,
         }
 
-    async def act(self, decision, options, approved=False):
+    async def act(self, decision, options, approved=False, *, read_only=False):
         self.check_page()
         self.prune_tabs()
         action = decision.decision
@@ -246,7 +248,10 @@ class Controller:
                     raise ValueError(
                         "Form validation is unresolved; inspect required fields and validation feedback before submission"
                     )
-                if form and form["method"] != "GET":
+                if read_only:
+                    if form:
+                        raise PermissionError("Directory pagination cannot submit forms")
+                elif form and form["method"] != "GET":
                     destination = urlsplit(await self.runner.permitted(form["action"]))
                     self.mutation = {
                         "method": form["method"],
