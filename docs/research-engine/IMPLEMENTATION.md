@@ -226,3 +226,40 @@ The standalone parser was smoke-tested with the locally available pdfplumber
 0.11.9 using generated PDFs (text/table extraction, 40-page truncation,
 malformed and encrypted inputs). The pinned 0.11.10 environment and full
 application/browser integration tests remain to be executed.
+
+
+## Conversation-local research memory
+
+At enqueue time, the server reads at most 32 completed turns in the authorized
+conversation, checking both conversation and job owner. It projects only the
+question, answer, product/source references and persisted memory fields.
+The resolver selects up to three turns by reference, lexical relevance and
+recency. Ordinal product references resolve against the original result order
+(up to 20 products); source references support up to 40 sources. A named
+entity must match an observed name or title; ambiguous names and invalid
+ordinals are disclosed rather than resolved by guessing.
+
+The versioned context stores effective country, freshness and supported
+shopping constraints, including currency budget, RAM, VRAM, storage, GPU,
+category, condition and workload. Explicit updates replace the corresponding
+prior slot; removal and topic reset commands stop inheritance. A market
+change drops the inherited monetary budget unless a new one is supplied.
+The system separates old user constraints from prior answer text and observed
+entity names. Historical answers are untrusted context, not current evidence.
+Selected source URLs are checked by the same public retrieval policy and
+retrieved again; ordinary caching rules still apply.
+
+A bounded snapshot is saved in the existing job JSON at enqueue. Retry and
+lease recovery reuse the snapshot, and new jobs do not reload history at
+execution time. Completed results persist versioned memory and a compact
+context explanation. The UI numbers product rows and displays the resolved
+references, current market, freshness, constraints and ambiguity notices.
+No new storage service or database migration is required.
+
+This is deterministic, conversation-scoped memory, not global personal
+memory. It does not support unlimited history, semantic embeddings, arbitrary
+natural-language coreference or every possible shopping constraint. Old
+references outside the window may not resolve, and complex topic changes
+or mixed references can remain ambiguous. Run the regression tests in
+`tests/test_research_memory.py` and the API retry/isolation case in
+`tests/test_research.py`. Runtime validation remains pending.
