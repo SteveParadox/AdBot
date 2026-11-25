@@ -97,11 +97,11 @@ def offer(domain, price, ram="16 GB", condition="NewCondition", mpn="X16-001", g
 
 
 def test_identity_preserves_condition_configuration_and_retailer_offers():
-    a = offer("one.example.ng", "950000")
-    b = offer("two.example.ng", "1000000")
-    refurbished = offer("three.example.ng", "750000", condition="RefurbishedCondition")
-    different = offer("four.example.ng", "650000", ram="8 GB")
-    unknown = offer("five.example.ng", "550000", condition="")
+    a = offer("one-shop.com.ng", "950000")
+    b = offer("two-shop.com.ng", "1000000")
+    refurbished = offer("three-shop.com.ng", "750000", condition="RefurbishedCondition")
+    different = offer("four-shop.com.ng", "650000", ram="8 GB")
+    unknown = offer("five-shop.com.ng", "550000", condition="")
     assert comparable_identity(a) == comparable_identity(b)
     assert comparable_identity(a) != comparable_identity(refurbished)
     assert comparable_identity(a) != comparable_identity(different)
@@ -114,9 +114,9 @@ def test_identity_preserves_condition_configuration_and_retailer_offers():
 
 
 def test_rank_uses_verified_requirements_before_lowest_price():
-    cheap = offer("one.example.ng", "300000", ram="8 GB", gpu="GTX 1050", vram="4 GB")
-    missing = offer("two.example.ng", "500000", ram="", gpu="", vram="")
-    good = offer("three.example.ng", "900000")
+    cheap = offer("one-shop.com.ng", "300000", ram="8 GB", gpu="GTX 1050", vram="4 GB")
+    missing = offer("two-shop.com.ng", "500000", ram="", gpu="", vram="")
+    good = offer("three-shop.com.ng", "900000")
     ranked = rank_products([cheap, missing, good], "AI engineering laptop under ₦1.5 million, RAM 16 GB and RTX 4060")
     assert [p["suitability"]["status"] for p in ranked] == ["met", "unknown", "not_met"]
     assert ranked[0]["price"] == "900000"
@@ -134,7 +134,7 @@ def test_requirement_parser_does_not_cross_specification_boundaries():
 
 
 def test_unconvertible_currency_is_not_within_budget():
-    item = offer("one.example.ng", "100000")
+    item = offer("one-shop.com.ng", "100000")
     item["currency"] = "USD"
     result = rank_products([item], "Laptop under ₦1.5 million")[0]
     assert result["budget_requested"] is True
