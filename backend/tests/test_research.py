@@ -737,3 +737,144 @@ async def test_old_publication_is_reported_only_as_partial(research, monkeypatch
     await engine.synthesize()
     assert engine.result_quality == "partial"
     assert any("outside the requested freshness window" in note for note in engine.notes)
+
+
+def test_research_navigation_rejects_commercial_and_unsafe_links(research):
+    from lxml import html
+
+    from app.research.navigation import rank_links, safe_link, static_links
+
+    base = "https://science.example.org/research"
+    tree = html.fromstring("""
+        <main>
+          <a href="/quantum/benchmark">Quantum benchmark</a>
+          <a href="/quantum?page=2" rel="next">Next page</a>
+          <a href="/checkout">Quantum checkout</a>
+          <a href="/quantum?delete=1">Quantum article</a>
+          <a href="/quantum?token=secret">Quantum article</a>
+          <a href="https://other.example.net/quantum">Quantum outside origin</a>
+          <a href="/quantum/offer" rel="sponsored">Quantum offer</a>
+          <div class="sponsored"><a href="/quantum/promo">Quantum promotion</a></div>
+          <form><a href="/quantum/form">Quantum form</a></form>
+          <a hidden href="/quantum/hidden">Quantum hidden</a>
+          <a href="/quantum/script" onclick="return false">Quantum script</a>
+          <a href="/quantum/file" download>Quantum file</a>
+          <a href="/unrelated">Unrelated</a>
+        </main>
+    """)
+    links = static_links(tree, base)
+    assert {link["url"] for link in links} == {
+        "https://science.example.org/quantum/benchmark",
+        "https://science.example.org/quantum?page=2",
+        "https://science.example.org/unrelated",
+    }
+    assert len(rank_links(links, "Quantum benchmark")) == 2
+    assert safe_link(base, "http://127.0.0.1/", "Quantum") is None
+    assert safe_link(base, "/%63heckout", "Quantum") is None
+
+
+async def test_observed_navigation_uses_existing_page_budget_and_source_provenance(research, monkeypatch):
+    from app.research.contracts import budget_for
+    from app.research.service import Research
+
+    monkeypatch.setattr(research, "research_browser_enabled", True)
+    gate = asyncio.Event()
+    gate.set()
+    events, charges, visited = [], [], []
+    parent = "https://science.example.org/catalog"
+    child = "https://science.example.org/quantum-benchmark"
+
+    async def emit(name, message, **details):
+        events.append(name)
+
+    async def charge(**delta):
+        charges.append(delta)
+
+    class Pool:
+        names = ["searxng"]
+
+        async def search(self, *args, **kwargs):
+            return normalize_hits("searxng", {"results": [
+                {"url": parent, "title": "Quantum catalog"},
+            ]}, "quantum benchmark")
+
+    class Documents:
+        async def retrieve(self, hit, shopping, freshness):
+            visited.append(hit.url)
+            anchor = f'<a href="{child}">Quantum benchmark</a>' if hit.url == parent else ""
+            markup = f"<html><body><main><p>{TEXT_A * 3}</p>{anchor}</main></body></html>"
+            # Different payloads ensure the parent and child are separate documents.
+            return extract(Response(hit.url, markup.encode(), "text/html", "utf-8", {}), shopping)
+
+    budget = budget_for(Mode.TECHNICAL).model_copy(update={"pages": 2, "rounds": 1})
+    instance = Research("test-owner", Question(question="Quantum benchmark", mode=Mode.TECHNICAL),
+                        Mode.TECHNICAL, "technical", budget, time.monotonic() + 60,
+                        [], emit, gate, model=object(), charge=charge)
+    await instance.search_round(Pool(), Documents(), ["quantum benchmark"], True)
+    assert visited == [parent, child]
+    assert instance.page_count == 2
+    assert sum(delta["pages_attempted"] for delta in charges) == 2
+    assert instance.metrics["observed_link_attempts"] == 1
+    assert "navigating" in events
+    source = next(row for row in instance.sources.values() if row["url"] == child)
+    assert source["metadata"]["discovered_from"] == parent
+    await instance.search_round(Pool(), Documents(), ["quantum benchmark again"], False)
+    assert visited == [parent, child]
+
+
+async def test_observed_navigation_redirect_cannot_leave_origin(research):
+    from dataclasses import replace
+
+    from app.research.service import new_metrics
+
+    parent = "https://science.example.org/catalog"
+    child = "https://science.example.org/quantum"
+    seen = []
+
+    def handle(request):
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": "https://other.example.net/quantum"})
+
+    hit = normalize_hits("searxng", {"results": [{"url": child}]}, "quantum")[0]
+    hit = replace(hit, provider="observed_link", source_metadata={"parent_url": parent})
+    fetcher = Fetcher("navigation-redirect", new_metrics())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        fetcher.client = client
+        assert await fetcher.retrieve(hit, False, None) is None
+    assert child in seen
+    assert not any("other.example.net" in url for url in seen)
+
+
+@pytest.mark.browser
+async def test_dynamic_shopping_semantics_with_long_static_text(research, monkeypatch):
+    from app.research.service import new_metrics
+
+    monkeypatch.setattr(research, "research_browser_enabled", True)
+    stats = new_metrics()
+    markup = (
+        '<html><head><title>Quantum catalog</title></head><body><main>'
+        f'<p>{TEXT_A * 4}</p></main><script>'
+        'document.querySelector("main").insertAdjacentHTML("beforeend",'
+        '\' <a href="/quantum/laptop" aria-label="Quantum laptop specifications">Details</a>'
+        '<a href="/quantum/promo" rel="sponsored">Quantum promo</a>'
+        '<a href="/checkout">Quantum checkout</a>'
+        '<a href="/quantum/hidden" style="display:none">Quantum hidden</a>\');'
+        '</script></body></html>'
+    )
+
+    def handle(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text=markup, headers={"Content-Type": "text/html"})
+
+    async with Fetcher("dynamic-navigation", stats, browsers=1) as fetcher:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as transport:
+            fetcher.client = transport
+            hit = normalize_hits("searxng", {"results": [{"url": SOURCE_A}]}, "quantum laptop")[0]
+            doc = await fetcher.retrieve(hit, True, None)
+            assert doc
+            assert doc.links == [{"url": "https://science.example.org/quantum/laptop",
+                                  "label": "Quantum laptop specifications", "rel": ""}]
+    assert stats["browser_render_attempts"] == 1
