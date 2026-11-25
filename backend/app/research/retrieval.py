@@ -336,6 +336,8 @@ class Fetcher:
 
     async def retrieve(self, hit, shopping, freshness):
         cfg = settings()
+        parent = urlsplit(hit.source_metadata.get("parent_url", "")) if hit.provider == "observed_link" else None
+        origin = (parent.scheme, parent.netloc) if parent else None
         cache_key = (self.owner, hit.url, shopping)
         max_age = min(cfg.research_cache_seconds, 60) if shopping or freshness else cfg.research_cache_seconds
         started = time.monotonic()
@@ -346,9 +348,9 @@ class Fetcher:
                 headers = {}
                 if prior:
                     self.policy.check(prior.url)
-                    await self.gate(hit.url, True, None)
+                    await self.gate(hit.url, True, origin)
                     if prior.url != hit.url:
-                        await self.gate(prior.url, True, None)
+                        await self.gate(prior.url, True, origin)
                     origin_age = cache_max_age(prior.cache_headers, max_age)
                     if origin_age and DOCUMENTS.get(cache_key, origin_age):
                         self.metrics["document_cache_hits"] += 1
@@ -358,7 +360,7 @@ class Fetcher:
                             headers["If-None-Match"] = prior.etag
                         if prior.last_modified:
                             headers["If-Modified-Since"] = prior.last_modified
-                response = await self.fetch(hit.url, DOCUMENT_TYPES, headers=headers)
+                response = await self.fetch(hit.url, DOCUMENT_TYPES, headers=headers, origin=origin)
                 if response.status == 304:
                     doc = self.revalidated(prior, response)
                 else:
