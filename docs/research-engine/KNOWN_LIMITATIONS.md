@@ -9,3 +9,5 @@
 - The app streams observable progress and publishes verified answer segments after the answer is committed. Raw model tokens are withheld during verification.
 - SQL shares provider rate limits and cooldowns across workers. Search and document caches are worker-local. Recovery can repeat a read-only request within the original deadline and the persisted remaining budgets. Partial source collections are committed at task completion.
 - Process caches are tenant-keyed and expire independently of persisted conversation deletion. A restarted worker begins with empty caches.
+
+- Expanded synthesis uses bounded, independently checked claim batches and deterministic report assembly. It does not guarantee exhaustive semantic coverage or reconcile every disagreement between different batches. Oversized structured records may remain outside model context; unprocessed evidence and model-reported limitations mark the result partial. Actual report length depends on configured output, request, time, call and token limits.
