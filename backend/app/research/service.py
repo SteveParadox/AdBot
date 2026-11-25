@@ -13,9 +13,10 @@ import pycountry
 from ..agent.model import ModelBudgetExceeded, ModelClient, ModelError
 from ..config import settings
 from .contracts import Direct, Mode, Plan, Summary, Verification
-from .evidence import (country_from, product_evidence, rank_products, select_evidence,
+from .evidence import (product_evidence, rank_products, select_evidence,
                        source_record, text_evidence, verified_claims)
 from .gaps import Coverage, GapPlan, normalize
+from .memory import build_context
 from .navigation import rank_links, safe_link
 from .policy import PublicPolicy, canonical_key
 from .retrieval import Fetcher
@@ -96,7 +97,7 @@ def new_metrics():
 
 
 class Research:
-    def __init__(self, owner, question, mode, intent, budget, deadline, history, emit, gate, *, model=None, usage=None, charge=None):
+    def __init__(self, owner, question, mode, intent, budget, deadline, history, emit, gate, *, model=None, usage=None, charge=None, context=None):
         self.owner, self.question, self.mode, self.intent = owner, question, Mode(mode), intent
         self.budget, self.deadline, self.history = budget, deadline, history
         self.emit, self.gate = emit, gate
@@ -118,15 +119,15 @@ class Research:
         self.notes = []
         self.gap_plan = None
         self.coverage_rounds = 0
-        self.country = country_from(question.question, question.country)
-        if not self.country and self.intent == "follow_up" and history:
-            self.country = history[-1].get("country")
-        self.freshness = question.freshness
-        if not self.freshness and intent == "follow_up" and re.search(r"\b(more recent|newer|updated)\b", question.question, re.I):
-            self.freshness = "month"
+        self.context = context if context is not None else build_context(question, history, intent, self.mode)
+        self.country = self.context["country"]
+        self.freshness = self.context["freshness"]
         if not self.freshness and intent in {"news", "current"}:
             self.freshness = "week" if intent == "news" else "month"
         self.result_quality = "complete"
+        if self.context["unresolved"]:
+            self.notes.append("Some conversation references or constraints could not be resolved unambiguously.")
+            self.result_quality = "partial"
         self.semaphore = asyncio.Semaphore(settings().research_parallelism)
 
     async def stage(self, event, message, **details):
@@ -189,18 +190,28 @@ class Research:
         return True
 
     def contextual_question(self):
-        if self.intent != "follow_up" or not self.history:
+        if self.intent != "follow_up" or not self.context["anchor_id"]:
             return self.question.question
-        prior = " ".join(turn["question"][:180] for turn in self.history[-2:])
-        return prior + " " + self.question.question
+        names = " ".join(ref["name"][:100] for ref in self.context["references"])
+        if self.mode == Mode.SHOPPING:
+            # Prior question wording may contain superseded budgets or specs.
+            # Only active user-derived slots participate in shopping ranking.
+            prior = self.context["constraints"]
+            return " ".join(p for p in (self.question.question, prior, names) if p)
+        return " ".join(p for p in (self.question.question, names, self.context["topic"][:300]) if p)
+
+    def planning_context(self):
+        # Only prior user questions, never retailer descriptions or answers,
+        # can influence public search query generation.
+        return [search_text(turn["question"][:300]) for turn in self.context["turns"][:3]]
 
     async def deep_plan(self, round_number, plain, country_text):
         if self.gap_plan is None:
             planned = None
             if self.metrics["model_calls"] < self.budget.calls - 2:
                 planned = await self.ask("research_plan", DEEP_PLAN, Plan, {
-                    "question": search_text(self.question.question),
-                    "prior_user_questions": [search_text(row["question"][:300]) for row in self.history[-3:]],
+                    "question": search_text(self.contextual_question()),
+                    "prior_user_questions": self.planning_context(),
                     "country": self.country, "freshness": self.freshness,
                 }, cap=9)
             gaps = [search_text(q) for q in planned.gaps] if planned else []
@@ -304,8 +315,8 @@ class Research:
             ]
         if self.mode != Mode.QUICK and round_number <= 1 and self.metrics["model_calls"] < self.budget.calls - 2:
             planned = await self.ask("research_plan", PLAN, Plan, {
-                "question": search_text(self.question.question),
-                "prior_user_questions": [search_text(row["question"][:300]) for row in self.history[-3:]],
+                "question": search_text(self.contextual_question()),
+                "prior_user_questions": self.planning_context(),
                 "country": self.country, "freshness": self.freshness, "past_queries": self.queries[:15],
                 "round": round_number + 1, "sources_so_far": len(self.sources),
                 "product_offers": len(self.products), "independent_sources": self.independent_count(),
@@ -321,20 +332,8 @@ class Research:
         hits = []
         explicit = EXPLICIT_URL.findall(self.question.question)[:2]
         urls = [(url.rstrip(".,;)"), "user_url") for url in explicit]
-        if self.intent == "follow_up" and self.history and not re.search(
-            r"\b(other|different|additional) retailers\b", self.question.question, re.I
-        ):
-            last = self.history[-1]
-            sources = {row["id"]: row["url"] for row in last.get("sources", [])}
-            candidates = []
-            indexes = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
-            for ordinal in re.findall(r"\b(first|second|third|fourth|fifth)\b", self.question.question, re.I):
-                products = last.get("products", [])
-                index = indexes[ordinal.casefold()]
-                if index < len(products):
-                    candidates.append(sources.get(products[index]["source_id"], products[index]["url"]))
-            candidates.extend(sources.values())
-            urls.extend((url, "conversation") for url in dict.fromkeys(candidates[:4]))
+        if self.intent == "follow_up" and not self.context["unresolved"]:
+            urls.extend((url, "conversation") for url in self.context["source_urls"])
         for url, provider in urls:
             try:
                 url = PublicPolicy().check(url)
@@ -482,11 +481,10 @@ class Research:
     def synthesis_payload(self, evidence):
         return {
             "question": self.question.question,
-            "context": self.contextual_question()[:450] if self.history else "",
-            "prior_answer_untrusted": self.history[-1]["answer"][:350]
-            if self.intent == "follow_up" and self.history else "",
-            "prior_product_names_untrusted": [p["name"][:70] for p in self.history[-1]["products"]]
-            if self.intent == "follow_up" and self.history else [],
+            "context": self.contextual_question()[:650] if self.context["turns"] else "",
+            "prior_answer_untrusted": self.context["turns"][0]["answer"][:350] if self.context["turns"] else "",
+            "prior_product_names_untrusted": [ref["name"][:70] for ref in self.context["references"] if ref["kind"] == "product"],
+            "active_constraints": self.context["constraints"][:500],
             "mode": self.mode.value, "country": self.country, "freshness": self.freshness,
             **({"shopping_assessments": [
                 {"evidence_id": p["evidence_id"], "fit": p["suitability"]["status"],
@@ -681,6 +679,8 @@ class Research:
                             sources_retrieved=len(self.sources), tokens_charged=self.token_count)
         return {
             "answer": answer, "quality": self.result_quality, "notes": self.notes,
+            "conversation_memory": {key: self.context[key] for key in ("version", "country", "freshness", "slots", "topic")},
+            "conversation_context": {key: self.context[key] for key in ("anchor_id", "references", "unresolved", "constraints", "country", "freshness")},
             "queries": self.queries, "search_results": list(self.hits.values()), "sources": list(self.sources.values()),
             "evidence": list(self.evidence.values()), "claims": self.claims, "products": self.products, "metrics": self.metrics,
             **({"research_plan": [
@@ -691,11 +691,16 @@ class Research:
 
     async def run(self):
         await self.stage("understanding", "Understanding the request", intent=self.intent, mode=self.mode)
+        self.metrics["context_turns"] = len(self.context["turns"])
+        self.metrics["context_references"] = len(self.context["references"])
+        if self.context["turns"]:
+            await self.stage("context", "Resolving conversation context", turns=len(self.context["turns"]),
+                             references=len(self.context["references"]), unresolved=len(self.context["unresolved"]))
         if self.mode == Mode.DIRECT:
             reply = await self.ask("research_direct", DIRECT, Direct, {
                 "question": self.question.question, "history": [
                     {"question": turn["question"][:250], "answer": turn.get("answer", "")[:350]}
-                    for turn in self.history[-3:]
+                    for turn in self.context["turns"][:3]
                 ],
             })
             if reply is None:
