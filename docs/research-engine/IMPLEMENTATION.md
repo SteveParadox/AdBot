@@ -110,3 +110,37 @@ interactive filters, multi-hop crawling, cross-origin link traversal, or
 arbitrary browser actions. No new external dependency or database migration
 is required. Focused regression cases were added to test_research.py but
 execution and live-site validation are pending.
+
+
+## Requirement-aware shopping and scoped product fallback
+
+Shopping first consumes bounded retailer Product/Offer JSON-LD. When it contains
+no usable priced offer, the extractor looks for explicit Product microdata,
+product detail/card scopes, or a single product page identified by metadata
+or product identifiers. It accepts locally scoped visible-price observations,
+labeled specification rows and identity fields; ambiguous or unpriced scopes,
+installments, crossed-out prices and unsupported currencies are not inferred.
+Static visibility checks are conservative HTML heuristics, not a full CSS
+visibility engine. Dynamic rendering remains optional and budgeted.
+
+Each offer retains the source URL, evidence ID, extraction method, condition,
+observed specifications and currency. Matching identifiers (checksum-valid
+GTIN or brand and manufacturer part number), known equal condition and equal
+observed configuration permit cross-retailer grouping; retailer-specific SKUs
+and title similarity alone do not establish equivalent products. Offers remain
+separate and comparisons count distinct retailer domains within one currency.
+
+Ranking checks explicit supported memory, storage, GPU, category and condition
+requirements, and a separately parsed monetary budget. Unestablished
+specifications and cross-currency budgets remain unknown. The AI engineering
+RAM/VRAM score is a transparent heuristic, not a benchmark or a guarantee.
+The worker ranks offers before synthesis, includes bounded assessments linked
+to supplied evidence IDs, and marks shopping results partial if no priced
+offer meets the observed requirements and budget. The interface displays
+requirement fit, condition, price, extraction method and comparison counts.
+
+No new external dependencies or database migrations are needed. This change
+does not add a live FX service, image loading, review-text sentiment analysis,
+general-purpose semantic product matching or guaranteed checkout pricing.
+The regression suite is `python -m pytest -q tests/test_research_shopping.py`
+from the backend directory. Runtime verification is pending.
