@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     extraction_export_ttl_seconds: int = Field(86400, ge=60, le=604800)
     research_enabled: bool = False
     research_browser_enabled: bool = False
+    research_semantic_ranking_enabled: bool = False
     research_searxng_url: str = ""
     research_brave_key: SecretStr = SecretStr("")
     research_tavily_key: SecretStr = SecretStr("")
