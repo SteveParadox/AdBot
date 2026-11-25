@@ -5,7 +5,7 @@ import time
 import zlib
 from collections import Counter, OrderedDict
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from urllib.parse import urlsplit
 
 import httpx
@@ -188,8 +188,9 @@ def normalize_hits(name, data, query):
 
 
 class ProviderPool:
-    def __init__(self, owner, metrics, reserve):
+    def __init__(self, owner, metrics, reserve, shared=None, conversation=None):
         self.owner, self.metrics, self.reserve = owner, metrics, reserve
+        self.shared, self.conversation = shared, conversation
         self.names = configured_providers()
         self.stack = AsyncExitStack()
         self.clients = {}
@@ -245,17 +246,29 @@ class ProviderPool:
     async def attempt(self, name, query, country, freshness, health):
         from json import loads
 
+        cfg = settings()
+        method, url, args = provider_request(name, query, country, freshness)
+        secret = "" if name == "searxng" else getattr(cfg, f"research_{name}_key").get_secret_value()
+        quota = identity("research:" + url, secret)
         key = (self.owner, name, query, country, freshness)
-        cached = QUERIES.get(key, settings().research_cache_seconds)
+        if self.conversation:
+            key += (self.conversation, quota, cfg.user_agent_default, cfg.research_excluded_domains)
+        if self.shared and self.shared.enabled:
+            record = await self.shared.get("query", key, cfg.research_cache_seconds)
+            try:
+                cached = [Hit(**row) for row in record[0]] if record else None
+                if cached is not None and any(PublicPolicy().check(hit.url) != hit.url or
+                                             canonical_key(hit.url) != hit.canonical_url for hit in cached):
+                    cached = None
+            except (ValueError, TypeError, KeyError, AttributeError):
+                cached = None
+        else:
+            cached = QUERIES.get(key, cfg.research_cache_seconds)
         if cached is not None:
             self.metrics["query_cache_hits"] += 1
             return cached
         if health.cooldown > time.monotonic():
             return []
-        cfg = settings()
-        method, url, args = provider_request(name, query, country, freshness)
-        secret = "" if name == "searxng" else getattr(cfg, f"research_{name}_key").get_secret_value()
-        quota = identity("research:" + url, secret)
         try:
             receipt = await database_call(reserve, quota, 0, cfg.research_provider_rpm, 0)
         except QuotaBlocked:
@@ -286,7 +299,10 @@ class ProviderPool:
             return []
         else:
             health.healthy()
-            QUERIES.put(key, hits)
+            if self.shared and self.shared.enabled:
+                await self.shared.put("query", key, [asdict(hit) for hit in hits], cfg.research_cache_seconds)
+            elif cfg.research_cache_seconds:
+                QUERIES.put(key, hits)
             return hits
         finally:
             self.metrics["provider_ms"][name] += round((time.monotonic() - started) * 1000)
