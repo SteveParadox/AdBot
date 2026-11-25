@@ -306,3 +306,54 @@ shared_origin_sources. These are diagnostics, not accuracy metrics.
 
 Focused tests: `python -m pytest -q tests/test_research_ranking.py`.
 Full application and live relevance evaluation remain pending.
+
+
+## Shared research caches and lease-fenced recovery
+
+The existing Redis connection (`ADBOT_REDIS_URL`) enables a shared,
+conversation-scoped query and extracted-document cache when research caching
+is enabled. Keys contain hashes of the owner/conversation namespace and
+request identity, including provider identity and relevant retrieval policy
+configuration. Redis uses bounded JSON records (1.5 MB maximum each),
+128 query slots and 64 document slots per conversation, with expiry of at
+most one hour. Slot collisions become misses, never mismatched hits. No
+pickle, credentials, raw PDF bytes or browser sessions are stored. Redis
+failures disable the shared cache for that task and normal retrieval
+continues. Without Redis, the bounded process-local caches remain available.
+Robots parsing remains process-local. Configure Redis memory limits and
+eviction appropriate for the entire deployment; slot limits are per thread,
+not a global memory quota.
+
+Document cache hits respect origin freshness, Age, conditional validators,
+no-store/private/noarchive and supported Vary headers. Public URL and robots
+checks still apply. Browser-rendered shells remain non-cacheable. Deleting
+a conversation invalidates its bounded Redis namespace after SQL deletion;
+an outage or late stale-worker write can leave inaccessible entries until
+TTL expiry. Conversation UUIDs are never reused. Process-local entries on
+other workers cannot be synchronously removed, but are scoped to that
+conversation and no longer reachable through the API.
+
+The worker checkpoints ranked candidates, completed retrieval batches,
+completed research rounds, search completion, and completed synthesis
+batches. Each versioned JSON snapshot is limited to 8 MiB and stored in
+Job.execution_state under the existing SQL lease fence. Oversized or
+unserializable snapshots leave the last valid checkpoint intact. Sources,
+evidence, offers, attempted URLs, gap plan, bounded hashed content sketches,
+verified synthesis progress and diagnostics are restored. The snapshot is
+internal and omitted from public job responses. A changed source policy
+invalidates saved progress. Usage counters are never taken from the snapshot:
+ResearchTask.usage and the original job deadline remain authoritative.
+
+On lease recovery the replacement worker skips checkpointed provider
+searches, attempted pages and completed synthesis batches. Operations
+interrupted before their checkpoint may be repeated only within the
+remaining charged budget. A crash between retrieval and navigation can
+lose transient link candidates. This is at-least-once recovery, not
+exactly-once external execution. Terminal completion/failure/cancellation
+clears the checkpoint. Explicit user retry creates a new research job and
+budget; it does not resume a terminal checkpoint.
+
+No additional dependencies or migrations are needed. Regression tests:
+`python -m pytest -q tests/test_research_recovery.py` and
+`python -m pytest -q tests/test_research.py -k research_checkpoint`.
+Redis-backed multi-worker integration and crash injection remain unexecuted.
