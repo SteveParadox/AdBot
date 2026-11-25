@@ -34,10 +34,15 @@ type ResearchSubquestion = {
   id: string; question: string; status: "covered" | "partial" | "missing" | "conflicting";
   evidence: string[]; searches: number; used_in_answer: boolean;
 };
+type ConversationContext = {
+  anchor_id?: string | null; constraints?: string; country?: string | null; freshness?: string | null;
+  references?: {kind: "source" | "product"; index: number; name: string; turn_id: string}[];
+  unresolved?: string[];
+};
 type Task = {
   id: string; status: string; question: { question: string; mode: Mode; country?: string; freshness?: string };
   conversation_id: string; mode: Mode; error: string | null;
-  result: { answer?: string; quality?: string; notes?: string[]; sources?: Source[]; products?: Product[]; claims?: Claim[]; research_plan?: ResearchSubquestion[]; coverage_rounds?: number };
+  result: { answer?: string; quality?: string; notes?: string[]; sources?: Source[]; products?: Product[]; claims?: Claim[]; research_plan?: ResearchSubquestion[]; coverage_rounds?: number; conversation_context?: ConversationContext };
 };
 type Conversation = { id: string; title: string; updated_at: number; messages?: Task[]; total?: number };
 type ProviderConfig = { enabled: boolean; model_configured: boolean; providers: { name: string }[] };
@@ -99,8 +104,8 @@ function ProductResults({ products, sources }: { products: Product[]; sources: S
     <h4>Product comparison</h4>
     <div className="research-table"><table>
       <thead><tr><th>Product</th><th>Retailer</th><th>Price</th><th>Availability</th><th>Requirement fit</th><th>Verified</th></tr></thead>
-      <tbody>{products.map((product) => <tr key={product.evidence_id}>
-        <th scope="row"><SourceLink href={sources.find(s => s.id === product.source_id)?.url || ""}>{product.name}</SourceLink>
+      <tbody>{products.map((product, index) => <tr key={product.evidence_id}>
+        <th scope="row"><SourceLink href={sources.find(s => s.id === product.source_id)?.url || ""}>{index + 1}. {product.name}</SourceLink>
           <small>{[product.model, ...Object.values(product.variant)].filter(Boolean).join(" · ")}</small>
         </th>
         <td>{product.retailer}<small>{labels[product.geographic_match] || ""}</small></td>
@@ -164,6 +169,15 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
       <AnswerMarkup text={markdown} sources={sources} direct={task.mode === "direct"} />
     </div>}
     {!!task.result.notes?.length && <ul className="research-notes">{task.result.notes.map(note => <li key={note}>{note}</li>)}</ul>}
+    {task.result.conversation_context?.anchor_id && <details className="research-sources">
+      <summary>Conversation context used</summary>
+      <p>{task.result.conversation_context.constraints || "No explicit shopping constraints carried forward."}</p>
+      {task.result.conversation_context.country && <p>Market: {task.result.conversation_context.country}</p>}
+      {task.result.conversation_context.freshness && <p>Freshness: {task.result.conversation_context.freshness}</p>}
+      {!!task.result.conversation_context.references?.length && <ul>{task.result.conversation_context.references.map((ref, index) =>
+        <li key={index}>{ref.kind} {ref.index}: {ref.name}</li>)}</ul>}
+      {!!task.result.conversation_context.unresolved?.length && <p>Unresolved: {task.result.conversation_context.unresolved.join(", ")}</p>}
+    </details>}
     {!!task.result.research_plan?.length && <details className="research-sources">
       <summary>Research coverage ({task.result.research_plan.filter(q => q.used_in_answer).length}/{task.result.research_plan.length} addressed)</summary>
       <ul>{task.result.research_plan.map(q => <li key={q.id}>
