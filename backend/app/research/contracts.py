@@ -58,6 +58,15 @@ class Plan(Strict):
     gaps: list[str] = Field(default_factory=list, max_length=4)
 
 
+class RelevanceRating(Strict):
+    candidate: int = Field(ge=0, le=11)
+    relevance: int = Field(ge=0, le=4)
+
+
+class RelevanceRatings(Strict):
+    ratings: list[RelevanceRating] = Field(max_length=12)
+
+
 class Claim(Strict):
     text: str = Field(min_length=2, max_length=520)
     kind: str = Field(pattern=r"^(fact|inference|recommendation|conflict)$")
