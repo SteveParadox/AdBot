@@ -10,6 +10,7 @@ from .search import terms
 MAX_TURNS = 32
 MAX_SELECTED = 3
 MAX_ENTITIES = 20
+MAX_SOURCES = 40
 RESET = re.compile(r"\b(?:new topic|unrelated question|start over|forget (?:the )?(?:previous|earlier) (?:context|requirements))\b", re.I)
 FOLLOW = re.compile(
     r"\b(?:those|these|them|that (?:claim|one|product|source|report|answer)|previous|earlier|above|"
@@ -43,11 +44,12 @@ CONDITION = re.compile(r"\b(?:brand new|new only|refurbished only|used only|(?:n
 def followup(text, history):
     if not history or RESET.search(text):
         return False
-    if FOLLOW.search(text):
+    if REFERENCE.search(text) or FOLLOW.search(text):
         return True
     if re.search(r"\b(?:that claim|sources?|verify it|explain it)\b", text, re.I) and len(terms(text)) <= 8:
         return True
-    return False
+    return any(len(p.get("name", "")) >= 5 and p["name"].casefold() in text.casefold()
+               for turn in history for p in turn.get("products", [])) and len(terms(text)) <= 12
 
 
 def relevant_turns(text, history):
@@ -70,7 +72,7 @@ def relevant_turns(text, history):
         anchor = next((turn for turn in reversed(history) if turn.get(key)), history[-1])
     elif any(score[0] for score in scored):
         anchor = max(scored, key=lambda row: row[:3])[-1]
-    elif re.search(r"\b(?:previous|earlier|same)\b", text, re.I) and any(score[1] for score in scored):
+    elif re.search(r"\b(?:previous|earlier)\b", text, re.I) and any(score[1] for score in scored):
         anchor = max(scored, key=lambda row: row[:3])[-1]
     else:
         anchor = history[-1]
@@ -142,6 +144,8 @@ def resolve_references(text, anchor):
             refs.append({"kind": "product", "index": anchor["products"].index(matches[0]) + 1,
                          "name": matches[0]["name"], "url": matches[0].get("url"),
                          "turn_id": anchor.get("id", "")})
+        elif len(matches) > 1:
+            unresolved.append("ambiguous product name")
     return refs[:4], unresolved[:4]
 
 
@@ -151,15 +155,15 @@ def build_context(question, history, intent, mode):
     selected = relevant_turns(text, history) if intent == "follow_up" and not RESET.search(text) else []
     anchor = selected[0] if selected else {}
     old = anchor.get("memory") or {}
-    country = country_from(text, question.country) or (old.get("country") or anchor.get("country"))
+    country = country_from(text, question.country) or (old.get("country") if old else anchor.get("country"))
     if re.search(r"\b(?:any country|worldwide|globally|remove (?:the )?country)\b", text, re.I) and not question.country:
         country = None
     freshness = question.freshness or next((name for name, pattern in FRESHNESS if re.search(pattern, text, re.I)), None)
     if not freshness:
-        freshness = old.get("freshness") or anchor.get("freshness")
+        freshness = old.get("freshness") if old else anchor.get("freshness")
     if re.search(r"\b(?:any date|no date limit|remove (?:the )?freshness)\b", text, re.I) and not question.freshness:
         freshness = None
-    slots = dict(old.get("slots") or user_slots(anchor.get("question", ""), country)) if anchor else {}
+    slots = dict(old.get("slots", {})) if old else user_slots(anchor.get("question", ""), country) if anchor else {}
     updates = user_slots(text, country)
     # Common short budget revisions inherit currency only when a previous
     # explicit monetary budget exists.
@@ -168,7 +172,8 @@ def build_context(question, history, intent, mode):
         if match:
             scale = {"million": 1000000, "m": 1000000, "thousand": 1000, "k": 1000}[match[2].casefold()]
             updates["budget"] = [slots["budget"][0], format(Decimal(match[1]) * scale, "f")]
-    if country and old.get("country") and country != old["country"] and "budget" not in updates:
+    prior_country = old.get("country") if old else anchor.get("country")
+    if prior_country and country != prior_country and "budget" not in updates:
         # Do not silently apply an old market's price limit to a new market.
         slots.pop("budget", None)
     for key, value in updates.items():
@@ -187,6 +192,8 @@ def build_context(question, history, intent, mode):
     # historical prices or product descriptions to provider search queries.
     topic = old.get("topic") or anchor.get("question") or text
     effective = constraint_text(slots) if str(mode) == "shopping" else ""
+    if "budget" in updates and updates["budget"] is None and not re.search(r"\b(?:remove|drop|ignore|no|without) (?:the |my )?budget\b", text, re.I):
+        unresolved.append("budget currency or amount")
     return {
         "version": 1, "country": country, "freshness": freshness, "slots": slots,
         "topic": topic[:1400], "constraints": effective, "references": refs,
