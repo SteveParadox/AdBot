@@ -19,11 +19,14 @@ type Source = {
   content_hash: string; query: string;
 };
 type Evidence = { id: string; source_id: string; quote: string; location: string; retrieved_at: number };
+type SuitabilityCheck = { requirement: string; observed: string | null; status: "met" | "not_met" | "unknown" };
 type Product = {
   name: string; brand: string; model: string; retailer: string; price: string | null; currency: string | null;
   availability: string | null; source_id: string; evidence_id: string; last_verified: number;
   variant: Record<string, string>; specifications: Record<string, string>; within_budget: boolean | null;
   geographic_match: string; warranty: string | null; shipping: string | null; review_summary: Record<string, string>;
+  extraction_method?: string; comparison_group?: string | null; comparable_sources?: number; budget_requested?: boolean;
+  suitability?: { status: "met" | "not_met" | "unknown" | "not_requested"; requirements: SuitabilityCheck[]; workload_hints: SuitabilityCheck[]; score: number };
 };
 type Claim = { text: string; kind: string; evidence: string[] };
 type ResearchSubquestion = {
@@ -84,23 +87,30 @@ function ProductResults({ products, sources }: { products: Product[]; sources: S
   return <section className="research-products" aria-label="Product comparison">
     <h4>Product comparison</h4>
     <div className="research-table"><table>
-      <thead><tr><th>Product</th><th>Retailer</th><th>Price</th><th>Availability</th><th>Verified</th></tr></thead>
+      <thead><tr><th>Product</th><th>Retailer</th><th>Price</th><th>Availability</th><th>Requirement fit</th><th>Verified</th></tr></thead>
       <tbody>{products.map((product) => <tr key={product.evidence_id}>
         <th scope="row"><SourceLink href={sources.find(s => s.id === product.source_id)?.url || ""}>{product.name}</SourceLink>
           <small>{[product.model, ...Object.values(product.variant)].filter(Boolean).join(" · ")}</small>
         </th>
         <td>{product.retailer}<small>{labels[product.geographic_match] || ""}</small></td>
         <td>{product.price ? `${product.currency} ${product.price}` : "Unverified"}
-          {product.within_budget !== null && <small>{product.within_budget ? "Within budget" : "Above budget"}</small>}</td>
-        <td>{product.availability || "Unverified"}</td><td>{readDate(product.last_verified)}</td>
+          {product.within_budget != null ? <small>{product.within_budget ? "Within budget" : "Above budget"}</small> :
+            product.budget_requested ? <small>Budget fit unverified</small> : null}</td>
+        <td>{product.availability || "Unverified"}</td>
+        <td>{product.suitability?.status === "met" ? "Observed requirements met" : product.suitability?.status === "not_met" ? "Does not meet requirements" : product.suitability?.status === "unknown" ? "Specifications incomplete" : "No explicit specification constraints"}
+          {(product.comparable_sources || 0) > 1 && <small>Matching identifier/configuration at {product.comparable_sources} retailer domains</small>}</td>
+        <td>{readDate(product.last_verified)}</td>
       </tr>)}</tbody>
     </table></div>
-    <ul className="research-product-cards">{products.slice(0, 8).map(p => <li key={p.evidence_id}>
+    <p>Prices are retailer observations, not guaranteed checkout totals. Different currencies are not directly compared. Workload hints are not compatibility or performance guarantees.</p>
+    <ul className="research-product-cards">{products.map(p => <li key={p.evidence_id}>
       <details><summary>{p.name}</summary>
-        <dl>{Object.entries({ Brand: p.brand, Model: p.model, Warranty: p.warranty, Shipping: p.shipping,
+        <dl>{Object.entries({ Brand: p.brand, Model: p.model, Condition: p.variant.condition, Extraction: p.extraction_method === "dom" ? "Observed product page" : p.extraction_method === "json-ld" ? "Retailer structured metadata" : undefined, Warranty: p.warranty, Shipping: p.shipping,
           Rating: p.review_summary.ratingValue, Reviews: p.review_summary.reviewCount || p.review_summary.ratingCount,
           ...p.specifications }).filter(([, value]) => value).map(([label, value]) =>
           <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        {!!p.suitability?.requirements.length && <ul>{p.suitability.requirements.map((check, i) => <li key={i}>{check.requirement}: {check.observed || "Not established"} ({check.status.replace("_", " ")})</li>)}</ul>}
+        {!!p.suitability?.workload_hints.length && <><p>Workload heuristics:</p><ul>{p.suitability.workload_hints.map((check, i) => <li key={i}>{check.requirement}: {check.observed || "Not established"} ({check.status.replace("_", " ")})</li>)}</ul></>}
       </details>
     </li>)}</ul>
   </section>;
