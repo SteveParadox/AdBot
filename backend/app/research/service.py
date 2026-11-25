@@ -196,7 +196,7 @@ class Research:
                 }, cap=9)
             gaps = [search_text(q) for q in planned.gaps] if planned else []
             self.gap_plan = GapPlan(plain, gaps)
-            if not planned or not gaps:
+            if not planned or len(self.gap_plan.questions) < 2:
                 self.notes.append("The research planner did not return distinct subquestions; coverage is limited to the original objective.")
                 self.result_quality = "partial"
             initial = planned.queries if planned else []
@@ -204,17 +204,24 @@ class Research:
             initial = []
         candidates = []
         seen = {normalize(q) for q in self.queries}
-        for q in self.gap_plan.pending():
+        pending = self.gap_plan.pending()
+        if not pending and self.independent_count() < 2:
+            pending = self.gap_plan.questions
+        for q in pending:
             topic = search_text(q.question).strip()
             suffix = ""
             if round_number:
                 suffix = (" independent conflicting findings" if q.status == "conflicting"
-                          else " primary evidence" if q.searches % 2 == 0 else " independent documented findings")
-            query = " ".join(f"{topic[:260]} {country_text}{suffix}".split())[:350]
-            if query and normalize(query) not in seen:
-                candidates.append(query)
-                seen.add(normalize(query))
-                q.searches += 1
+                          else " independent documented findings")
+            alternatives = [suffix, " primary evidence", " comparative findings", " independent corroboration",
+                            " research limitations"]
+            for perspective in alternatives:
+                query = " ".join(f"{topic[:260]} {country_text}{perspective}".split())[:350]
+                if query and normalize(query) not in seen:
+                    candidates.append(query)
+                    seen.add(normalize(query))
+                    q.searches += 1
+                    break
             if len(candidates) == 4:
                 break
         # Use model-suggested discovery phrases only during the initial round.
@@ -486,8 +493,10 @@ class Research:
             "answer": answer, "quality": self.result_quality, "notes": self.notes,
             "queries": self.queries, "search_results": list(self.hits.values()), "sources": list(self.sources.values()),
             "evidence": list(self.evidence.values()), "claims": self.claims, "products": self.products, "metrics": self.metrics,
-            **({"research_plan": self.gap_plan.snapshot(), "coverage_rounds": self.coverage_rounds}
-               if self.gap_plan else {}),
+            **({"research_plan": [
+                {**row, "used_in_answer": row["id"] not in {q.id for q in self.gap_plan.unanswered(self.claims)}}
+                for row in self.gap_plan.snapshot()
+            ], "coverage_rounds": self.coverage_rounds} if self.gap_plan else {}),
         }
 
     async def run(self):
