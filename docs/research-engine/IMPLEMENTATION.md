@@ -357,3 +357,41 @@ No additional dependencies or migrations are needed. Regression tests:
 `python -m pytest -q tests/test_research_recovery.py` and
 `python -m pytest -q tests/test_research.py -k research_checkpoint`.
 Redis-backed multi-worker integration and crash injection remain unexecuted.
+
+
+## Claim-level freshness and citation integrity
+
+Publication dates are resolved from explicit publisher declarations (article
+metadata, marked time elements and top-level article JSON-LD). Conflicting
+calendar days, malformed dates and future dates do not establish freshness.
+Modification, retrieval and HTTP validation dates are not publication dates.
+Timezone-free declarations are conservatively treated as day precision;
+a date-only value overlapping a rolling freshness boundary is unestablished.
+
+Freshness is evaluated separately for each claim and each cited source:
+fresh, stale, mixed, or unknown. Relevant fresh publications are preferred
+in evidence packing. Non-fresh findings carry explicit labels and cause
+partial answer quality when freshness was requested. A recent publication
+alone does not prove that a described event is recent. Model prompts
+distinguish publication time from event time.
+
+Verification checks citation IDs, duplicate references, source URL and
+content-hash consistency, and physical PDF page bounds. Numerical checks
+normalize common decimal and thousands separators, magnitude words,
+percentage units, signs, currencies, dates and dotted versions. Structured
+offer prices are bound to the observed currency. Explicit multiword
+quotations require literal corroboration. These checks supplement semantic
+verification; they do not establish that a numerical value refers to the
+correct entity or independently validate derived calculations.
+
+Retailer price and availability require an observation within 120 seconds
+and a non-expired declared offer validity date, accounting for HTTP Age.
+Stale or expired values are omitted from structured offers. Final assembly
+rechecks volatile cited offers, removes affected claims and refreshes the
+product ranking. The source panel labels publisher-declared dates and
+conflicting metadata. Checkpoint and shared cache schema versions are
+incremented to avoid reusing pre-validation state. No new dependencies
+or migrations are required.
+
+Focused tests: `python -m pytest -q tests/test_research_integrity.py`.
+Full integration and live freshness validation remain pending.
