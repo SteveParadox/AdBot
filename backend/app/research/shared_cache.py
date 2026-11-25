@@ -17,7 +17,7 @@ from ..config import settings
 
 SLOTS = {"query": 128, "document": 64}
 MAX_BYTES = 1_500_000
-VERSION = "v1"
+VERSION = "v2"
 
 
 def digest(value):
