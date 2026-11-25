@@ -16,21 +16,25 @@ from .service import Research
 
 def previous_turns(session, conversation_id, owner, before=float("inf")):
     rows = session.execute(
-        select(ResearchTask)
+        select(ResearchTask.job_id, ResearchTask.question, ResearchTask.mode,
+               ResearchTask.result["answer"].as_string().label("answer"),
+               ResearchTask.result["sources"].label("sources"),
+               ResearchTask.result["products"].label("products"),
+               ResearchTask.result["conversation_memory"].label("memory"))
         .join(Job, Job.id == ResearchTask.job_id)
         .join(ResearchConversation, ResearchConversation.id == ResearchTask.conversation_id)
         .where(ResearchTask.conversation_id == conversation_id, ResearchTask.created_at < before,
                ResearchConversation.owner == owner, Job.owner == owner, Job.status == "completed")
         .order_by(ResearchTask.created_at.desc(), ResearchTask.job_id.desc()).limit(MAX_TURNS)
-    ).scalars().all()
+    ).all()
     return [{
         "id": row.job_id, "question": row.question["question"], "mode": row.mode,
         "country": row.question.get("country"), "freshness": row.question.get("freshness"),
-        "answer": row.result.get("answer", "")[:900],
-        "sources": [{k: source.get(k) for k in ("id", "title", "url")} for source in row.result.get("sources", [])[:MAX_SOURCES]],
+        "answer": (row.answer or "")[:900],
+        "sources": [{k: source.get(k) for k in ("id", "title", "url")} for source in (row.sources or [])[:MAX_SOURCES]],
         "products": [{k: product.get(k) for k in ("name", "model", "url", "source_id")}
-                     for product in row.result.get("products", [])[:MAX_ENTITIES]],
-        "memory": row.result.get("conversation_memory"),
+                     for product in (row.products or [])[:MAX_ENTITIES]],
+        "memory": row.memory,
     } for row in reversed(rows)]
 
 
@@ -48,8 +52,10 @@ class ResearchRunner:
             self.budget = ResearchBudget.model_validate(task.budget)
             self.usage = dict(task.usage)
             before = job.snapshot.get("research_history_before", task.created_at)
-            self.history = previous_turns(session, task.conversation_id, job.owner, before)
-            self.context = job.snapshot.get("research_context") or build_context(self.question, self.history, self.intent, self.mode)
+            self.context = job.snapshot.get("research_context")
+            self.history = [] if self.context is not None else previous_turns(session, task.conversation_id, job.owner, before)
+            if self.context is None:
+                self.context = build_context(self.question, self.history, self.intent, self.mode)
         self.cfg = {"max_duration_seconds": self.budget.seconds}
         self.result = None
 
