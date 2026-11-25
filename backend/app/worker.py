@@ -44,6 +44,9 @@ async def _execute(job_id, token):
             if kind == 'export':
                 from .extraction.exporter import ExportRunner
                 runner = ExportRunner(job_id,token)
+            elif kind == "research":
+                from .research.runner import ResearchRunner
+                runner = ResearchRunner(job_id, token)
             elif kind == "agent":
                 from .agent.runner import AgentRunner
 
@@ -191,6 +194,8 @@ async def _execute(job_id, token):
                                 save_memory(session, job, task)
                             emit(session, job_id, "goal_verified", "Objective verified against collected evidence",
                                  claims=len(result["claims"]))
+                    if kind == "research" and job.status == "completed":
+                        runner.persist(session)
                     job.completed_at = None if job.status == "queued" else time.time()
                     if not error and job.status == "completed":
                         job.execution_state = {k: v for k, v in job.execution_state.items() if k != "failure"}

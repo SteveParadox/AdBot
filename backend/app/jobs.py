@@ -45,7 +45,7 @@ def make_job(session, website: Website, workflow: Workflow | None = None, key=No
         payload.update(priority=priority,depends_on=depends_on)
     if depends_on:
         parent=session.get(Job,depends_on)
-        if not parent or parent.owner!=website.owner:
+        if not parent or parent.owner!=website.owner or parent.job_type == "research":
             raise ValueError("Dependency must be an existing job owned by this workspace")
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     if key:
@@ -121,7 +121,7 @@ def claim():
         jobs = session.scalars(
             select(Job)
             .where(Job.status == "queued", Job.cancel_requested.is_(False),Job.job_type.not_in(control.disabled),
-                   Job.website_id.not_in(control.disabled_websites),
+                   or_(Job.job_type == "research", Job.website_id.not_in(control.disabled_websites)),
                    or_(control.enabled,Job.manual_release.is_(True)),
                    or_(Job.depends_on.is_(None),select(parent.id).where(parent.id==Job.depends_on,parent.status=='completed').exists()))
             .order_by((Job.priority + (now - Job.created_at) / settings().priority_aging_seconds).desc(),Job.created_at)
@@ -326,6 +326,11 @@ def cleanup():
         child=aliased(Job)
         retained=select(child.depends_on).where(child.depends_on.is_not(None))
         session.execute(delete(Job).where(Job.status.in_(TERMINAL), Job.completed_at < cutoff,Job.id.not_in(retained)))
+        from .db import ResearchConversation, ResearchTask
+        session.execute(delete(ResearchConversation).where(
+            ResearchConversation.updated_at < cutoff,
+            ~select(ResearchTask.job_id).where(ResearchTask.conversation_id == ResearchConversation.id).exists(),
+        ))
     root = settings().artifact_dir
     if root.exists():
         for path in list(root.glob("*.png")) + list(root.glob("*.bin")):

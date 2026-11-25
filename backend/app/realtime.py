@@ -55,7 +55,7 @@ def read_batch(owner, cursor, change_cursor):
         return cached[1]
     with Session() as session:
         event_ids = select(AutomationEvent.id, literal("event").label("kind")).join(Job).where(
-            Job.owner == owner, AutomationEvent.id > cursor,
+            Job.owner == owner, Job.job_type != "research", AutomationEvent.id > cursor,
         ).order_by(AutomationEvent.id).limit(100).subquery()
         change_ids = select(ResourceChange.id, literal("change").label("kind")).where(
             ResourceChange.owner.in_([owner, "*"]), ResourceChange.id > change_cursor,
