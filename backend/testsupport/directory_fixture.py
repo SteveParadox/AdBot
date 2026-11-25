@@ -96,6 +96,17 @@ def semantic():
     )
 
 
+@router.get("/execution-fixture/in-place", response_class=HTMLResponse)
+def in_place():
+    return (
+        '<main><h1>AI tools</h1><p>2 tools</p><article>'
+        '<a href="/execution-fixture/tool/first">First chatbot</a>'
+        '<span itemprop="category">AI chatbot</span></article>'
+        '<button type="button" onclick="setTimeout(()=>{const link=document.querySelector(\'article a\');'
+        'link.href=\'/execution-fixture/tool/second\';link.textContent=\'Second chatbot\';this.disabled=true},150)">Next</button></main>'
+    )
+
+
 @router.get("/execution-fixture/table", response_class=HTMLResponse)
 def table():
     return (

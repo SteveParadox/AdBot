@@ -458,11 +458,25 @@ class AgentRunner(Runner):
                         if directory.state.get("terminal"):
                             terminal = directory.blocker() or ""
                         result = directory_result(directory.state, terminal or None)
+                        preview = observation["screenshot_path"]
+                        # Deterministic reads skip per-step captures. Save the final
+                        # viewport for the dashboard without involving the model.
+                        preview_time = min(2, self.deadline - time.time() - 1)
+                        if not preview and preview_time > 0 and controller.page.url == observation["url"]:
+                            try:
+                                async with asyncio.timeout(preview_time):
+                                    preview = await self.screenshot(controller.page)
+                            except (BrowserError, OSError, TimeoutError):
+                                pass
                         def finish_directory():
                             with transaction() as session:
                                 owned_job(session, self.id, self.token)
                                 step = session.get(AgentStep, step_id)
                                 step.status = "failed" if terminal else "succeeded"
+                                if preview and not step.observation.get("screenshot_path"):
+                                    step.observation = {**step.observation, "screenshot_path": preview}
+                                    emit(session, self.id, "agent_preview_captured", "Last browser capture saved",
+                                         step_id=step_id, url=observation["url"], screenshot_path=preview)
                                 step.outcome = {"directory": {k: v for k, v in result["directory"].items() if k != "records"},
                                                 "error": terminal or None, "trace": controller.engine.trace.copy()}
                         await database_call(finish_directory)
@@ -601,8 +615,12 @@ class AgentRunner(Runner):
                 outcome["trace"] = controller.engine.trace.copy()
                 outcome["traffic_kind"] = "automated"
                 outcome["after_url"] = controller.page.url if deterministic else after["url"]
-                outcome["page_changed"] = (outcome["after_url"] != observation["url"] or
-                                           after["fingerprint"] != observation["fingerprint"])
+                outcome["url_changed"] = outcome["after_url"] != observation["url"]
+                interaction = outcome.get("interaction") or {}
+                outcome["content_changed"] = (interaction.get("content_changed") if deterministic else
+                                              after["text"] != observation["text"])
+                outcome["page_changed"] = bool(outcome["url_changed"] or outcome["content_changed"] or
+                                               after["fingerprint"] != observation["fingerprint"])
                 if isinstance(outcome.get("interaction"), dict):
                     for key, observed_page in (("focus_before", observation), ("focus_after", after)):
                         focused = next((e for e in observed_page.get("elements", []) if e.get("focused")), None)
@@ -643,6 +661,8 @@ class AgentRunner(Runner):
                             url=outcome["after_url"],
                             screenshot_path=after["screenshot_path"],
                             page_changed=outcome["page_changed"],
+                            url_changed=outcome["url_changed"],
+                            content_changed=outcome["content_changed"],
                         )
 
                 await database_call(record_success)

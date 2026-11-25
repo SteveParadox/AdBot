@@ -10,6 +10,7 @@ from app.config import settings
 from app.db import AgentStep, transaction
 from app.jobs import claim
 from app.worker import execute
+from conftest import OTHER_AUTH
 from test_browser import fixture_server  # noqa: F401
 from testsupport.directory_fixture import CONVERSATION_DESCRIPTION, EXPECTED, RECORD_COUNT, router
 
@@ -154,6 +155,53 @@ async def test_unlandmarked_extraction(client, target, fixture_server, monkeypat
         assert answer["strategy"] == "table_extraction"
         assert [row["headers"] for row in answer["directory"]["records"]] == [["Day", "Time"], ["Day", "Time"]]
         assert [row["cells"] for row in answer["directory"]["records"]] == [["Monday", "09:00"], ["Tuesday", "11:00"]]
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("capture_available", [True, False])
+async def test_in_place_pagination_reports_content_and_saves_final_preview(
+    client, target, fixture_server, monkeypatch, capture_available,  # noqa: F811
+):
+    from app.agent.runner import AgentRunner
+
+    monkeypatch.setattr(settings(), "ai_provider", "disabled")
+    if not capture_available:
+        async def unavailable(self, page):
+            raise OSError("Fixture capture unavailable")
+
+        monkeypatch.setattr(AgentRunner, "screenshot", unavailable)
+    site = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
+    site.update(base_url="http://127.0.0.1:8765/execution-fixture/in-place", authorized=True)
+    site["configuration"].update(screenshots=False, max_duration_seconds=60)
+    assert client.patch("/api/websites/" + target["id"], json=site).status_code == 200
+    response = client.post("/api/agent/tasks", json={
+        "website_id": target["id"], "objective": "List all AI chatbots.", "max_steps": 5,
+    })
+    assert response.status_code == 201, response.text
+    identifier = response.json()["id"]
+    await execute(*claim())
+
+    task = client.get("/api/agent/tasks/" + identifier).json()
+    assert task["status"] == "completed", task.get("error_message")
+    assert task["model_calls"] == task["prompt_tokens"] == task["completion_tokens"] == 0
+    assert {row["text"] for row in task["result"]["claims"]} == {"First chatbot", "Second chatbot"}
+    steps = client.get(f"/api/agent/tasks/{identifier}/steps").json()["items"]
+    page_turn = next(step for step in steps if step["decision"].get("decision") == "CLICK")
+    assert page_turn["outcome"]["url_changed"] is False
+    assert page_turn["outcome"]["content_changed"] is True
+    assert page_turn["outcome"]["page_changed"] is True
+    logs = client.get(f"/api/jobs/{identifier}/logs").json()["items"]
+    event = next(event for event in logs if event["event_type"] == "agent_action_completed")
+    assert event["details"]["url_changed"] is False and event["details"]["content_changed"] is True
+    captures = [step["observation"]["screenshot_path"] for step in steps if step["observation"]["screenshot_path"]]
+    if capture_available:
+        assert captures == [steps[-1]["observation"]["screenshot_path"]]
+        preview = client.get("/api/artifacts/" + captures[0])
+        assert preview.status_code == 200 and preview.content.startswith(b"\x89PNG")
+        assert client.get("/api/artifacts/" + captures[0], headers=OTHER_AUTH).status_code == 404
+        assert any(event["event_type"] == "agent_preview_captured" for event in logs)
+    else:
+        assert captures == []
 
 
 @pytest.mark.browser

@@ -52,7 +52,7 @@ type Step = {
   status: string;
   observation: SemanticObservationData & {
     url: string;
-    screenshot_path: string;
+    screenshot_path: string | null;
     tabs?: { tab_id: string; url: string; purpose: string }[];
     elements?: { element_id: string; name: string; role: string }[];
   };
@@ -64,6 +64,8 @@ type Step = {
     target?: { element_id: string };
   };
   outcome: {
+    url_changed?: boolean;
+    content_changed?: boolean | null;
     semantic?: SemanticAction;
     trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
     interaction?: SemanticInteraction & { changed: boolean; scroll?: {y: number; height: number} | null };
@@ -103,6 +105,70 @@ type Metrics = {
 };
 const finished = (status: string) =>
   ["completed", "failed", "cancelled"].includes(status);
+
+export function DecisionStatus({ status, decision, verified }: {
+  status: string;
+  decision?: Step["decision"];
+  verified?: boolean;
+}) {
+  if (status === "completed") return <p className="hint"><strong>Completed</strong>{verified && " · Result verified"}</p>;
+  if (status === "failed") return <p className="hint"><strong>Failed</strong></p>;
+  if (status === "cancelled") return <p className="hint"><strong>Cancelled</strong></p>;
+  if (status === "queued") return <p className="hint"><strong>Queued</strong> · Waiting for the worker</p>;
+  if (status === "paused") return <p className="hint"><strong>Paused</strong></p>;
+  if (status === "waiting_user") return <p className="hint"><strong>Waiting for your review</strong></p>;
+  return <>
+    <p className="hint"><strong>{decision?.decision || "Observing"}</strong>{decision?.reason && ` · ${decision.reason}`}</p>
+    {decision?.expected_result && <p>{decision.expected_result}</p>}
+  </>;
+}
+
+export function PageChanges({ url, content }: { url?: boolean; content?: boolean | null }) {
+  if (typeof url !== "boolean" && typeof content !== "boolean") return null;
+  return <p className="hint">
+    {typeof url === "boolean" && (url ? "URL changed" : "URL unchanged")}
+    {typeof url === "boolean" && " · "}
+    {typeof content === "boolean" ? (content ? "Page content changed" : "Page content unchanged") : "Content change not measured"}
+  </p>;
+}
+
+export function BrowserPreview({ capture, token, status, directory }: {
+  capture?: string | null; token: string; status: string; directory?: boolean;
+}) {
+  if (capture) return <PreviewImage key={capture} capture={capture} token={token} />;
+  return <Empty text={finished(status) ? "No browser capture was recorded for this run." :
+    directory ? "The browser preview is captured when collection finishes." : "Waiting for a browser capture."} />;
+}
+
+function PreviewImage({ capture, token }: { capture: string; token: string }) {
+  const [image, setImage] = useState<string>();
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    let blobUrl: string | undefined;
+    fetch("/api/artifacts/" + encodeURIComponent(capture), {
+      headers: { Authorization: "Bearer " + token },
+      signal: controller.signal,
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error("Preview unavailable");
+        return r.blob();
+      })
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        blobUrl = URL.createObjectURL(blob);
+        setImage(blobUrl);
+      })
+      .catch(() => { if (!controller.signal.aborted) setUnavailable(true); });
+    return () => {
+      controller.abort();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [capture, token]);
+  if (unavailable) return <Empty text="The browser capture is unavailable or has expired." />;
+  if (!image) return <Empty text="Loading browser capture…" />;
+  return <img className="agent-preview" src={image} alt="Current agent browser page" onError={() => setUnavailable(true)} />;
+}
 
 export default function AgentPanel({
   token,
@@ -560,34 +626,14 @@ function AgentDetail({
     );
   const imageEvent = [...events]
     .reverse()
-    .find((e) => typeof e.details.screenshot_path === "string");
+    .find((e) => typeof e.details.screenshot_path === "string" && e.details.screenshot_path);
+  const capturedStep = [...(steps.data?.items || [])].reverse().find((s) => s.observation.screenshot_path);
   const capture =
     (imageEvent?.details.screenshot_path as string | undefined) ||
-    latest?.observation.screenshot_path;
-  const [image, setImage] = useState<string | null>(null),
-    [answer, setAnswer] = useState("");
-  useEffect(() => {
-    if (!capture) return;
-    const controller = new AbortController();
-    let blobUrl: string | undefined;
-    fetch("/api/artifacts/" + capture, {
-      headers: { Authorization: "Bearer " + token },
-      signal: controller.signal,
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error("Preview unavailable");
-        return r.blob();
-      })
-      .then((blob) => {
-        blobUrl = URL.createObjectURL(blob);
-        setImage(blobUrl);
-      })
-      .catch(() => {});
-    return () => {
-      controller.abort();
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-    };
-  }, [capture, token]);
+    capturedStep?.observation.screenshot_path;
+  const previewUrl = (typeof imageEvent?.details.url === "string" && imageEvent.details.url) ||
+    capturedStep?.observation.url || latest?.observation.url;
+  const [answer, setAnswer] = useState("");
   if (task.error)
     return (
       <p className="error" role="alert">
@@ -738,28 +784,17 @@ function AgentDetail({
             <div>
               <h2>Browser preview</h2>
               <p className="url">
-                {latest?.observation.url || "Waiting for browser"}
+                {previewUrl || (finished(t.status) ? "No browser observation recorded" : "Waiting for browser")}
               </p>
             </div>
             <RefreshCw size={15} />
           </div>
-          {image ? (
-            <img
-              className="agent-preview"
-              src={image}
-              alt="Current agent browser page"
-            />
-          ) : (
-            <Empty text="A real browser capture will appear after the first observation." />
-          )}
+          <BrowserPreview capture={capture} token={token} status={t.status}
+            directory={["directory_collection", "table_extraction"].includes(t.execution?.strategy || "")} />
         </section>
         <section className="panel form-panel">
           <h2>Current decision</h2>
-          <p className="hint">
-            <strong>{latest?.decision.decision || "Observing"}</strong> ·{" "}
-            {latest?.decision.reason || "Waiting for the worker"}
-          </p>
-          <p>Expected: {latest?.decision.expected_result || "—"}</p>
+          <DecisionStatus status={t.status} decision={latest?.decision} verified={t.result.verification?.complete} />
           <h2 className="agent-subheading">Tabs and context</h2>
           {latest?.observation.tabs?.map((tab) => (
             <p className="hint url" key={tab.tab_id}>
@@ -826,6 +861,7 @@ function AgentDetail({
                 </strong>
                 <p className="hint">{step.decision.reason}</p>
                 <small className="url">{step.observation.url}</small>
+                <PageChanges url={step.outcome.url_changed} content={step.outcome.content_changed} />
                 <InteractionOutcome interaction={step.outcome.interaction} />
                 <SemanticTrace semantic={step.outcome.semantic} interaction={step.outcome.interaction} resolution={step.outcome.trace?.find(s => s.phase === "resolution")} />
                 {typeof step.outcome.error === "string" && <p className="error" role="status">{step.outcome.error}</p>}

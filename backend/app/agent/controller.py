@@ -263,7 +263,10 @@ class Controller:
                     # write during this click; revoke it as soon as the action ends.
                     self.mutation = {"method": None, "destination": None, "until": time.monotonic() + 5}
             try:
-                result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
+                result = await self.engine.perform(
+                    self.page, decision, locator, self.active, binding=binding,
+                    require_content=read_only and action == "CLICK",
+                )
                 result["semantic"] = {
                     "role": element["role"],
                     "name": element["name"],
