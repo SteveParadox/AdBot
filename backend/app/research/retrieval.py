@@ -8,7 +8,6 @@ import re
 import time
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -22,6 +21,7 @@ from ..concurrency import database_call
 from ..config import settings
 from ..egress import egress_proxy
 from ..security import PolicyError
+from .integrity import parse_date, publication_date
 from .navigation import UNSAFE, safe_link, static_links
 from .pdf_parser import parse_pdf
 from .pdf_worker import MAX_BYTES as MAX_PDF_BYTES
@@ -51,15 +51,44 @@ def clean(value, limit):
 
 
 def normalized_date(value):
-    value = clean(value, 80)
-    if not re.match(r"^\d{4}-\d{2}-\d{2}(?:$|T| )", value):
-        return None
-    try:
-        date = datetime.fromisoformat(value)
-        date = date.replace(tzinfo=timezone.utc) if date.tzinfo is None else date
-        return (value if len(value) == 10 else date.isoformat()) if date.timestamp() <= time.time() + 86400 else None
-    except ValueError:
-        return None
+    return parse_date(clean(value, 80))
+
+
+def declared_dates(tree):
+    publication, modification = [], []
+    for node in tree.xpath("//meta[@content]")[:100]:
+        key = (node.get("property") or node.get("name") or node.get("itemprop") or "").lower()
+        if key in {"article:published_time", "datepublished"}:
+            publication.append((key, clean(node.get("content"), 80)))
+        elif key in {"article:modified_time", "datemodified"}:
+            modification.append((key, clean(node.get("content"), 80)))
+    for key, target in (("datepublished", publication), ("datemodified", modification)):
+        for value in tree.xpath(f"//time[translate(@itemprop, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{key}']/@datetime")[:8]:
+            target.append(("time:" + key, clean(value, 80)))
+    # Only explicit article-like top-level declarations. Nested unrelated
+    # articles, products, review dates and copyright years are not dates of
+    # this document. Multiple conflicting declarations fail closed.
+    for node in tree.xpath('//script[@type="application/ld+json"]')[:12]:
+        try:
+            value = json.loads((node.text or "")[:100_000])
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        kind = value.get("@type")
+        kinds = kind if isinstance(kind, list) else [kind]
+        if any(isinstance(k, str) and k.rsplit("/", 1)[-1] in
+               {"Article", "NewsArticle", "BlogPosting", "ScholarlyArticle", "TechArticle", "Report"} for k in kinds):
+            if value.get("datePublished"):
+                publication.append(("json-ld:datePublished", clean(value["datePublished"], 80)))
+            if value.get("dateModified"):
+                modification.append(("json-ld:dateModified", clean(value["dateModified"], 80)))
+    published, provenance = publication_date(publication)
+    modified, modification_provenance = publication_date(modification)
+    if published and modified and modified[:10] < published[:10]:
+        modified = None
+        modification_provenance["status"] = "before_publication"
+    return published, modified, provenance, modification_provenance
 
 
 def structured_products(tree):
@@ -156,6 +185,7 @@ def extract(response, shopping):
         raise ValueError("PDF extraction requires the isolated asynchronous parser")
     text = response.body.decode(response.encoding, "replace")
     metadata, products, links = {}, [], []
+    published = modified = None
     directives = robots_directives(response.headers.get("x-robots-tag", ""))
     canonical = response.url
     if response.mime != "text/plain":
@@ -173,9 +203,10 @@ def extract(response, shopping):
                 metadata.setdefault(key, clean(times[0], 80))
         metadata.setdefault("title", clean(tree.findtext(".//title"), 200))
         # These are publisher-declared observations, never verified identity.
-        metadata["published_date_observed"] = bool(normalized_date(
-            metadata.get("article:published_time") or metadata.get("datepublished") or metadata.get("date")
-        ))
+        published, modified, provenance, modification_provenance = declared_dates(tree)
+        metadata["publication_provenance"] = provenance
+        metadata["modification_provenance"] = modification_provenance
+        metadata["published_date_observed"] = published is not None
         metadata["sponsored_marker"] = bool(tree.xpath(
             "//meta[(@name='sponsored' or @property='article:sponsored') and "
             "(@content='true' or @content='1')]"
@@ -210,8 +241,7 @@ def extract(response, shopping):
     title = metadata.get("og:title") or metadata.get("title") or urlsplit(response.url).hostname
     return Document(
         response.url, canonical, title[:200],
-        normalized_date(metadata.get("article:published_time") or metadata.get("datepublished") or metadata.get("date")),
-        normalized_date(metadata.get("article:modified_time") or metadata.get("datemodified")),
+        published, modified,
         time.time(), hashlib.sha256(response.body).hexdigest(), blocks, products, metadata,
         response.headers.get("etag"), response.headers.get("last-modified"),
         {name: response.headers[name] for name in ("cache-control", "vary", "age") if name in response.headers},
