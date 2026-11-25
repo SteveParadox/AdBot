@@ -451,7 +451,7 @@ class Research:
         if self.mode == Mode.SHOPPING:
             products, structured = product_evidence(doc, source, self.country)
             structured_by_id = {item["id"]: item for item in structured}
-            offers = sorted(products, key=lambda item: (item["price"] is None, item["availability"] is None))[:12]
+            offers = rank_products(products, self.contextual_question(), self.country)[:12]
             self.products.extend(offers)
             records = [structured_by_id[item["evidence_id"]] for item in offers] + records
         for record in records:
@@ -462,7 +462,12 @@ class Research:
 
     def sufficient(self):
         if self.mode == Mode.SHOPPING:
-            return self.independent_count() >= 3 and sum(bool(p["price"]) for p in self.products) >= 5
+            offers = rank_products(self.products, self.contextual_question(), self.country)
+            eligible = [p for p in offers if p["price"] and p["within_budget"] is not False
+                        and p["availability"] not in {"Out of stock", "Sold out", "Discontinued"}
+                        and p["suitability"]["status"] in {"met", "not_requested"}]
+            domains = {self.sources[p["source_id"]]["independence_group"] for p in eligible}
+            return len(domains) >= 3 and len(eligible) >= 5
         if self.mode == Mode.FACT_CHECK:
             return False
         if self.mode == Mode.DEEP:
@@ -473,6 +478,9 @@ class Research:
         await self.stage("comparing", "Comparing evidence across sources", sources=len(self.sources), evidence=len(self.evidence))
         compact = min(4500, max(550, settings().ai_max_request_chars - len(self.question.question) - 2400))
         records = list(self.evidence.values())
+        if self.mode == Mode.SHOPPING:
+            preferred = {p["evidence_id"] for p in self.products[:8]}
+            records.sort(key=lambda e: e["id"] not in preferred)
         if self.gap_plan:
             preferred = {identifier for q in self.gap_plan.questions for identifier in q.evidence}
             records.sort(key=lambda e: e["id"] not in preferred)
@@ -600,6 +608,9 @@ class Research:
         except TimeoutError:
             self.notes.append("The search and retrieval time budget elapsed.")
             self.result_quality = "partial"
+        if self.mode == Mode.SHOPPING:
+            self.products = rank_products(self.products, self.contextual_question(), self.country)
+            self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
         await self.synthesize()
         if self.mode == Mode.DEEP:
             if self.gap_plan is None:
@@ -613,10 +624,14 @@ class Research:
             self.metrics["research_subquestions"] = len(self.gap_plan.questions)
             self.metrics["research_subquestions_answered"] = len(self.gap_plan.questions) - len(unresolved)
         if self.mode == Mode.SHOPPING:
-            self.products = rank_products(self.products, self.contextual_question())
-            self.products = [p for p in self.products if p["evidence_id"] in self.evidence]
             if not self.products:
                 self.notes.append("No retrieved offers had usable product and market details.")
+                self.result_quality = "partial"
+            elif not any(p["price"] and p["within_budget"] is not False
+                         and p["suitability"]["status"] in {"met", "not_requested"}
+                         and p["availability"] not in {"Out of stock", "Sold out", "Discontinued"}
+                         for p in self.products):
+                self.notes.append("No retrieved offer had a usable price and met the observed requirements; unknown specifications are not assumed to match.")
                 self.result_quality = "partial"
         if self.model_failed:
             self.notes.append("The configured model did not finish every research stage.")
