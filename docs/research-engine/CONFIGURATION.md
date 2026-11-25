@@ -53,3 +53,38 @@ If outbound routing is enabled, add a `research` service to the private routing 
 4. Check `/api/research/v1/providers` with an authenticated request and inspect the research timeline if a provider returned errors.
 5. A SearXNG 403 can indicate JSON output is disabled, a limiter rejected the request, or the service requires different routing. Start with the instance settings and logs. A sustained 429 opens the adapter cooldown and can trigger configured fallback.
 6. Browser fallback requires a compatible Chromium sandbox. On Linux containers, run the worker as a non-root user with a seccomp profile that supports the Chromium sandbox. If Chromium cannot start securely, Adbot keeps any available HTTP result. [Playwright container guidance](https://playwright.dev/python/docs/docker)
+
+
+## Live acceptance gate (no fixtures)
+
+Use a test workspace and a real model and search provider. For a low-cost setup, run an operator-managed SearXNG instance with JSON enabled as described above, and use an existing Ollama-compatible model. Alternatively configure an existing Groq or other compatible model and one of the credentialed search providers. Do not commit credentials or enable fixture mode.
+
+For example, add these settings to the ignored root `.env`, adapting the endpoints and model to your deployment:
+
+```dotenv
+ADBOT_RESEARCH_ENABLED=true
+ADBOT_RESEARCH_SEARXNG_URL=http://searxng:8080
+ADBOT_AI_PROVIDER=local
+ADBOT_AI_BASE_URL=http://host.docker.internal:11434/v1
+ADBOT_AI_MODEL=YOUR_INSTALLED_MODEL
+```
+
+The SearXNG hostname must resolve from the worker (the base Compose file does not provision SearXNG). For a native deployment use the actual reachable SearXNG and Ollama origins, not the Docker hostnames. For Docker on Linux, configure a reachable host address rather than assuming `host.docker.internal` exists. Existing outbound route controls still apply. If using Groq, retain the existing Groq configuration instead of the local model settings. Restart the API and worker after configuration.
+
+From the repository root, run the opt-in acceptance runner against the actual deployed API (the default origin is the Compose frontend at port 5173). It uses only Python's standard library. The bearer key must be a valid Adbot workspace key, not a search or model API key.
+
+PowerShell (the environment variable must already be set securely):
+
+```powershell
+python scripts/research_live_smoke.py --confirm-live --base-url http://127.0.0.1:5173
+```
+
+Native API example:
+
+```bash
+python scripts/research_live_smoke.py --confirm-live --base-url http://127.0.0.1:8000
+```
+
+The runner checks configuration, queues four real tasks (general research, current information, Nigerian shopping and a contextual shopping follow-up), waits for terminal outcomes, and verifies persisted source/evidence relationships, recorded model calls, supported claims, product price/country constraints and actual network-request counters across the run. It rejects partial results and exits nonzero on failure. It prints task IDs and elapsed times for investigation, not credentials. Use a fresh workspace or cold caches for meaningful provider traffic. Runs may incur provider usage and create research conversations; remove those through the normal workspace UI after reviewing evidence.
+
+A successful run is an acceptance prerequisite, not proof that every claim is factually correct. Inspect the cited source pages and quotations, verify freshness of the current-information answer, check the actual retailer prices/availability and compare the follow-up against the original product set. Record the deployed commit, provider and model names, date, task IDs, measured end-to-end latency, and any failed/partial cases in TEST_RESULTS.md. Only mark live verification passed when these checks have actually been performed. The runner's `--confirm-live` flag is an operator attestation, not automatic detection of mocked upstream services.
