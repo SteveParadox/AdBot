@@ -262,9 +262,11 @@ class Fetcher:
         return await self.stack.__aexit__(*exc)
 
     async def fetch(self, url, types, *, robots=True, headers=None, max_bytes=MAX_HTML_BYTES,
-                    origin=None, allowed_redirects=4):
+                    origin=None, allowed_redirects=4, navigation_parent=None):
         url = self.policy.check(url)
         for hop in range(allowed_redirects + 1):
+            if navigation_parent and not safe_link(navigation_parent, url, "source"):
+                raise PolicyError("Unsafe observed research destination")
             await self.gate(url, robots, origin)
             # A fresh request deliberately excludes the shared client's cookie jar,
             # ambient auth, referral headers and any browser-provided headers.
@@ -336,7 +338,8 @@ class Fetcher:
 
     async def retrieve(self, hit, shopping, freshness):
         cfg = settings()
-        parent = urlsplit(hit.source_metadata.get("parent_url", "")) if hit.provider == "observed_link" else None
+        navigation_parent = hit.source_metadata.get("parent_url", "") if hit.provider == "observed_link" else None
+        parent = urlsplit(navigation_parent) if navigation_parent else None
         origin = (parent.scheme, parent.netloc) if parent else None
         cache_key = (self.owner, hit.url, shopping)
         max_age = min(cfg.research_cache_seconds, 60) if shopping or freshness else cfg.research_cache_seconds
@@ -344,10 +347,16 @@ class Fetcher:
         try:
             async with asyncio.timeout(cfg.research_fetch_timeout + 3):
                 self.policy.check(hit.url)
+                if hit.provider == "observed_link" and (
+                    not navigation_parent or not safe_link(navigation_parent, hit.url, "source")
+                ):
+                    raise PolicyError("Unsafe observed research destination")
                 prior = DOCUMENTS.get(cache_key, 3600) if cfg.research_cache_seconds else None
                 headers = {}
                 if prior:
                     self.policy.check(prior.url)
+                    if navigation_parent and not safe_link(navigation_parent, prior.url, "source"):
+                        raise PolicyError("Unsafe cached observed research destination")
                     await self.gate(hit.url, True, origin)
                     if prior.url != hit.url:
                         await self.gate(prior.url, True, origin)
@@ -360,7 +369,8 @@ class Fetcher:
                             headers["If-None-Match"] = prior.etag
                         if prior.last_modified:
                             headers["If-Modified-Since"] = prior.last_modified
-                response = await self.fetch(hit.url, DOCUMENT_TYPES, headers=headers, origin=origin)
+                response = await self.fetch(hit.url, DOCUMENT_TYPES, headers=headers, origin=origin,
+                                            navigation_parent=navigation_parent)
                 if response.status == 304:
                     doc = self.revalidated(prior, response)
                 else:
