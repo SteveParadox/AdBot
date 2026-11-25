@@ -14,6 +14,7 @@ from courlan import extract_domain
 
 from .policy import PublicPolicy, canonical_key
 from .retrieval import clean
+from .ranking import lexical_scores, source_signals, supporting_groups
 from .search import terms
 from .shopping import budget_constraint, comparable_identity, condition_value, suitability
 
@@ -30,6 +31,7 @@ def source_record(doc, query, provider):
         "published_at": doc.published, "modified_at": doc.modified,
         "retrieved_at": doc.retrieved, "content_hash": doc.digest, "query": query,
         "metadata": doc.metadata, "provider": provider,
+        "credibility": source_signals(doc.url, doc.metadata),
     }
 
 
@@ -91,7 +93,8 @@ def text_evidence(doc, source, question):
             score = len(terms(quote) & keywords) * 2 + context_score
             if score and len(quote) >= 35:
                 scored.append((score, block_number, offset, quote))
-    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    relevance = lexical_scores(question, [row[3] for row in scored])
+    scored = [row for _, row in sorted(zip(relevance, scored), key=lambda pair: (-pair[0], -pair[1][0], pair[1][1], pair[1][2]))]
     unique = {}
     for _, block, offset, quote in scored:
         if quote.casefold() not in unique:
@@ -307,7 +310,7 @@ def verified_claims(proposals, checked, evidence, sources):
         ids = list(dict.fromkeys(check.evidence))
         if any(item not in evidence or item not in claim.evidence for item in ids):
             continue
-        groups = {sources[evidence[item]["source_id"]]["independence_group"] for item in ids}
+        groups = supporting_groups(ids, evidence, sources)
         if check.status == "conflicting" and (len(groups) < 2 or claim.kind != "conflict"):
             continue
         if claim.kind == "conflict" and check.status != "conflicting":
