@@ -23,6 +23,8 @@ from ..config import settings
 from ..egress import egress_proxy
 from ..security import PolicyError
 from .navigation import UNSAFE, safe_link, static_links
+from .pdf_parser import parse_pdf
+from .pdf_worker import MAX_BYTES as MAX_PDF_BYTES
 from .policy import PublicPolicy
 from .search import Cache, bounded_bytes
 from .shopping import price_value, visible_products
@@ -31,8 +33,8 @@ ROBOTS = Cache(512)
 DOCUMENTS = Cache(96)
 MAX_HTML_BYTES = 1_200_000
 REDIRECTS = {301, 302, 303, 307, 308}
-DOCUMENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"}
-BROWSER_TYPES = DOCUMENT_TYPES | {"application/javascript", "text/javascript", "application/json"}
+DOCUMENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain", "application/pdf"}
+BROWSER_TYPES = (DOCUMENT_TYPES - {"application/pdf"}) | {"application/javascript", "text/javascript", "application/json"}
 CHROMIUM_ENV = {
     "PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SYSTEMROOT", "WINDIR",
     "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "XDG_RUNTIME_DIR",
@@ -115,6 +117,7 @@ class Document:
     cache_headers: dict
     cacheable: bool = True
     links: list[dict] = field(default_factory=list)
+    block_locations: list[dict] = field(default_factory=list)
 
 
 def cache_max_age(headers, default):
@@ -147,6 +150,8 @@ def check_robots_directives(directives):
 
 
 def extract(response, shopping):
+    if response.mime == "application/pdf":
+        raise ValueError("PDF extraction requires the isolated asynchronous parser")
     text = response.body.decode(response.encoding, "replace")
     metadata, products, links = {}, [], []
     directives = robots_directives(response.headers.get("x-robots-tag", ""))
@@ -244,6 +249,44 @@ def product_fields(product, origin="json-ld"):
     return result
 
 
+async def extract_pdf(response):
+    directives = robots_directives(response.headers.get("x-robots-tag", ""))
+    check_robots_directives(directives)
+    parsed = await parse_pdf(response.body)
+    blocks, locations = [], []
+    tables = []
+    for page in parsed["pages"]:
+        number = page["page"]
+        # Preserve physical page boundaries and original row coordinates.
+        for offset, line in enumerate(page["text"].splitlines(), 1):
+            text = clean(line, 1800)
+            if len(text) >= 25:
+                blocks.append(text)
+                locations.append({"page": number, "line": offset})
+        for row in page["tables"]:
+            if any(row["cells"]):
+                tables.append({"page": number, **row})
+    metadata = {
+        "document_type": "pdf", "page_count": parsed["page_count"],
+        "pages_examined": len(parsed["pages"]), "extraction_truncated": parsed["truncated"],
+        "pages_with_text": [p["page"] for p in parsed["pages"] if p["text"].strip()],
+        "pdf_tables": tables[:160],
+    }
+    if len(tables) > 160:
+        metadata["extraction_truncated"] = True
+    if "noarchive" in directives:
+        metadata["robots_noarchive"] = True
+    # Avoid attributing file creation or modification timestamps to publication.
+    return Document(
+        response.url, response.url, parsed["title"] or urlsplit(response.url).path.rsplit("/", 1)[-1][:200]
+        or urlsplit(response.url).hostname, None, None, time.time(),
+        hashlib.sha256(response.body).hexdigest(), blocks[:1200], [], metadata,
+        response.headers.get("etag"), response.headers.get("last-modified"),
+        {name: response.headers[name] for name in ("cache-control", "vary", "age") if name in response.headers},
+        block_locations=locations[:1200],
+    )
+
+
 class Fetcher:
     def __init__(self, owner, metrics, browsers=0, reserve_browser=None):
         self.owner, self.metrics, self.browsers = owner, metrics, browsers
@@ -253,6 +296,7 @@ class Fetcher:
         self.client = None
         self.browser = None
         self.browser_lock = asyncio.Lock()
+        self.pdf_lock = asyncio.Lock()
         self.robots_locks = {}
 
     async def __aenter__(self):
@@ -272,7 +316,7 @@ class Fetcher:
         return await self.stack.__aexit__(*exc)
 
     async def fetch(self, url, types, *, robots=True, headers=None, max_bytes=MAX_HTML_BYTES,
-                    origin=None, allowed_redirects=4, navigation_parent=None):
+                    origin=None, allowed_redirects=4, navigation_parent=None, pdf_bytes=None):
         url = self.policy.check(url)
         for hop in range(allowed_redirects + 1):
             if navigation_parent and not safe_link(navigation_parent, url, "source"):
@@ -307,7 +351,8 @@ class Fetcher:
                 mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 if mime not in types:
                     raise ValueError("Unsupported response type")
-                body = await bounded_bytes(response, max_bytes)
+                limit = pdf_bytes if mime == "application/pdf" and pdf_bytes is not None else max_bytes
+                body = await bounded_bytes(response, limit)
                 return Response(url, body, mime, response.encoding or "utf-8", kept)
             finally:
                 await response.aclose()
@@ -380,11 +425,20 @@ class Fetcher:
                         if prior.last_modified:
                             headers["If-Modified-Since"] = prior.last_modified
                 response = await self.fetch(hit.url, DOCUMENT_TYPES, headers=headers, origin=origin,
-                                            navigation_parent=navigation_parent)
+                                            navigation_parent=navigation_parent, pdf_bytes=MAX_PDF_BYTES)
                 if response.status == 304:
                     doc = self.revalidated(prior, response)
+                elif response.mime == "application/pdf":
+                    doc = None
                 else:
                     doc = await database_call(extract, response, shopping)
+            if doc is None and response.mime == "application/pdf":
+                async with self.pdf_lock:
+                    self.metrics["pdf_parse_attempts"] = self.metrics.get("pdf_parse_attempts", 0) + 1
+                    doc = await extract_pdf(response)
+                    self.metrics["pdf_pages_examined"] = self.metrics.get("pdf_pages_examined", 0) + doc.metadata["pages_examined"]
+                    if not doc.blocks and not doc.metadata["pdf_tables"]:
+                        self.metrics["pdf_no_text"] = self.metrics.get("pdf_no_text", 0) + 1
             if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
                     and ((shopping and not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
                                                   for product in doc.products for offer in product["offers"]))
@@ -392,7 +446,7 @@ class Fetcher:
                 # Shell validators cannot refresh scripts or API data. Keep
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
-            if not doc.blocks and not doc.products and not doc.links:
+            if not doc.blocks and not doc.products and not doc.links and not doc.metadata.get("pdf_tables"):
                 DOCUMENTS.discard(cache_key)
                 return None
             if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")
