@@ -287,6 +287,21 @@ def suitability(product, question):
             checks.append({"requirement": f"GPU {wanted.upper()}", "observed": actual,
                            "status": "unknown" if not models else
                            "met" if re.sub(r"\s+", "", wanted.casefold()) in models else "not_met"})
+    # A condition preference is explicit only in ordinary purchase wording.
+    # Comparisons and alternatives do not require every offer to be new.
+    condition = product.get("variant", {}).get("condition", "unknown")
+    if not re.search(r"\b(?:compare|versus|vs\.?|or)\b", question, re.I):
+        wanted = None
+        if re.search(r"\b(?:new only|brand new|not (?:used|refurbished)|new (?:laptops?|phones?|products?))\b", question, re.I):
+            wanted = "new"
+        elif re.search(r"\b(?:refurbished only|refurbished (?:laptops?|phones?|products?))\b", question, re.I):
+            wanted = "refurbished"
+        elif re.search(r"\b(?:used only|second.hand (?:laptops?|phones?|products?)|used (?:laptops?|phones?|products?))\b", question, re.I):
+            wanted = "used"
+        if wanted:
+            checks.append({"requirement": f"Condition {wanted}", "observed": condition,
+                           "status": "unknown" if condition == "unknown" else
+                           "met" if condition == wanted else "not_met"})
     # A workload heuristic, not a benchmark or claim of model compatibility.
     ai = bool(re.search(r"\b(?:ai engineering|machine learning|deep learning|local llms?|ai training)\b", question, re.I))
     workload = []
