@@ -8,6 +8,8 @@ router = APIRouter()
 RECORD_COUNT = 119
 CATEGORIES = ["AI chatbot", "Image generator", "SEO tool", "Audio editor", "Video editor"]
 EXPECTED = {f"Tool {index:03}" for index in range(1, RECORD_COUNT + 1) if index % len(CATEGORIES) == 0}
+CONVERSATION_DESCRIPTION = "Visitors practice languages and ask follow-up questions in a conversation with the product."
+TRANSCRIPTION_DESCRIPTION = "Converts uploaded audio recordings into time-coded transcripts."
 
 
 @router.get("/execution-fixture", response_class=HTMLResponse)
@@ -17,7 +19,7 @@ def home():
 
 @router.get("/execution-fixture/tools", response_class=HTMLResponse)
 def tools(page: Annotated[int, Query(ge=1, le=8)] = 1,
-          case: Literal["normal", "cycle", "unknown", "mismatch"] = "normal"):
+          case: Literal["normal", "cycle", "unknown", "mismatch", "recovery"] = "normal"):
     per_page = 15
     first = (page - 1) * per_page + 1
     last = min(page * per_page, RECORD_COUNT)
@@ -43,11 +45,15 @@ def tools(page: Annotated[int, Query(ge=1, le=8)] = 1,
     # The primary fixture uses an actual JavaScript pager with no form submission.
     next_control = (f'<button type="button" onclick="location.href=\'?page={page + 1}\'">Next</button>'
                     if case == "normal" else f'<a href="?page={page + 1}">Next</a>')
-    if case != "normal":
+    if case not in {"normal", "recovery"}:
         # Test variants retain their state through a browser-visible URL fragment.
         next_control = f'<a href="?page={page + 1}&amp;case={case}">Next</a>'
     if last >= RECORD_COUNT:
         next_control = '<button disabled>Next</button>'
+    numbered = ""
+    if case == "recovery" and page == 1:
+        next_control = '<a href="?page=1">Next</a>'
+        numbered = '<span aria-current="page">1</span><a href="?page=2">2</a>'
     decoration = '<aside>' + '<a href="/irrelevant">Repeated decorative link</a>' * 115 + '</aside>'
     return (
         '<main><h1>AI Tools</h1><input type="search" aria-label="Search tools">'
@@ -58,6 +64,30 @@ def tools(page: Annotated[int, Query(ge=1, le=8)] = 1,
         '<button type="button">Free</button></fieldset>'
         f'<p>Showing {first}-{last} of {total} matching tools.</p>'
         f'<section id="grid" aria-busy="true"></section><template id="records">{"".join(rows)}</template>'
-        f'<nav aria-label="Pagination">{previous}{next_control}</nav>{decoration}</main>'
+        f'<nav aria-label="Pagination">{previous}{next_control}{numbered}</nav>{decoration}</main>'
         "<script>setTimeout(()=>{ grid.append(records.content.cloneNode(true)); grid.setAttribute('aria-busy','false') },30)</script>"
+    )
+
+
+@router.get("/execution-fixture/recovery", response_class=HTMLResponse)
+def recovery(page: Annotated[int, Query(ge=1, le=8)] = 1):
+    return tools(page, "recovery")
+
+
+@router.get("/execution-fixture/semantic", response_class=HTMLResponse)
+def semantic():
+    return (
+        '<h1>AI products</h1><p>2 products</p><ul>'
+        '<li><a href="/execution-fixture/tool/ask">Ask</a><span itemprop="category">AI</span>'
+        f'<p>{CONVERSATION_DESCRIPTION}</p></li>'
+        '<li><a href="/execution-fixture/tool/transcribe">Transcribe</a><span itemprop="category">AI</span>'
+        f'<p>{TRANSCRIPTION_DESCRIPTION}</p></li></ul>'
+    )
+
+
+@router.get("/execution-fixture/table", response_class=HTMLResponse)
+def table():
+    return (
+        '<h1>Office hours</h1><table><thead><tr><th>Day</th><th>Time</th></tr></thead>'
+        '<tbody><tr><td>Monday</td><td>09:00</td></tr><tr><td>Tuesday</td><td>11:00</td></tr></tbody></table>'
     )

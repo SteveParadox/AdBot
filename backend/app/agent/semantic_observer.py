@@ -40,6 +40,7 @@ class Observer:
         self.document = self.page = self.tab_id = None
         self.generation = 0
         self.secrets = []
+        self.directory_cache = None
 
     def safe_text(self, text):
         for secret in self.secrets:
@@ -67,14 +68,43 @@ class Observer:
                 pass
         if not same_document:
             if self.document is not None:
+                if self.directory_cache is not None and self.page is not None and not self.page.is_closed():
+                    try:
+                        await self.document.evaluate("s=>{s.watch?.disconnect();s.events?.abort()}")
+                    except BrowserError:
+                        pass
                 await self.document.dispose()
+            self.directory_cache = None
             self.document = await page.evaluate_handle("({document,nodes:new WeakMap(),next:0})")
             self.generation += 1
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
+        directory_cache_hit = False
         if directory:
-            from .directory import READ_DIRECTORY
-            data["directory"] = await page.evaluate(READ_DIRECTORY)
+            from ..config import settings
+            from .directory import READ_DIRECTORY, pagination_element
+            limit = settings().agent_collection_batch_rows
+            arguments = {"limit": limit, "table": directory == "table"}
+            stamp = await self.document.evaluate(r"""s=>{
+                if(!s.watch) {
+                    s.revision=0;
+                    s.watch=new MutationObserver(()=>s.revision++);
+                    s.watch.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true});
+                    s.events=new AbortController();
+                    for(const event of ['input','change','scroll','resize','load'])
+                        addEventListener(event,()=>s.revision++,{capture:true,signal:s.events.signal});
+                }
+                if(s.watch.takeRecords().length)s.revision++;
+                return [location.href,document.readyState,s.revision,scrollX,scrollY,innerWidth,innerHeight];
+            }""")
+            key = (tab_id, stamp, limit, arguments["table"])
+            cached = self.directory_cache
+            if cached is not None and cached[0] == key and time.monotonic() - cached[1] < 0.75:
+                data["directory"] = cached[2]
+                directory_cache_hit = True
+            else:
+                data["directory"] = await page.evaluate(READ_DIRECTORY, arguments)
+                self.directory_cache = (key, time.monotonic(), data["directory"])
         secrets = data.pop("sensitive_values")
         self.secrets = secrets
 
@@ -100,7 +130,7 @@ class Observer:
                 e["role"] not in {"dialog", "alertdialog"},
                 not e["focused"],
                 not e["actionable"],
-                directory and not re.match(r"^(?:next|load more|show more|(?:browse )?(?:ai )?tools|products|directory)\b", e["name"], re.I),
+                bool(directory) and not pagination_element(e),
                 -relevance,
                 not e["in_view"],
                 e["role"] == "link",
@@ -113,10 +143,10 @@ class Observer:
             # Bind forward controls and directory routes. Record extraction reads
             # the visible cards directly, so their individual links need no handles.
             eligible = [element for element in eligible if element["role"] in {"dialog", "alertdialog"} or (
-                element["visible"] and re.match(
-                    r"^(?:next|load more|show more|page \d+|(?:browse )?(?:ai )?(?:tools|products|directory|articles))\b",
+                element["visible"] and (pagination_element(element) or re.match(
+                    r"^(?:(?:browse|view|explore) (?:all )?)?(?:ai )?(?:tools|products|directory|articles|tables)\b",
                     element["name"], re.I,
-                )
+                ))
             )]
         candidates = sorted(eligible, key=priority)[:limit]
         semaphore = asyncio.Semaphore(8)
@@ -235,6 +265,7 @@ class Observer:
             "withheld_sensitive": sum(e["sensitive"] for e in all_elements),
             "changed_during_inspection": len(candidates) - len(data["elements"]),
             "read_attempts": _retry + 1,
+            "collection_cache_hit": directory_cache_hit,
             "native_semantics": sum(e["semantic_source"] == "playwright_aria" for e in data["elements"]),
             "duration_ms": round((time.perf_counter() - start) * 1000, 2),
         }

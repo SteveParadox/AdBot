@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+from dataclasses import asdict
 
 from playwright.async_api import Error as BrowserError
 
@@ -13,7 +14,8 @@ from ..db import AgentStep, AgentTask, emit, transaction
 from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
-from .directory import DirectoryCollection, directory_intent, directory_result
+from .directory import DirectoryCollection, directory_result
+from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, exhaustive_request, select_route, task_text_only)
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError, ModelProvidersUnavailable
 
@@ -122,7 +124,7 @@ class AgentRunner(Runner):
             **event,
         )
 
-    async def ask_model(self, kind, payload, schema, observation=None):
+    async def ask_model(self, kind, payload, schema, observation=None, *, wait_for_provider=True):
         image = (
             settings().artifact_dir / observation["screenshot_path"]
             if observation and self.options["visual_reasoning"]
@@ -147,7 +149,7 @@ class AgentRunner(Runner):
             try:
                 return await self.model.request(kind, payload, schema, account_async, image, timeout_cap_seconds=remaining)
             except ModelProvidersUnavailable as exc:
-                if exc.retry_after is None:
+                if not wait_for_provider or exc.retry_after is None:
                     raise
                 remaining = self.deadline - time.time() - 5
                 if exc.retry_after >= remaining:
@@ -332,14 +334,76 @@ class AgentRunner(Runner):
         else:
             await controller.navigate(self.snapshot["base_url"])
 
+    async def execution_route(self):
+        cached = self.memory.get("execution_route")
+        if cached:
+            return ExecutionRoute(**cached)
+        has_dataset = bool(self.snapshot.get("extraction"))
+        route = select_route(self.objective, self.options, has_dataset)
+        if (not route.entity and route.name in {"general", "research"} and not has_dataset
+                and task_text_only(self.objective, self.options) and exhaustive_request(self.objective)
+                and settings().ai_provider != "disabled"):
+            try:
+                assessment = await self.ask_model("route", {
+                    "objective": self.objective,
+                    "instructions": "Identify a simple exhaustive inventory request. Copy the exact literal phrase "
+                                    "naming the entity, without modifiers for additional operations or constraints. "
+                                    "Return false for requests involving comparison, actions, filters, sorting, or multiple goals.",
+                }, RouteAssessment, wait_for_provider=False)
+                entity = assessed_entity(self.objective, assessment)
+                if entity:
+                    route = ExecutionRoute("directory_collection", "Collect visible records and classify them against the requested entity.", entity)
+            except (ModelError, ModelBudgetExceeded):
+                pass
+        self.memory["execution_route"] = asdict(route)
+        return route
+
+    async def classify_directory(self, directory, controller):
+        from .classification import AssessmentBatch, apply_assessments, assessment_payload
+
+        config = settings()
+        state = directory.state
+        if config.ai_provider == "disabled" or not config.agent_classification_max_calls:
+            return
+        candidates = [row for row in state["records"].values()
+                      if row["classification"] == "unknown" and not row.get("classification_conflict")]
+        # Leave prompt room for the response schema and agent instructions even
+        # when an operator configures a very small request window.
+        batch_size = min(
+            config.agent_classification_batch_rows,
+            max(1, (config.ai_max_request_chars - 3500) // 1200),
+            max(1, (config.ai_max_output_tokens - 80) // 150),
+        )
+        for offset in range(0, len(candidates), batch_size):
+            if state.get("classification_calls", 0) >= config.agent_classification_max_calls or self.deadline - time.time() <= 8:
+                break
+            rows = candidates[offset:offset + batch_size]
+            state["classification_calls"] = state.get("classification_calls", 0) + 1
+            try:
+                assessments = await self.ask_model("classify", assessment_payload(directory.entity, rows),
+                                                   AssessmentBatch, wait_for_provider=False)
+            except (ModelError, ModelBudgetExceeded):
+                break
+            grounded = [dict(row) for row in rows]
+            apply_assessments(grounded, assessments)
+            for original, candidate in zip(rows, grounded):
+                growth = directory.record_size(candidate) - directory.record_size(original)
+                if state["record_bytes"] + growth <= directory.max_bytes:
+                    original.update(candidate)
+                    state["record_bytes"] += growth
+            await self.checkpoint(controller)
+
     async def execute_page(self, page, context):
         controller = Controller(self, context, page, self.memory)
         self.controller = controller
         await context.unroute("**/*")
         await context.route("**/*", controller.route)
         await self.restore_tabs(controller)
-        entity = directory_intent(self.objective, self.options, bool(self.snapshot.get("extraction")))
-        directory = DirectoryCollection(entity, self.memory.setdefault("directory", {})) if entity else None
+        route = await self.execution_route()
+        cfg = settings()
+        directory = DirectoryCollection(route.entity, self.memory.setdefault("directory", {}),
+                                        max_rows=cfg.agent_collection_max_rows, max_bytes=cfg.agent_collection_max_bytes) if route.entity else None
+        collection_mode = "table" if route.name == "table_extraction" else True
         def read_start():
             with transaction() as session:
                 start = session.scalar(
@@ -354,7 +418,7 @@ class AgentRunner(Runner):
             controller.engine.trace = []
             controller.engine.dispatch_started = False
             with controller.engine.phase("inspection"):
-                observation = await controller.observe(directory=True) if directory else await controller.observe()
+                observation = await controller.observe(directory=collection_mode) if directory else await controller.observe()
             await self.prepare_plan(observation, deterministic=directory is not None)
             if observation["url"] not in self.memory["visited_urls"]:
                 self.memory["visited_urls"].append(observation["url"])
@@ -391,6 +455,9 @@ class AgentRunner(Runner):
                         if directory.state["pages"]:
                             await self.checkpoint(controller)
                     if terminal is not None:
+                        await self.classify_directory(directory, controller)
+                        if directory.state.get("terminal"):
+                            terminal = directory.blocker() or ""
                         result = directory_result(directory.state, terminal or None)
                         def finish_directory():
                             with transaction() as session:
@@ -416,17 +483,19 @@ class AgentRunner(Runner):
                                     owned_job(session, self.id, self.token)
                                     session.get(AgentStep, step_id).observation = observation
                             await database_call(update_observation)
+                        plan = self.planning_context()
                         decision = await self.ask_model(
                             "decide",
                             {
                                 "objective": self.objective,
                                 "success_criteria": self.options["success_criteria"],
                                 "current_page": observation,
-                                "session_memory": self.context_memory(),
+                                "session_memory": self.context_memory(observation, plan),
+                                "execution_route": {"name": route.name, "guidance": route.guidance},
                                 "historical_hints": self.hints,
                                 "steps_remaining": self.options["max_steps"] - number,
                                 "form_input_enabled": self.options["allow_form_input"],
-                                "task_plan": self.planning_context(),
+                                "task_plan": plan,
                             },
                             Decision,
                             observation,
@@ -675,10 +744,14 @@ class AgentRunner(Runner):
         if len(entries) > 64:
             entries.pop(next(iter(entries)))
 
-    def context_memory(self):
+    def context_memory(self, observation, plan):
+        from .context import retrieve_evidence
+
+        phase = next((step["description"] for step in plan.get("subtasks", [])
+                      if step["id"] == plan.get("active_subtask")), "")
         return {
             "visited_urls": self.memory["visited_urls"][-30:],
-            "evidence": [dict(e, quote=e["quote"][:1000]) for e in self.memory["evidence"][-20:]],
+            "evidence": retrieve_evidence(self.memory["evidence"], self.objective, observation, phase=phase),
             "failures": self.memory["failures"][-6:],
             "answers": self.memory["answers"][-3:],
             "recent_actions": self.memory["recent_actions"][-6:],
@@ -787,6 +860,7 @@ class AgentRunner(Runner):
                         {
                             "objective": self.objective,
                             "task_specification": expected,
+                            "execution_route": self.memory.get("execution_route"),
                             "current_page": {
                                 "url": observation["url"],
                                 "title": observation["title"],

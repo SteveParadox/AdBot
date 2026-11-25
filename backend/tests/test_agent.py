@@ -151,6 +151,7 @@ async def test_goal_driven_real_browser(client, target, agent_config, agent_serv
     result = client.get("/api/agent/tasks/" + task["id"]).json()
     assert result["status"] == "completed", result
     assert result["result"]["verification"]["complete"] is True
+    assert result["execution"]["strategy"] == "research"
     assert result["result"]["evidence"]
     assert result["model_calls"] >= 4 and result["prompt_tokens"] > 0
     steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
@@ -219,12 +220,13 @@ async def test_autonomous_multistep_form_with_real_post(client, target, agent_co
     task = new_task(
         client,
         target,
-        "Complete demo registration using Ada in the Name field and verify confirmation.",
+        "Enter Ada in the Name field, then submit the demo registration and verify confirmation.",
         allow_form_input=True,
     )
     await asyncio.wait_for(execute(*claim()), 30)
     result = client.get("/api/agent/tasks/" + task["id"]).json()
     assert result["status"] == "completed", result
+    assert result["execution"]["strategy"] == "workflow"
     assert result["pending_step_id"] is None
     with transaction() as session:
         assert all(step.approved is None for step in session.query(AgentStep).filter_by(job_id=task["id"]))
@@ -255,14 +257,54 @@ async def test_tab_manager_and_bounded_download(client, target, agent_config, ag
         return schema.model_validate(result)
 
     monkeypatch.setattr(ModelClient, "request", planned)
-    task = new_task(client, target, allow_downloads=True)
+    task = new_task(client, target, "Download the Orion AI release notes and find the launch month.", allow_downloads=True)
     await execute(*claim())
     result = client.get("/api/agent/tasks/" + task["id"]).json()
     assert result["status"] == "completed", (result.get("error_message"), result)
+    assert result["execution"]["strategy"] == "document_retrieval"
     assert len(result["memory"]["tabs"]) == 2
     steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
     download = next(s["outcome"]["download_path"] for s in steps if "download_path" in s["outcome"])
     assert client.get("/api/artifacts/" + download).content == b"Orion AI will launch in November 2026."
+
+
+@pytest.mark.browser
+async def test_comparison_uses_evidence_from_both_pages(client, target, agent_config, agent_servers, monkeypatch):
+    from testsupport.model_fixture import decide
+
+    set_url(client, target, "/agent/catalog")
+    links = {}
+    quotes = {"Orion AI workstation": "The Orion AI workstation costs 899 dollars.",
+              "Office desk": "The desk costs 199 dollars."}
+
+    async def fixture_response(self, kind, payload, schema, *args, **kwargs):
+        if kind != "decide":
+            return schema.model_validate(decide({"purpose": kind, **payload}))
+        assert payload["execution_route"]["name"] == "comparison"
+        observation = payload["current_page"]
+        for link in observation["elements"]:
+            if link["name"] in quotes:
+                links[link["name"]] = link["href"]
+        evidence = payload["session_memory"]["evidence"]
+        template = {"observation": "Catalog and product pages", "reason": "Compare the two listed prices",
+                    "confidence": 1, "expected_result": "Cited prices for both products"}
+        observed = {item["quote"] for item in evidence}
+        remaining = next((name for name, quote in quotes.items() if quote not in observed), None)
+        if remaining is None:
+            return schema(**template, decision="COMPLETE",
+                          claims=[{"text": item["quote"], "evidence_ids": [item["id"]]} for item in evidence])
+        if quotes[remaining] in observation["text"]:
+            return schema(**template, decision="EXTRACT", text=quotes[remaining])
+        return schema(**template, decision="NAVIGATE", url=links[remaining])
+
+    monkeypatch.setattr(ModelClient, "request", fixture_response)
+    task = new_task(client, target, "Compare prices for the Orion AI workstation versus the office desk.")
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + task["id"]).json()
+    assert result["status"] == "completed", result.get("error_message")
+    assert result["execution"]["strategy"] == "comparison"
+    assert len({item["url"] for item in result["result"]["evidence"]}) == 2
+    assert {item["quote"] for item in result["result"]["evidence"]} == set(quotes.values())
 
 
 @pytest.mark.browser

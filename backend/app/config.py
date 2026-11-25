@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     ai_json_mode: bool = True
     ai_context_windows: dict[str, int] = Field(default_factory=dict)
     ai_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    agent_collection_max_rows: int = Field(2000, ge=1, le=10000)
+    agent_collection_batch_rows: int = Field(250, ge=1, le=1000)
+    agent_collection_max_bytes: int = Field(4_000_000, ge=4096, le=16_000_000)
+    agent_classification_batch_rows: int = Field(12, ge=1, le=40)
+    agent_classification_max_calls: int = Field(12, ge=0, le=40)
     agent_max_steps: int = Field(500, ge=1, le=500)
     agent_max_tokens: int = Field(60000, ge=2000, le=1000000)
     agent_max_tabs: int = Field(4, ge=1, le=10)

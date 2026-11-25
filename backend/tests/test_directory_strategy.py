@@ -1,7 +1,10 @@
 ﻿import pytest
 
+from app.agent.classification import AssessmentBatch, apply_assessments
+from app.agent.context import retrieve_evidence
 from app.agent.directory import DirectoryCollection, directory_intent, directory_result
 from app.agent.memory import semantic_action_key
+from app.agent.routing import RouteAssessment, assessed_entity, select_route
 from app.security import PolicyError
 
 
@@ -41,9 +44,71 @@ def test_directory_does_not_claim_unsupported_completeness(rows, changes, fragme
 
 def test_unrelated_constraints_or_dataset_keep_original_strategy():
     assert directory_intent("List all AI chatbots.", {}) == "ai chatbots"
+    assert directory_intent("Give me a comprehensive list of conversational AI platforms.", {}) == "ai chatbots"
     assert directory_intent("List all AI chatbots except paid products", {}) is None
     assert directory_intent("List all AI chatbots", {"success_criteria": ["Sort by rating"]}) is None
     assert directory_intent("List all AI chatbots", {}, True) is None
+
+
+@pytest.mark.parametrize("objective,options,dataset,expected", [
+    ("Extract all rows from the table", {}, False, "table_extraction"),
+    ("Compare the plans and cite their features", {}, False, "comparison"),
+    ("Retrieve the warranty PDF", {}, False, "document_retrieval"),
+    ("Research the origins of the brand", {}, False, "research"),
+    ("Open the register and then verify the published data", {}, False, "workflow"),
+    ("List all products", {}, True, "configured_extraction"),
+    ("Find published prices", {"output_format": "csv"}, False, "configured_extraction"),
+])
+def test_route_selection(objective, options, dataset, expected):
+    assert select_route(objective, options, dataset).name == expected
+
+
+def test_inferred_inventory_keeps_literal_scope():
+    assessment = RouteAssessment(exhaustive_inventory=True, entity_phrase="language tutors")
+    assert assessed_entity("Give me a complete list of language tutors", assessment) == "semantic:language tutors"
+    assert assessed_entity("Give me a complete list of language tutors under $10", assessment) is None
+    assert assessed_entity("Give me a complete list of tutoring tools", assessment) is None
+
+
+def test_semantic_classification_requires_exact_quotes_and_ids():
+    quote = "Answers follow-up questions in a conversation."
+    rows = [{"id": "one", "quote": quote, "classification": "unknown"},
+            {"id": "two", "quote": "Unknown product type.", "classification": "unknown"}]
+    answer = {"id": "one", "quote": quote, "classification": "match"}
+    invalid = AssessmentBatch(records=[answer, answer])
+    assert apply_assessments(rows, invalid) == 0
+    grounded = AssessmentBatch(records=[answer, {**answer, "id": "two"}])
+    assert apply_assessments(rows, grounded) == 1
+    assert rows[0]["classification_quote"] == quote
+    assert rows[1]["classification"] == "unknown"
+
+
+def test_collection_budgets_return_partial_and_keep_observed_rows():
+    state = {}
+    strategy = DirectoryCollection("ai chatbots", state, max_rows=1)
+    _, reason = strategy.advance(observation([row("One", "AI chatbot"), row("Two", "AI chatbot")], total=2), 1, Policy())
+    result = directory_result(state, reason)
+    assert result["partial"]
+    assert result["directory"]["unique_records"] == 1
+    assert "storage budget" in reason
+
+
+def test_observed_inventory_without_count_returns_partial():
+    state = {}
+    strategy = DirectoryCollection("ai tools", state)
+    _, reason = strategy.advance(observation([row("One", "AI chatbot")], total=None), 1, Policy())
+    result = directory_result(state, reason)
+    assert result["partial"]
+    assert result["directory"]["unique_records"] == 1
+
+
+def test_relevance_can_retrieve_an_older_evidence_quote():
+    original = "Intro " * 110 + "The warranty agreement covers April."
+    evidence = [{"id": "old", "url": "/contract", "quote": original}]
+    evidence.extend({"id": str(index), "url": "/news", "quote": "Latest news."} for index in range(12))
+    first, second = retrieve_evidence(evidence, "Get the warranty agreement", {"url": "/news"}, limit=2)
+    assert first["id"] == "old" and first["quote"] in original and "warranty" in first["quote"]
+    assert second["id"] == "11"
 
 
 def test_equivalent_button_survives_scroll_focus_and_regenerated_ids():

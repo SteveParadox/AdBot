@@ -5,6 +5,7 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from app.agent.classification import AssessmentBatch
 from app.agent.contracts import Decision
 from app.agent.model import ModelClient, structured_response_format, validate_response
 from app.agent.planning import TaskPlan
@@ -106,6 +107,31 @@ async def test_diagnostic_reports_schema_path_without_raw_response_or_secret(mon
     assert "confidence" in events[0]["reason"]
     assert "private-invalid-value" not in json.dumps(events)
     assert "secret-fixture-key" not in json.dumps(events)
+
+
+async def test_classification_response_fails_over_after_invalid_schema(monkeypatch):
+    cfg = settings()
+    for name, value in {"ai_provider": "groq", "ai_provider_order": "groq,openrouter",
+                        "groq_base_url": "https://primary.test/v1", "openrouter_base_url": "https://secondary.test/v1",
+                        "ai_provider_rpm": 0, "ai_provider_tpm": 0}.items():
+        monkeypatch.setattr(cfg, name, value)
+    original = httpx.AsyncClient
+    providers = []
+    answer = {"records": [{"id": "one", "classification": "match", "quote": "Answers questions in a conversation."}]}
+
+    def respond(request):
+        host = request.url.host
+        providers.append(host)
+        body = json.loads(request.content)
+        assert json.loads(body["messages"][-1]["content"])["purpose"] == "classify"
+        assert body["response_format"]["json_schema"]["name"] == "AssessmentBatch"
+        value = {"records": [{"id": "one", "classification": "invalid"}]} if host == "primary.test" else answer
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(value)}}]})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    result = await ModelClient().request("classify", {"records": []}, AssessmentBatch, lambda *args: (1, 1))
+    assert result.model_dump() == answer
+    assert providers == ["primary.test", "secondary.test"]
 
 
 @pytest.mark.browser

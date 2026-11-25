@@ -36,7 +36,7 @@ METADATA = r"""e => {
  focusable:(e.tabIndex>=0||e.hasAttribute('tabindex')||e.isContentEditable)&&!disabled,tabbable:e.tabIndex>=0&&!disabled,focused:document.activeElement===e,expanded:bool('aria-expanded'),pressed:e.getAttribute('aria-pressed'),checked:e.hasAttribute('aria-checked')?e.getAttribute('aria-checked'):['checkbox','radio'].includes(type)?e.checked:null,selected:e.hasAttribute('aria-selected')?bool('aria-selected'):tag==='option'?e.selected:null,
  required:!!e.required||e.getAttribute('aria-required')==='true',invalid:e.getAttribute('aria-invalid')==='true'||!!(e.willValidate&&!e.validity.valid),validation_message:sensitive?'':text(e.validationMessage),value,
  controls:refs('aria-controls'),labelledby:refs('aria-labelledby'),describedby:refs('aria-describedby'),active_descendant:e.getAttribute('aria-activedescendant'),busy:bool('aria-busy'),live:e.getAttribute('aria-live')||(['status','alert'].includes(role)?role:null),
- href:tag==='a'?e.href:null,dom_id:e.id||null,test_id:e.getAttribute('data-testid'),context,
+ href:tag==='a'?e.href:null,rel:tag==='a'?(e.getAttribute('rel')||''):'',dom_id:e.id||null,test_id:e.getAttribute('data-testid'),context,
  form:form?{method:(form.method||'get').toUpperCase(),action:form.action||location.href,search:!!(form.querySelector('input[type=search]')||form.getAttribute('role')==='search'),name:text(form.getAttribute('aria-label')||form.name),invalid_count:[...form.elements].filter(x=>x.willValidate&&!x.validity.valid).length}:null,
  safe:e.dataset.adbotSafe==='true',in_view:r.top<innerHeight&&r.bottom>0&&r.left<innerWidth&&r.right>0,
  blocked_by_modal:modalBlocked,

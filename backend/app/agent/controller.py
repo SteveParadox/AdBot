@@ -73,7 +73,7 @@ class Controller:
         )
         data = await self.observer.observe(
             self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", ""),
-            **({"directory": True} if directory else {}),
+            **({"directory": directory} if directory else {}),
         )
         data["tabs"] = [
             {"tab_id": key, "url": tab["page"].url, "purpose": tab["purpose"]} for key, tab in self.tabs.items()

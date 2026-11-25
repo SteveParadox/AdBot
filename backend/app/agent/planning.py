@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ..schemas import Strict
+from .routing import select_route
 
 
 class Ambiguity(Strict):
@@ -253,6 +254,10 @@ def initial_plan(spec, max_steps=500, dataset=False):
         "stagnant": 0,
         "previous_progress": None,
     }
+    route = select_route(spec["objective"], spec, dataset)
+    state["route"] = route.name
+    if route.name != "general":
+        state["plan"]["subtasks"][0]["description"] = route.guidance
     if spec["output_format"] in {"csv", "json"} and not dataset:
         state["warnings"].append(
             "Export requires a configured, owned extraction dataset. Read-only research may continue."

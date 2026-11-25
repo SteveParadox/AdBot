@@ -1,5 +1,13 @@
 # Verification and benchmark
 
+## Follow-up verification on November 25, 2026
+
+The normal Chromium fixture accepted the paraphrase "Give me a comprehensive list of conversational AI platforms." It collected 119 unique records, produced 23 cited matches, and completed in 10.14 seconds with zero model calls or tokens. The stalled Next fixture revisited the first batch, recovered through an observed numbered page, and met the same coverage and evidence checks in 6.38 seconds. The unrecoverable cycle fixture retained 105 unique records and 21 cited matches as a partial result.
+
+The read-only [XavKit smoke](https://xavkit.com/tools) used a temporary local database and disabled model providers. It traversed all eight visible batches and preserved 119 unique records against the advertised total of 119 in 23.77 seconds. All classifications remained unresolved in that run. The live result therefore verified traversal coverage and remained partial. Test doubles verified a model-inferred entity route, source-quoted semantic classification, and failover when the primary classification response violated the schema. Live semantic accuracy and cloud throughput remain unmeasured.
+
+The focused browser suite passed 17 cases, including all directory regressions, observation cache reuse and invalidation, two-source comparison, source-document download, multi-step form execution, and verified dataset export. The agent robustness and directory suite passed 40 cases in a separate, overlapping run. The frontend passed all 59 tests and built successfully.
+
 ## Measured regression of November 25, 2026
 
 The local Chromium test uses the normal task API, worker, browser controller and SQLite checkpoints against a deterministic fixture. The fixture contains 119 unique tools across eight batches, repeated entries, two card layouts, controls for search, tags and price, and a JavaScript pager. It includes 23 known chatbot products. The test fails if any provider call is attempted and uses a 2,000-token task budget.

@@ -24,7 +24,8 @@ type Task = Job & {
   budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
   objective: string;
   execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
-    directory_pages: number; prevented_repetitions: number; evidence_count: number };
+    directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
+    classification_calls?: number };
   mode: string;
   options: {
     success_criteria: string[];
@@ -272,8 +273,7 @@ export default function AgentPanel({
         </details>
         {!config.data?.configured && (
           <div role="status" className="alert error">
-            The AI provider is disabled. Configure a model before starting a
-            task.
+            The AI provider is disabled. Visible directory and table collection can run with supported objectives.
           </div>
         )}
         <form onSubmit={submit} onChange={() => setPreview(null)}>
@@ -422,7 +422,7 @@ export default function AgentPanel({
             </label>
           )}
           <div className="agent-submit-actions">
-          <Button type="submit" disabled={busy || !config.data?.configured}>
+          <Button type="submit" disabled={busy || !config.data}>
             <Play size={15} />
             Start agent task
           </Button>
@@ -650,10 +650,17 @@ function AgentDetail({
           </span>
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
-        {t.execution?.strategy === "directory_collection" && (
-          <p className="hint">Directory collection ? {t.execution.unique_records}{t.execution.advertised_total != null ? ` of ${t.execution.advertised_total}` : ""} records read ? {t.execution.matched_records} matches ? {t.execution.directory_pages} directory pages</p>
+        {t.execution && t.execution.strategy !== "general" && (
+          <p className="hint">Strategy {t.execution.strategy.replaceAll("_", " ")}</p>
         )}
-        {Boolean(t.execution?.prevented_repetitions) && <p className="hint">{t.execution?.prevented_repetitions} repeated actions or pages stopped</p>}
+        {t.execution && ["directory_collection", "table_extraction"].includes(t.execution.strategy) && (
+          <p className="hint">
+            {t.execution.unique_records}{t.execution.advertised_total != null ? ` of ${t.execution.advertised_total}` : ""} records read
+            {` ? ${t.execution.matched_records} matches ? ${t.execution.evidence_count} citations`}
+            {` ? ${t.execution.directory_pages} batches ? ${t.execution.recovery_actions ?? 0} recovery actions`}
+          </p>
+        )}
+        {Boolean(t.execution?.prevented_repetitions) && <p className="hint">{t.execution?.prevented_repetitions} repeated actions or pages detected</p>}
         <JobFailure failure={t.failure} />
         {t.error_message && (
           <p className="error" role="alert">
