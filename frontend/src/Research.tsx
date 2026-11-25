@@ -26,10 +26,14 @@ type Product = {
   geographic_match: string; warranty: string | null; shipping: string | null; review_summary: Record<string, string>;
 };
 type Claim = { text: string; kind: string; evidence: string[] };
+type ResearchSubquestion = {
+  id: string; question: string; status: "covered" | "partial" | "missing" | "conflicting";
+  evidence: string[]; searches: number; used_in_answer: boolean;
+};
 type Task = {
   id: string; status: string; question: { question: string; mode: Mode; country?: string; freshness?: string };
   conversation_id: string; mode: Mode; error: string | null;
-  result: { answer?: string; quality?: string; notes?: string[]; sources?: Source[]; products?: Product[]; claims?: Claim[] };
+  result: { answer?: string; quality?: string; notes?: string[]; sources?: Source[]; products?: Product[]; claims?: Claim[]; research_plan?: ResearchSubquestion[]; coverage_rounds?: number };
 };
 type Conversation = { id: string; title: string; updated_at: number; messages?: Task[]; total?: number };
 type ProviderConfig = { enabled: boolean; model_configured: boolean; providers: { name: string }[] };
@@ -139,6 +143,15 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
       <AnswerMarkup text={markdown} sources={sources} direct={task.mode === "direct"} />
     </div>}
     {!!task.result.notes?.length && <ul className="research-notes">{task.result.notes.map(note => <li key={note}>{note}</li>)}</ul>}
+    {!!task.result.research_plan?.length && <details className="research-sources">
+      <summary>Research coverage ({task.result.research_plan.filter(q => q.used_in_answer).length}/{task.result.research_plan.length} addressed)</summary>
+      <ul>{task.result.research_plan.map(q => <li key={q.id}>
+        <strong>{q.question}</strong>
+        <p>{q.status === "covered" ? (q.used_in_answer ? "Covered and cited" : "Evidence collected, not cited in answer") :
+          q.status === "partial" ? "Partial evidence" : q.status === "conflicting" ? "Conflicting evidence" : "Missing evidence"}
+          {" · "}{q.searches} targeted {q.searches === 1 ? "query" : "queries"}</p>
+      </li>)}</ul>
+    </details>}
     <ProductResults products={products} sources={sources} />
     {!!sources.length && <details className="research-sources" onToggle={event => setOpen(event.currentTarget.open)}>
       <summary>Sources and evidence ({sources.length})</summary>
