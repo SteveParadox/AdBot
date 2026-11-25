@@ -109,6 +109,36 @@ def claim_freshness(ids, evidence, sources, window, now=None):
     return "unknown"
 
 
+def offer_is_current(observed_at, valid_until=None, now=None):
+    now = now or datetime.now(timezone.utc)
+    if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool):
+        return False
+    age = now.timestamp() - observed_at
+    if not 0 <= age <= 120:
+        return False
+    if valid_until:
+        if not isinstance(valid_until, str) or not ISO.fullmatch(valid_until):
+            return False
+        try:
+            end = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
+            if len(valid_until) == 10:
+                return now.date() <= end.date()
+            # A timestamp without timezone cannot establish an exact expiry.
+            if end.tzinfo is None:
+                return False
+            return now <= end
+        except (ValueError, OverflowError):
+            return False
+    return True
+
+
+def observed_offer_time(retrieved, headers):
+    age = headers.get("age", "0")
+    if not isinstance(age, str) or not re.fullmatch(r"\d{1,10}", age, re.ASCII):
+        return None
+    return retrieved - int(age)
+
+
 def quantities(text):
     """Normalize exact numerical observations, not arbitrary calculations."""
     text = str(text).replace("\u00a0", " ").replace("\u202f", " ")
