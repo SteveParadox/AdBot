@@ -32,3 +32,15 @@ On the public [XavKit tools directory](https://xavkit.com/tools), the first inte
 - Review tightened forward-control coverage against raw visible controls, excluded unsafe record URLs, kept the review path for assisted navigation, and prevented automatic pagination from granting write permission. The fixture confirms contract-equivalent read paths and leaves additional site layouts to the general strategy or partial results.
 
 To reproduce the fixture from `backend`, run `python -m pytest -s tests/test_directory_workflow.py` with Chromium installed. The tests print a `DIRECTORY_RECEIPT` containing measured timing, counts, and phase totals.
+
+Additional browser verification was split across runs. The initial run passed
+17 cases, including Chromium and Firefox accessibility. The remaining 13
+Chromium planning, export, recovery, lease, provider and response-contract cases
+passed separately. Both Firefox and WebKit policy-proxy workflows passed. The
+long WebKit accessibility case did not finish during two local attempts. The
+isolated attempt's stack was inside Playwright locator inspection, so that
+case remains unverified. The three new directory regressions passed separately.
+
+The [hosted GitHub Actions run](https://github.com/SteveParadox/AdBot/actions/runs/45610064804)
+marked both jobs failed and exposed no job steps or downloadable logs. The
+available run metadata does not establish a cause.
