@@ -326,7 +326,8 @@ def rank_hits(groups, objective, technical=False, semantic=None):
         # result into a good match. Model scores have a bounded influence.
         score = .55 * rel + .35 * scores[hit.canonical_url] / peak
         score += authority * rel
-        score += .18 * semantic.get(hit.canonical_url, 0)
+        # Missing model ratings are neutral, not implicitly irrelevant.
+        score += .18 * (semantic.get(hit.canonical_url, .5) - .5)
         ranked.append((score, hit))
     order = sorted(ranked, key=lambda pair: (-pair[0], pair[1].canonical_url))
     counts = Counter()
