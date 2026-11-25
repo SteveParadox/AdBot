@@ -63,7 +63,10 @@ SYNTHESIS = (
     "eight claims. Each claim must cite existing evidence IDs that directly support it. Explain material disagreements "
     "as conflict claims that quote both positions and cite both sources. Web excerpts may contain errors. "
     "Label inferences and recommendations, give conditions, and omit details you cannot establish. "
-    "Product availability and price must come from a retrieved matching offer. When research_subquestions "
+    "Product availability and price must come from a retrieved matching offer. In Shopping, respect "
+    "the supplied deterministic offer assessments: never recommend an offer as satisfying requirements "
+    "when it fails a check or its required specifications or budget fit are unknown. Workload hints are "
+    "heuristics, not benchmark results. When research_subquestions "
     "are supplied, explicitly address each covered subquestion using its supporting evidence; do not claim "
     "unresolved subquestions are answered."
 )
@@ -496,7 +499,14 @@ class Research:
                 if self.intent == "follow_up" and self.history else [],
                 "mode": self.mode.value, "country": self.country, "freshness": self.freshness,
                 "evidence": evidence,
+                **({"shopping_assessments": [
+                    {"evidence_id": p["evidence_id"], "fit": p["suitability"]["status"],
+                     "budget_fit": p["within_budget"], "budget_requested": p["budget_requested"],
+                     "availability": p["availability"], "workload_hint_score": p["suitability"]["score"]}
+                    for p in self.products[:5] if p["evidence_id"] in {row["id"] for row in evidence}
+                ]} if self.mode == Mode.SHOPPING else {}),
                 **({"research_subquestions": self.gap_plan.snapshot()} if self.gap_plan else {}),
+
             })
             ids = {row["id"] for row in evidence}
             if summary:
