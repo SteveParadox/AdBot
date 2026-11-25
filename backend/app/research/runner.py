@@ -51,6 +51,8 @@ class ResearchRunner:
             self.question = Question.model_validate(task.question)
             self.budget = ResearchBudget.model_validate(task.budget)
             self.usage = dict(task.usage)
+            self.conversation = task.conversation_id
+            self.saved = job.execution_state.get("research_checkpoint")
             before = job.snapshot.get("research_history_before", task.created_at)
             self.context = job.snapshot.get("research_context")
             self.history = [] if self.context is not None else previous_turns(session, task.conversation_id, job.owner, before)
@@ -81,13 +83,23 @@ class ResearchRunner:
         async with self.usage_lock:
             await database_call(self.record_usage, delta)
 
+    def record_checkpoint(self, state):
+        with transaction() as session:
+            job = owned_job(session, self.id, self.token, write=True)
+            if job.cancel_requested:
+                raise asyncio.CancelledError
+            job.execution_state = {**job.execution_state, "research_checkpoint": state}
+
+    async def checkpoint(self, state):
+        await database_call(self.record_checkpoint, state)
+
     async def run(self):
         if not settings().research_enabled:
             raise RuntimeError("Public research is disabled by the operator")
         deadline = time.monotonic() + max(0.1, self.budget.seconds - (time.time() - self.started))
         engine = Research(self.owner, self.question, self.mode, self.intent, self.budget,
                           deadline, self.history, self.publish, self.gate, usage=self.usage, charge=self.charge,
-                          context=self.context)
+                          context=self.context, conversation=self.conversation, checkpoint=self.checkpoint, saved=self.saved)
         self.result = await engine.run()
 
     def persist(self, session):
@@ -95,6 +107,8 @@ class ResearchRunner:
         if self.result is None:
             raise RuntimeError("Research ended without a durable result")
         task.result = self.result
+        job = session.get(Job, self.id)
+        job.execution_state = {key: value for key, value in job.execution_state.items() if key != "research_checkpoint"}
         for index, paragraph in enumerate(self.result["answer"].split("\n\n")[:30]):
             if paragraph:
                 emit(session, self.id, "answer_chunk", "Verified answer segment", index=index, text=paragraph)
