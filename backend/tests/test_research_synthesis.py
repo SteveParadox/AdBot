@@ -51,8 +51,12 @@ def test_evidence_rows_diversify_and_do_not_cut_structured_json():
 def test_batch_packing_respects_full_schema_and_payload_budget():
     sources, evidence = fixture_records()
     rows = evidence_rows(list(evidence.values()), sources, "Battery study", set(), 550)
-    payload = lambda candidate: {"question": "Battery study", "claim_limit": 4}
-    context = lambda candidate: {"question": "Battery study"}
+    def payload(candidate):
+        return {"question": "Battery study", "claim_limit": 4}
+
+    def context(candidate):
+        return {"question": "Battery study"}
+
     selected, remaining = batch_rows(rows, payload, "Answer", 18000, 5, 4, "Verify", context)
     assert len(selected) == 5 and len(remaining) == 25
     assert not {r["id"] for r in selected} & {r["id"] for r in remaining}
