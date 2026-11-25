@@ -66,7 +66,7 @@ def fits(prompt, kind, payload, schema, max_chars):
         return False
 
 
-def batch_rows(rows, base, prompt, max_chars, max_rows, claims_limit, verify_prompt):
+def batch_rows(rows, payload_for, prompt, max_chars, max_rows, claims_limit, verify_prompt, verify_context_for):
     """Pack one batch using actual serialized request size, including schema.
 
     Reserve verification space for a conservative full-sized claim response.
@@ -79,13 +79,13 @@ def batch_rows(rows, base, prompt, max_chars, max_rows, claims_limit, verify_pro
             continue
         candidate = [*selected, row]
         verify_candidates = [
-            {"text": "x" * 520, "kind": "recommendation",
+            {"text": "\\" * 520, "kind": "recommendation",
              "evidence": [r["id"] for r in candidate[:4]]}
             for _ in range(claims_limit)
         ]
-        if (fits(prompt, "research_synthesis", {**base, "evidence": candidate}, Summary, max_chars)
+        if (fits(prompt, "research_synthesis", {**payload_for(candidate), "evidence": candidate}, Summary, max_chars)
                 and fits(verify_prompt, "research_verify",
-                         {"candidates": verify_candidates, "evidence": candidate},
+                         {**verify_context_for(candidate), "candidates": verify_candidates, "evidence": candidate},
                          Verification, max_chars)):
             selected.append(row)
         else:
