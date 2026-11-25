@@ -182,7 +182,7 @@ def extract(response, shopping):
             products = [product_fields(product) for product in products]
             if not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
                        for product in products for offer in product["offers"]):
-                fallback = [product_fields(product) for product in visible_products(tree)]
+                fallback = [product_fields(product, origin="dom") for product in visible_products(tree)]
                 if fallback:
                     # Keep each offer independently scoped; never transfer
                     # fields between a JSON-LD object and a DOM product.
@@ -204,11 +204,11 @@ def extract(response, shopping):
     )
 
 
-def product_fields(product):
+def product_fields(product, origin="json-ld"):
     result = {key: clean(product.get(key), 250) for key in
               ("name", "model", "sku", "mpn", "gtin", "gtin13", "gtin14", "color", "size", "description")}
-    result["origin"] = "dom" if product.get("_origin") == "dom" else "json-ld"
-    result["observations"] = product.get("_observations", {}) if result["origin"] == "dom" else {}
+    result["origin"] = origin
+    result["observations"] = product.get("_observations", {}) if origin == "dom" else {}
     brand = product.get("brand")
     result["brand"] = clean(brand.get("name") if isinstance(brand, dict) else brand, 100)
     result["rating"] = {}
