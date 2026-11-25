@@ -118,6 +118,7 @@ class Document:
     cacheable: bool = True
     links: list[dict] = field(default_factory=list)
     block_locations: list[dict] = field(default_factory=list)
+    table_rows: list[dict] = field(default_factory=list)
 
 
 def cache_max_age(headers, default):
@@ -270,9 +271,8 @@ async def extract_pdf(response):
         "document_type": "pdf", "page_count": parsed["page_count"],
         "pages_examined": len(parsed["pages"]), "extraction_truncated": parsed["truncated"],
         "pages_with_text": [p["page"] for p in parsed["pages"] if p["text"].strip()],
-        "pdf_tables": tables[:160],
     }
-    if len(tables) > 160:
+    if len(tables) > 160 or len(blocks) > 1200:
         metadata["extraction_truncated"] = True
     if "noarchive" in directives:
         metadata["robots_noarchive"] = True
@@ -283,7 +283,7 @@ async def extract_pdf(response):
         hashlib.sha256(response.body).hexdigest(), blocks[:1200], [], metadata,
         response.headers.get("etag"), response.headers.get("last-modified"),
         {name: response.headers[name] for name in ("cache-control", "vary", "age") if name in response.headers},
-        block_locations=locations[:1200],
+        block_locations=locations[:1200], table_rows=tables[:160],
     )
 
 
@@ -437,7 +437,7 @@ class Fetcher:
                     self.metrics["pdf_parse_attempts"] = self.metrics.get("pdf_parse_attempts", 0) + 1
                     doc = await extract_pdf(response)
                     self.metrics["pdf_pages_examined"] = self.metrics.get("pdf_pages_examined", 0) + doc.metadata["pages_examined"]
-                    if not doc.blocks and not doc.metadata["pdf_tables"]:
+                    if not doc.blocks and not doc.table_rows:
                         self.metrics["pdf_no_text"] = self.metrics.get("pdf_no_text", 0) + 1
             if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
                     and ((shopping and not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
@@ -446,7 +446,7 @@ class Fetcher:
                 # Shell validators cannot refresh scripts or API data. Keep
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
-            if not doc.blocks and not doc.products and not doc.links and not doc.metadata.get("pdf_tables"):
+            if not doc.blocks and not doc.products and not doc.links and not doc.table_rows:
                 DOCUMENTS.discard(cache_key)
                 return None
             if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")
