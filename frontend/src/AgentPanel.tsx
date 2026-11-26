@@ -2,7 +2,7 @@ import { useJobEvents } from "./useJobEvents";
 import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
+import { BrainCircuit, Play, ArrowLeft, RefreshCw, LoaderCircle } from "lucide-react";
 import { queryApi,
   api,
   type Collection,
@@ -614,6 +614,20 @@ export default function AgentPanel({
   );
 }
 
+export function AgentTaskActivity({ status }: { status?: Job["status"] }) {
+  const label = status === undefined ? "Loading agent task…" : status === "running" ? "Thinking…" : null;
+  return (
+    <p className="agent-task-activity" role="status">
+      {label && (
+        <>
+          <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          <span>{label}</span>
+        </>
+      )}
+    </p>
+  );
+}
+
 function AgentDetail({
   id,
   token,
@@ -663,15 +677,10 @@ function AgentDetail({
         {task.error.message}
       </p>
     );
-  if (!task.data) return <Empty text="Loading agent task…" />;
   const t = task.data;
-  const shownStatus = t.result.verification?.historical_unverified ? "unverified" : t.status;
-  return (
+  const shownStatus = t?.result.verification?.historical_unverified ? "unverified" : t?.status;
+  const details = t && (
     <>
-      <Button variant="ghost" onClick={back}>
-        <ArrowLeft size={15} />
-        All agent tasks
-      </Button>
       <section className="panel form-panel">
         <div className="panel-heading">
           <div>
@@ -680,7 +689,7 @@ function AgentDetail({
               {t.mode} · {t.id}
             </p>
           </div>
-          <Badge status={shownStatus} />
+          <Badge status={shownStatus ?? t.status} />
         </div>
         <div className="button-row">
           {!finished(t.status) && (
@@ -822,7 +831,7 @@ function AgentDetail({
         </section>
         <section className="panel form-panel">
           <h2>Current decision</h2>
-          <DecisionStatus status={shownStatus} decision={latest?.decision} verified={t.result.verification?.complete} />
+          <DecisionStatus status={shownStatus ?? t.status} decision={latest?.decision} verified={t.result.verification?.complete} />
           <h2 className="agent-subheading">Tabs and context</h2>
           {latest?.observation.tabs?.map((tab) => (
             <p className="hint url" key={tab.tab_id}>
@@ -933,6 +942,17 @@ function AgentDetail({
           </pre>
         </details>
       </section>
+    </>
+  );
+
+  return (
+    <>
+      <Button variant="ghost" onClick={back}>
+        <ArrowLeft size={15} />
+        All agent tasks
+      </Button>
+      <AgentTaskActivity status={t?.status} />
+      {details}
     </>
   );
 }
