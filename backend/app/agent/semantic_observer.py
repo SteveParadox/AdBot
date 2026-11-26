@@ -150,9 +150,12 @@ class Observer:
                 e["index"],
             )
 
-        limit = 12 if directory else 80
+        # A directory-only observation deliberately binds few controls. When
+        # the scan found no batch, retain ordinary discovery controls instead.
+        compact_directory = bool(directory and data.get("directory"))
+        limit = 12 if compact_directory else 80
         eligible = [element for element in all_elements if not element["sensitive"]]
-        if directory:
+        if compact_directory:
             # Bind forward controls and directory routes. Record extraction reads
             # the visible cards directly, so their individual links need no handles.
             entity = directory if isinstance(directory, str) else None

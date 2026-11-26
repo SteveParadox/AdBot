@@ -105,6 +105,13 @@ def collection_kinds(entity):
         return _KINDS[entity]
     terms = words(entity.removeprefix("semantic:"))
     if entity.startswith("semantic:") and terms:
+        # Software role nouns describe candidate product records, not a distinct
+        # directory type. Individual capabilities must still be verified.
+        if "ai" in terms and terms[-1] in {
+            "bot", "bots", "generator", "generators", "assistant", "assistants",
+            "app", "apps", "application", "applications", "platform", "platforms",
+        }:
+            return {"tools", "products"}
         for kind, singular in _NOUNS.items():
             if terms[-1] in {kind, singular}:
                 return {"tools", "products"} if kind == "tools" else {kind}
@@ -112,9 +119,21 @@ def collection_kinds(entity):
 
 
 def collection_topic(entity):
-    if not entity.startswith("semantic:") or not collection_kinds(entity):
+    if not entity.startswith("semantic:"):
         return ""
-    return " ".join(words(entity.removeprefix("semantic:"))[:-1])
+    terms = words(entity.removeprefix("semantic:"))
+    return " ".join(terms[:-1] if collection_kinds(entity) else terms)
+
+
+def semantic_terms(value):
+    """Normalize conservative action-word variants, without dropping scope terms."""
+    aliases = {
+        "create": "generate", "creates": "generate", "creating": "generate",
+        "creation": "generate", "generation": "generate", "generating": "generate",
+        "generates": "generate", "generator": "generate", "generators": "generate",
+        "images": "image", "videos": "video", "documents": "document",
+    }
+    return {aliases.get(term, term) for term in words(value)}
 
 
 def inventory_route(entity):
@@ -122,8 +141,9 @@ def inventory_route(entity):
     kinds = ", ".join(sorted(collection_kinds(entity)))
     subject = entity.removeprefix("semantic:")
     discovery = (f"Find an authorized catalog of {kinds} relevant to {subject}." if kinds else
-                 f"Find an authorized catalog explicitly identifying its records as {subject}.")
-    return ExecutionRoute(name, discovery + " Verify the source type before collecting records.", entity)
+                 f"Find an authorized catalog with records potentially relevant to {subject}.")
+    return ExecutionRoute(name, discovery + " Inspect candidate records using observed descriptions and capabilities; "
+                          "verify record type and coverage separately. Never infer completeness from a related heading.", entity)
 
 
 class RouteAssessment(Strict):
@@ -166,7 +186,8 @@ def select_route(objective, options, has_dataset=False):
                               "A similar category name, mention or related article does not establish membership.")
     if operation == "comparison":
         return ExecutionRoute("comparison", "Gather independent sources for each entity and requested criterion. Identify missing evidence for either side.")
-    if operation == "recommendation":
+    if operation == "recommendation" or (re.match(r"\s*(?:what|which)\s+(?:are|is)\b", objective, re.I)
+                                             and terms & {"best", "top", "recommended"}):
         return ExecutionRoute("research", "Gather relevant options and compare their observed merits against the requested ranking or recommendation criteria.")
     if terms & {"download", "pdf", "document", "retrieve"}:
         return ExecutionRoute("document_retrieval", "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")

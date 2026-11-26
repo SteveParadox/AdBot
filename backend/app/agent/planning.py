@@ -448,7 +448,7 @@ def replan(state, reason, observation):
             else "pending"
         )
         active["outcome"] = str(reason)[:500]
-        if active["status"] == "pending":
+        if active["status"] == "pending" and not active["id"].startswith("recover_"):
             nodes = state["plan"]["subtasks"]
             if len(nodes) >= 20:
                 raise RuntimeError("Plan recovery node limit reached")

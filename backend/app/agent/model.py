@@ -49,7 +49,9 @@ class ModelContextExceeded(ModelError):
 
 
 class ModelBudgetExceeded(RuntimeError):
-    pass
+    def __init__(self, message, *, available_tokens=None):
+        super().__init__(message)
+        self.available_tokens = available_tokens
 
 
 logger = logging.getLogger("adbot.agent.model")
@@ -124,6 +126,12 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
     if isinstance(current_page, dict):
         # The collection payload is read directly by the deterministic route.
         current_page.pop("directory", None)
+        candidates = current_page.get("directory_candidates")
+        if isinstance(candidates, dict):
+            candidates["rows"] = [
+                {**row, "quote": _clip(row.get("quote"), 350)}
+                for row in candidates.get("rows", [])[:6]
+            ]
         current_page["text"] = _clip(current_page.get("text"), 5000)
         current_page["viewport_text"] = _clip(current_page.get("viewport_text"), 2500)
         current_page["accessibility"] = _clip(current_page.get("accessibility"), 1500)
@@ -243,6 +251,8 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
         current_page["viewport_text"] = _clip(current_page.get("viewport_text"), 1200)
         current_page["headings"] = current_page.get("headings", [])[:8]
         current_page["elements"] = current_page.get("elements", [])[:20]
+        if isinstance(current_page.get("directory_candidates"), dict):
+            current_page["directory_candidates"]["rows"] = current_page["directory_candidates"].get("rows", [])[:3]
         current_page["record_groups"] = [
             {**group, "examples": group["examples"][:1]} for group in current_page.get("record_groups", [])[:4]
         ]
@@ -265,6 +275,8 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 element["name"] = _clip(element.get("name"), 60)
         current_page["elements"] = elements
         current_page["research_chunks"] = current_page.get("research_chunks", [])[:2]
+        if isinstance(current_page.get("directory_candidates"), dict):
+            current_page["directory_candidates"]["rows"] = current_page["directory_candidates"].get("rows", [])[:1]
     if isinstance(memory, dict):
         memory["evidence"] = memory.get("evidence", [])[:2]
         for key in ("summary", "answers", "research_coverage"):
@@ -598,9 +610,12 @@ class ModelClient:
                             True,
                             {"provider_index": provider_index},
                         )
-                    except ModelBudgetExceeded:
+                    except ModelBudgetExceeded as exc:
                         await database_call(release, quota_key, quota_receipt)
-                        if not context_retry and rebuild(context_limit, aggressive=True):
+                        remaining_limit = exc.available_tokens
+                        if context_limit is not None:
+                            remaining_limit = min(context_limit, remaining_limit) if remaining_limit is not None else context_limit
+                        if not context_retry and rebuild(remaining_limit, aggressive=True):
                             context_retry = True
                             provider_estimate = estimate()
                             continue

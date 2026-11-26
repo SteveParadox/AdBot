@@ -185,7 +185,9 @@ def supports_topic(topic, quote):
     if signal:
         contrary = _TOPIC_EXCLUSIONS.get(topic)
         return bool(signal.search(quote) and not (contrary and contrary.search(quote)))
-    return set(words(topic)) <= set(words(quote))
+    from .routing import semantic_terms
+
+    return semantic_terms(topic) <= semantic_terms(quote)
 
 
 def classification_groups(records):

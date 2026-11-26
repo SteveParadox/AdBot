@@ -92,13 +92,14 @@ class AgentRunner(Runner):
             provider_index = (reservation or {}).get("provider_index", 0)
             task_budget = self.options["max_tokens"]
             if provider_index == 0 and len(settings().model_providers()) > 1:
-                task_budget = max(0, task_budget - settings().agent_fallback_tokens)
+                task_budget -= min(settings().agent_fallback_tokens, task_budget // 3)
             if task.prompt_tokens + task.completion_tokens + prompt + completion > task_budget:
                 remaining = self.options["max_tokens"] - task.prompt_tokens - task.completion_tokens
                 held = self.options["max_tokens"] - task_budget
                 raise ModelBudgetExceeded(
                     f"Model token budget exhausted before request: {prompt} estimated input + {completion} reserved output, "
-                    f"{max(0, remaining)} remaining, {held} held for fallback"
+                    f"{max(0, remaining)} remaining, {held} held for fallback",
+                    available_tokens=max(0, remaining - held),
                 )
             if getattr(self, "fallback_notified", 0) != provider_index:
                 cfg = settings()
@@ -752,9 +753,13 @@ class AgentRunner(Runner):
                 self.rank_research(observation)
             if observation["url"] not in self.memory["visited_urls"]:
                 self.memory["visited_urls"].append(observation["url"])
-            if enumeration:
+            if enumeration or use_directory:
                 visited = self.memory.setdefault("research_destinations", {})
-                visited[destination_key(observation["url"])] = len(self.memory["evidence"])
+                visited[destination_key(observation["url"])] = (
+                    len(self.memory["evidence"]) + (len(directory.state["records"]) if use_directory else 0)
+                )
+                if len(visited) > 100:
+                    visited.pop(next(iter(visited)))
             def record_observation():
                 with transaction() as session:
                     owned_job(session, self.id, self.token)
@@ -801,8 +806,18 @@ class AgentRunner(Runner):
                         decision = self.enumeration_decision(observation)
                     if terminal is None and decision is None:
                         if use_directory:
-                            # Keep the directory intent for a later observed page reached by the general strategy.
+                            # Retain bounded candidate excerpts from the read-only
+                            # directory scan while obtaining full actionable controls.
+                            candidate_batch = observation.get("directory")
                             observation = await controller.observe(**({"structure": True} if use_structure else {}))
+                            if candidate_batch:
+                                observation["directory_candidates"] = {
+                                    "label": candidate_batch.get("label"), "kind": candidate_batch.get("kind"),
+                                    "total": candidate_batch.get("total"),
+                                    "rows": [{k: row.get(k) for k in ("name", "category", "href", "quote")}
+                                             for row in candidate_batch.get("rows", [])[:6]],
+                                    "note": "Unverified candidates; capture matching observed records before further navigation.",
+                                }
                             def update_observation():
                                 with transaction() as session:
                                     owned_job(session, self.id, self.token)
@@ -857,7 +872,7 @@ class AgentRunner(Runner):
                         for step in self.memory["recent_actions"][-3:] if isinstance(step["outcome"], dict)
                     ):
                         raise ValueError("This source was already scrolled. Capture observed records or choose another source.")
-                if research:
+                if research or (use_directory and not deterministic):
                     target = decision.url if decision.decision in {"NAVIGATE", "OPEN_TAB"} else None
                     if decision.decision == "CLICK":
                         target = next((e.get("href") for e in observation["elements"]
@@ -867,7 +882,7 @@ class AgentRunner(Runner):
                         target = history[-2] if len(history) >= 2 else None
                     if target:
                         guard_navigation(self.memory.get("research_destinations", {}), target, observation["url"],
-                                         len(self.memory["evidence"]))
+                                         len(self.memory["evidence"]) + (len(directory.state["records"]) if use_directory else 0))
                 if not deterministic:
                     semantic_key = semantic_action_key(decision_data, observation)
                     entries = self.memory.get("semantic_attempts", {})
@@ -877,8 +892,14 @@ class AgentRunner(Runner):
                         raise ValueError("Blocked a repeated action with no new evidence; choose a different observed route")
                 from .planning import guard
 
-                if research and decision.decision in {"NAVIGATE", "GO_BACK", "OPEN_TAB", "OBSERVE", "SCROLL",
-                                                     "EXTRACT", "SUMMARIZE", "COMPLETE", "FAIL"}:
+                if (research or enumeration or use_directory) and (
+                    decision.decision in {"NAVIGATE", "GO_BACK", "OPEN_TAB", "OBSERVE", "SCROLL",
+                                          "EXTRACT", "SUMMARIZE", "CAPTURE_RECORDS", "COMPLETE", "FAIL"}
+                    or (decision.decision == "CLICK" and decision.target and any(
+                        e.get("element_id") == decision.target.element_id and e.get("href") and not e.get("form")
+                        for e in observation.get("elements", [])
+                    ))
+                ):
                     # The runtime owns phase transitions. An otherwise safe research
                     # action remains useful when a model echoes a completed phase.
                     decision.subtask_id = None
@@ -1093,7 +1114,7 @@ class AgentRunner(Runner):
                 # either can fail when the dispatch destroyed the page.
                 if ambiguous_write:
                     category = "uncertain_submission"
-                elif research or enumeration:
+                elif research or enumeration or use_directory:
                     # A one-step synthetic research checkpoint can deadlock a
                     # multi-hop source search. The current phase and job bounds
                     # already limit recovery.
@@ -1125,7 +1146,7 @@ class AgentRunner(Runner):
                 if ambiguous_write:
                     raise RuntimeError(str(exc)) from exc
                 try:
-                    if not research:
+                    if not (research or enumeration or use_directory):
                         with controller.engine.phase("recovery"):
                             await controller.observe()
                 except (BrowserError, BrowserCrashed) as recovery_error:

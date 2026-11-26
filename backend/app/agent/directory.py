@@ -57,7 +57,9 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
  const headingNode = scope.querySelector('h1,[role=heading]');
  const heading = headingNode && visible(headingNode) ? clean(headingNode.innerText).slice(0,220) : '';
  const countKind = total?.[2]?.toLowerCase();
- const headingKind = /\b(?:prompts|rankings|guides|collections|reviews|articles|tools|products)\s*$/i.exec(heading)?.[0]?.toLowerCase();
+ const headingText = heading.replace(/\s*\(\d{4}\)\s*$/, '');
+ const headingKind = /\b(?:prompts|rankings|guides|collections|reviews|articles|tools|products)\s*$/i.exec(headingText)?.[0]?.toLowerCase() ||
+   (/\bai\b/i.test(headingText) && /\b(?:bots|generators|assistants|apps|applications|platforms)\s*$/i.test(headingText) ? 'tools' : null);
  const namedCount = countKind && !['results','entries','items'].includes(countKind);
  const kindConflict = namedCount && headingKind && countKind!==headingKind &&
    ![countKind,headingKind].every(value=>['tools','products'].includes(value));
@@ -278,9 +280,12 @@ class DirectoryCollection:
                 href = next(iter(links))
                 state["attempted"].append(href)
                 return _action("NAVIGATE", "Open the observed directory link", url=href), None
-            if filtered and not links:
-                return None, "The directory is filtered and no broader catalog link was available"
-            if not batch or wrong_kind or narrow or filtered:
+            if not batch or wrong_kind:
+                return None, None
+            # When a broader authorized catalog is unavailable, retain observed
+            # candidates from a filtered/narrow catalog but never certify it as
+            # the full inventory. Coverage remains distinct from classification.
+            if not (filtered or narrow):
                 return None, None
         if batch["busy"]:
             state["loading_checks"] = state.get("loading_checks", 0) + 1
@@ -297,7 +302,7 @@ class DirectoryCollection:
         state["source_relevance"] = True
         state["collection_kind"] = batch.get("kind")
         state["collection_url"] = url
-        state["filtered"] = state.get("filtered", False) or bool(query - {"page", "p", "offset", "cursor"})
+        state["filtered"] = state.get("filtered", False) or bool(filtered or narrow or query - {"page", "p", "offset", "cursor"})
         state["truncated"] = state.get("truncated", False) or batch["truncated"]
         if batch["total"] is not None and batch["total"] not in state["totals"]:
             state["totals"].append(batch["total"])

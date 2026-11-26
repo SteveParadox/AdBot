@@ -280,3 +280,31 @@ def test_equivalent_button_survives_scroll_focus_and_regenerated_ids():
     assert first == semantic_action_key(decision, page)
     page["elements"][0]["expanded"] = True
     assert first != semantic_action_key(decision, page)
+
+
+
+def test_ai_software_role_alias_uses_product_catalog_and_keeps_scope():
+    from app.agent.routing import collection_kinds, collection_topic
+    from app.agent.classification import supports_topic
+
+    entity = directory_intent("List all AI image creation bots", {})
+    assert entity == "semantic:ai image creation bots"
+    assert collection_kinds(entity) == {"tools", "products"}
+    assert collection_topic(entity) == "ai image creation"
+    assert supports_topic(collection_topic(entity), "An AI image generator for visual content.")
+    assert not supports_topic(collection_topic(entity), "An AI image editor for resizing photos.")
+
+
+def test_filtered_catalog_retains_records_without_claiming_full_coverage():
+    state = {}
+    strategy = DirectoryCollection("ai chatbots", state)
+    _, reason = strategy.advance(observation([row("Bot", "AI chatbot")], filtered=True), 1, Policy())
+    assert state["records"]
+    result = directory_result(state, reason)
+    assert result["partial"]
+    assert result["directory"]["records"][0]["name"] == "Bot"
+    assert not result["verification"]["dimensions"]["directory_coverage"]
+
+
+def test_recommendation_question_routes_to_research():
+    assert select_route("What are the best tools for content creation?", {}).name == "research"
