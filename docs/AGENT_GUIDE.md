@@ -230,12 +230,21 @@ All names below have the `ADBOT_` prefix.
 | AGENT_MAX_TABS | `4`; maximum simultaneous tabs |
 | AGENT_MAX_RETRIES | `3`; consecutive action/model recovery failures |
 | AGENT_MEMORY_ENABLED | `true`; permit reusable memories |
-| AGENT_VISUAL_REASONING | `false`; permit screenshot input to a vision-capable model |
-| BROWSER_SESSION_PERSISTENCE | `false`; permit encrypted cookies/local storage checkpoints |
+| AGENT_VISUAL_REASONING | `true`; enable screenshot reasoning for compatible models |
+| AI_VISION_MODELS | comma-separated exact `provider:model` IDs for additional verified vision-capable models |
+| AI_REASONING_EFFORT | `auto`; high for planning/verification, medium for decisions, low for other supported GPT-OSS calls; explicit low/medium/high overrides |
+| BROWSER_SESSION_PERSISTENCE | auto-enabled with a valid key; explicit false opts out |
 | SESSION_ENCRYPTION_KEY | Fernet key; required when enabling session persistence |
 
-Use a vision-capable model before enabling images; text-only models may reject
-image inputs. Image delivery is optional and downscaled before model requests.
+New tasks default to visual reasoning when a compatible non-native provider is configured,
+encrypted session persistence when the server has a valid key, and bounded observed-link
+downloads. Each can be turned off per task. The Google Gemini provider is recognized
+for visual input; for other verified compatible endpoints, set `ADBOT_AI_VISION_MODELS`
+(e.g. an exact `openai_compatible:gpt-4o` entry). Text-only fallback providers and native
+Ollama do not receive images. Images are downscaled before model requests. Existing explicit
+server environment values are respected; update older `.env` files to adopt the new defaults.
+Download limits, domain checks, explicit no-download constraints and authenticated artifact
+handling are unchanged. Automatic browser downloads remain disabled.
 The initializer generates a session key for new `.env` files. To add one to an
 existing deployment:
 
