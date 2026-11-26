@@ -193,3 +193,62 @@ def test_mapping_diagnostics_and_unlabelled_card_fallback():
     assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics) is None
     assert diagnostics["strategy"] == "model_assisted"
     assert diagnostics["mapping_rejections"]["no_confident_mapping"] == 1
+
+
+def test_search_opt_out_respects_criteria_and_legacy_permissions():
+    from app.agent.planning import specification
+
+    objective = "List software comparison tools"
+    options = {"mode": "autonomous", "allow_search_input": True, "allow_form_input": False}
+    for constraint in ("Do not use any search bars", "Avoid using the website search", "Never submit forms"):
+        assert not specification(objective, [objective, constraint], options, ["example.test"])["permissions"]["read_search"]
+    legacy = specification(objective, [objective], {"mode": "autonomous"}, ["example.test"])
+    assert legacy["permissions"] == {"form_input": False, "downloads": False}
+
+
+def test_search_rejects_invalid_endpoints_and_exhausted_attempts():
+    from app.agent.discovery import MAX_SEARCH_ATTEMPTS, search_candidate, search_control
+
+    element = {"element_id": "search1", "tag": "input", "type": "search", "role": "searchbox",
+               "actionable": True, "form": {"method": "GET", "search": True, "action": "https://example.test/search"}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    policy = Policy(["example.test"])
+    assert search_candidate(page, "List buying tools", policy, [])
+    assert search_candidate(page, "List buying tools", policy, list(range(MAX_SEARCH_ATTEMPTS))) is None
+    for url in ("https://[invalid", "https://user:pass@example.test/search", "javascript:alert(1)",
+                "https://example.test/search#form"):
+        candidate = {**element, "form": {**element["form"], "action": url}}
+        assert not search_control(candidate)
+        assert search_candidate({**page, "elements": [candidate]}, "List buying tools", policy, []) is None
+    external = {**element, "form": {**element["form"], "action": "https://outside.test/search"}}
+    assert search_candidate({**page, "elements": [external]}, "List buying tools", policy, []) is None
+
+
+def test_unproductive_content_changes_do_not_reset_information_progress():
+    page = {"url": "https://example.test/catalog"}
+    action = {"action": "SCROLL", "outcome": {"after_url": page["url"], "page_changed": True,
+                "content_changed": True, "record_groups_changed": True, "information_progress": False}}
+    assert unchanged_scrolls(page, [action, action]) == 2
+
+
+def test_automatic_capture_rejects_case_variant_duplicate_names():
+    rows = [record("Atlas", "Compare supplier purchase costs before buying."),
+            record("ATLAS", "Compare software vendors before buying.")]
+    group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": rows}
+    observed = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
+    diagnostics = {}
+    assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics) is None
+    assert diagnostics["mapping_rejections"]["duplicate_identity"] == 1
+
+
+def test_relevant_structure_is_not_hidden_behind_unrelated_groups():
+    from app.agent.structure import summarize_structure
+
+    def group(identifier, records):
+        return {"id": identifier, "kind": "repeated", "label": "Catalog", "context": [],
+                "observed_count": len(records), "truncated": False, "static_table": False, "records": records}
+
+    groups = [group(i, [record("News", "Latest releases from the publishing team.")]) for i in range(1, 9)]
+    groups.append(group(9, [record("Atlas", "Compare supplier costs before buying software.")]))
+    assert 9 not in {item["id"] for item in summarize_structure(groups)}
+    assert summarize_structure(groups, "List buying tools")[0]["id"] == 9

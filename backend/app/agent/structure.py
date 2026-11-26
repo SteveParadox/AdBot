@@ -21,7 +21,10 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
  const role = e => e.getAttribute('role') || '';
  const shape = e => [role(e),e.localName,[...e.children].slice(0,12).map(c=>role(c)||c.localName).join(',')].join('|');
  const groups = [];
- let remaining=rows;
+ // Reserve a small part of the existing row budget for the semantic
+ // fallback so large unrelated groups cannot starve it.
+ const semanticReserve=individual && rows>=8 ? Math.min(24,Math.floor(rows/4)) : 0;
+ let remaining=rows-semanticReserve;
  const fields = (row, headings) => {
    const children = [...row.children].filter(safe);
    const cells = children.length ? children : [row];
@@ -77,7 +80,7 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
      truncated:elements.length>limit, observed_count:elements.length,
      records:elements.slice(0,limit).map(e=>fields(e,headings))});
  };
- while (parent && scanned++<nodes && groups.length<12 && remaining>0) {
+ while (parent && scanned++<nodes && groups.length<(semanticReserve?11:12) && remaining>0) {
    if (safe(parent) || (visible(parent) && !parent.matches(hidden))) {
      const children=[...parent.children].filter(safe);
      const nativeRows=children.filter(e=>(e.localName==='tr'||role(e)==='row') &&
@@ -106,7 +109,7 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
    // Never combine the title with descriptions from unrelated regions.
    const semanticRecords=[];
    const headings=[...content.querySelectorAll('h2,h3,h4,[role=heading]')].slice(0,Math.min(nodes,160));
-   const semanticLimit=Math.min(remaining,24);
+   const semanticLimit=Math.min(remaining+semanticReserve,24);
    if (semanticLimit>=2) for (const h of headings) {
      if (!safe(h) || h.closest('nav,aside,header,footer,[role=navigation]')) continue;
      const name=text(h), p=h.nextElementSibling;
@@ -192,7 +195,20 @@ def rejected_group(url, group, scopes):
     return [url, group["label"]] in scopes or [url, group["label"], group_signature(group)] in scopes
 
 
-def summarize_structure(groups):
+def summarize_structure(groups, objective=None):
+    if objective:
+        from .discovery import relevance
+
+        def rank(group):
+            # Use a bounded sample of actual row fields, not the heading alone.
+            rows = group.get("records", [])[:8]
+            scores = [relevance(objective, " ".join(segment["value"] for segment in row["segments"]
+                                                   if not segment.get("truncated")))
+                      for row in rows]
+            return (group["kind"] == "detail", -sum(bool(score) for score in scores),
+                    -max(scores, default=0), -relevance(objective, group.get("label", "")))
+
+        groups = sorted(groups, key=rank)
     selected = groups[:6]
     detail = next((group for group in groups if group["kind"] == "detail"), None)
     if detail and detail not in selected:

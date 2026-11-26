@@ -244,7 +244,7 @@ class Observer:
 
             groups = clean(structural_groups)
             self.structural_groups = {group["id"]: group for group in groups}
-            data["record_groups"] = summarize_structure(groups)
+            data["record_groups"] = summarize_structure(groups, goal if structure == "enumeration" else None)
         data["accessibility"] = "\n".join(
             f"- {e['role']} {json.dumps(e['name'])}" for e in data["elements"] if e["visible"]
         )[:6000]

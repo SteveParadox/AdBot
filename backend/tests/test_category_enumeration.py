@@ -287,3 +287,57 @@ async def test_extraction_first_listing_uses_capture_and_verification_without_na
     assert {row["fields"]["Name"] for row in result["result"]["structured_records"]} == {"Atlas", "Beacon"}
     assert "decide" not in purposes
     assert purposes.count("verify") == 1
+
+
+@fixture.app.get("/autonomous-search-fixture", response_class=HTMLResponse)
+def autonomous_search_fixture():
+    return ('<main><h1>Software discovery</h1><form role="search" method="get" action="/autonomous-search-results">'
+            '<label for="lookup">Search software</label><input id="lookup" type="search" name="q" required>'
+            '<button type="submit">Search</button></form></main>')
+
+
+@fixture.app.get("/autonomous-search-results", response_class=HTMLResponse)
+def autonomous_search_results(q: str = ""):
+    if q.casefold() != "software buying and comparison tools":
+        return "<main><h1>No results</h1></main>"
+    return extraction_first_fixture()
+
+
+@pytest.mark.browser
+async def test_autonomous_native_search_then_capture_without_general_form_permission(client, target, fixture_server, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings(), "ai_provider", "local")
+    registration = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
+    registration.update(base_url="http://127.0.0.1:8765/autonomous-search-fixture", authorized=True)
+    registration["configuration"].update(screenshots=False, max_duration_seconds=120)
+    assert client.patch("/api/websites/" + target["id"], json=registration).status_code == 200
+    job = client.post("/api/agent/tasks", json={
+        "website_id": target["id"], "objective": "List software buying and comparison tools",
+        "mode": "autonomous", "allow_form_input": False, "max_steps": 8,
+    }).json()["id"]
+    purposes = []
+
+    async def respond(self, kind, payload, schema, *_args, **_kwargs):
+        purposes.append(kind)
+        if kind == "classify":
+            return AssessmentBatch(records=[
+                {"id": row["id"], "classification": "match",
+                 "evidence": next(i for i, quote in enumerate(row["excerpts"], 1) if "before buying" in quote)}
+                for row in payload["records"]
+            ])
+        assert kind == "verify"
+        assert set(payload["captured_records"]["records"]) == {"Atlas", "Beacon"}
+        cited = [row["id"] for row in payload["evidence"] if row["id"].startswith("capture-")]
+        return Verification(complete=True, explanation="Both products meet the purchasing objective",
+                            checks=[{"criterion": criterion, "met": True, "evidence_ids": cited}
+                                    for criterion in payload["success_criteria"]])
+
+    monkeypatch.setattr(ModelClient, "request", respond)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + job).json()
+    assert result["status"] == "completed", result.get("error_message")
+    assert result["planning"]["specification"]["permissions"]["read_search"] is True
+    assert result["planning"]["specification"]["permissions"]["form_input"] is False
+    records = result["result"]["structured_records"]
+    assert {row["fields"]["Name"] for row in records} == {"Atlas", "Beacon"}
+    assert all("/autonomous-search-results?" in row["source_url"] for row in records)
+    assert "decide" not in purposes

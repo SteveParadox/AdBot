@@ -324,7 +324,7 @@ def search_control(element):
                 and not any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))
                 and element.get("tag") == "input" and element.get("type") in {"search", "text"}
                 and element.get("role") in {"searchbox", "textbox"}
-                and form.get("search") and form.get("method") == "GET" and valid_search_action(form.get("action"))) 
+                and form.get("search") and form.get("method") == "GET" and valid_search_action(form.get("action")))
 
 
 def valid_search_action(value):
