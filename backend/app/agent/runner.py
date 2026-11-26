@@ -814,8 +814,10 @@ class AgentRunner(Runner):
             await self.prepare_plan(observation, deterministic=enumeration or directory is not None or (
                 research and len(comparison_entities(self.objective)) >= 2
             ))
+            permissions = self.memory["planning"]["specification"]["permissions"]
             read_search = bool(self.mode == "autonomous" and (research or enumeration or use_directory)
-                               and self.memory["planning"]["specification"]["permissions"].get("read_search"))
+                               and permissions.get("read_search"))
+            approved_posts = permissions.get("approved_post_search", []) if read_search else []
             if research and not reused_observation:
                 self.rank_research(observation)
             if observation["url"] not in self.memory["visited_urls"]:
@@ -897,7 +899,7 @@ class AgentRunner(Runner):
                             groups = self.available_groups(observation) if enumeration else []
                             if not groups and read_search:
                                 decision = search_candidate(observation, self.objective, self.policy,
-                                                            self.memory.get("search_attempts", []))
+                                                            self.memory.get("search_attempts", []), approved_posts)
                             if decision is None and not groups and unchanged_scrolls(observation, self.memory["recent_actions"]) >= 2:
                                 decision = self.discovery_alternative(observation)
                         plan = self.planning_context()
@@ -914,6 +916,7 @@ class AgentRunner(Runner):
                                     "steps_remaining": self.options["max_steps"] - number,
                                     "form_input_enabled": self.options["allow_form_input"],
                                     "read_search_enabled": read_search,
+                                    "approved_post_search": approved_posts,
                                     "task_plan": plan,
                                     **({"discovery": self.discovery_context(observation)}
                                        if research or enumeration or use_directory else {}),
@@ -958,7 +961,7 @@ class AgentRunner(Runner):
                                 or target_key in self.memory.get("rejected_collection_sources", [])
                                 or history.get(target_key) == len(self.memory["evidence"])):
                             alternative = (search_candidate(observation, self.objective, self.policy,
-                                                           self.memory.get("search_attempts", [])) if read_search else None)
+                                                           self.memory.get("search_attempts", []), approved_posts) if read_search else None)
                             alternative = alternative or self.discovery_alternative(observation)
                             if alternative:
                                 decision = alternative
@@ -968,7 +971,7 @@ class AgentRunner(Runner):
                             # The page has been assessed and a navigation action was
                             # selected; a search is a more direct discovery path.
                             decision = search_candidate(observation, self.objective, self.policy,
-                                                        self.memory.get("search_attempts", [])) or decision
+                                                        self.memory.get("search_attempts", []), approved_posts) or decision
                 # Retain the common planning permission guard below.
                 decision_data = decision.model_dump()
                 key = action_key(decision_data)
@@ -1033,7 +1036,7 @@ class AgentRunner(Runner):
                 guard(self.memory["planning"], decision, observation)
                 if read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"]:
                     element = next(e for e in observation["elements"] if e["element_id"] == decision.target.element_id)
-                    attempt = search_attempt_key(element, decision.text)
+                    attempt = search_attempt_key(element, decision.text, observation["url"])
                     attempts = self.memory.setdefault("search_attempts", [])
                     if attempt in attempts:
                         raise ValueError("This search query was already attempted; use the observed results or a different search")
@@ -1106,7 +1109,8 @@ class AgentRunner(Runner):
                         )
                     )
                     if read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"]:
-                        outcome = await controller.act(decision, {**self.options, "allow_read_search": True},
+                        outcome = await controller.act(decision, {**self.options, "allow_read_search": True,
+                                                                  "approved_post_search": approved_posts},
                                                        approved, read_only=True)
                     elif read_link:
                         outcome = await controller.act(decision, self.options, approved, read_only=True, prefer_navigation=True)
@@ -1553,7 +1557,8 @@ class AgentRunner(Runner):
             return {**observation, "elements": available, "record_groups": groups}
         return compact_page(observation, self.objective, elements=available, groups=groups,
                             actions=self.memory.get("recent_actions", []), form_input=False,
-                            read_search=bool(self.memory.get("planning", {}).get("specification", {}).get("permissions", {}).get("read_search")))
+                            read_search=bool(self.memory.get("planning", {}).get("specification", {}).get("permissions", {}).get("read_search")),
+                            approved_posts=self.options.get("approved_post_search", []))
 
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))

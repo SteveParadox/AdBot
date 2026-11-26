@@ -12,6 +12,8 @@ from ..db import AgentMemory, AgentStep, AgentTask, Job, PageVisit, Session, Web
 from ..jobs import make_job
 from ..api_support import Limit, Offset, Owner, collection, output, owned
 from .contracts import ReviewInput, TaskInput
+from .search import validate_post_endpoints
+from ..security import Policy
 
 router = APIRouter(prefix="/api/agent", tags=["autonomous agent"])
 
@@ -132,6 +134,7 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
     try:
         with transaction() as session:
             website = owned(session, Website, data.website_id, owner)
+            validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             if idempotency_key:
                 previous = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
                 if previous:
@@ -195,6 +198,7 @@ def preview(data: TaskInput, owner: Owner):
                 raise HTTPException(422, "Dataset must belong to the selected website")
         try:
             options = data.model_dump()
+            validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             dataset_id = data.dataset_id or website.configuration.get("extraction_dataset_id")
             if dataset_id:
                 from ..db import Dataset, ExtractionSchema

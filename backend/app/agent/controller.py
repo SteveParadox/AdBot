@@ -25,6 +25,7 @@ class Controller:
         self.memory = memory
         self.mutation = None
         self.egress_grant = None
+        self.search_scope = None
         self.creating = False
         self.crashed_pages = set()
         context.on("page", self.popup)
@@ -120,20 +121,36 @@ class Controller:
         try:
             self.runner.policy.check(request.url, navigation=request.is_navigation_request())
             if request.method not in {"GET", "HEAD"}:
-                permit = self.mutation
-                actual = urlsplit(request.url)
-                if (
-                    not permit
-                    or time.monotonic() > permit["until"]
-                    or (permit["method"] is not None and request.method != permit["method"])
-                    or (
-                        permit["destination"] is not None
-                        and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
-                    )
-                ):
-                    raise PolicyError("This request requires an active click submission")
-                self.egress_grant = (request.method, request.url, time.monotonic() + 5)
-                self.mutation = None
+                scope = getattr(self, "search_scope", None)
+                if scope is not None:
+                    from .search import approved_post_payload
+
+                    if (request.method != "POST" or time.monotonic() >= scope["until"]
+                            or request.redirected_from is not None or request.frame != scope["page"].main_frame
+                            or scope["remaining"] <= 0 or self.egress_grant is not None
+                            or not approved_post_payload(request.url, request.headers.get("content-type", ""),
+                                                         request.post_data, scope["query"], scope["endpoints"])):
+                        scope["blocked"] += 1
+                        raise PolicyError("Request is outside the approved search-only POST scope")
+                    self.runner.policy.check(request.url)
+                    scope["remaining"] -= 1
+                    scope["approved"] += 1
+                    self.egress_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
+                else:
+                    permit = self.mutation
+                    actual = urlsplit(request.url)
+                    if (
+                        not permit
+                        or time.monotonic() > permit["until"]
+                        or (permit["method"] is not None and request.method != permit["method"])
+                        or (
+                            permit["destination"] is not None
+                            and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                        )
+                    ):
+                        raise PolicyError("This request requires an active click submission")
+                    self.egress_grant = (request.method, request.url, time.monotonic() + 5)
+                    self.mutation = None
             if request.is_navigation_request():
                 await self.runner.permitted(request.url)
             await route.continue_()
@@ -218,29 +235,18 @@ class Controller:
                     raise ValueError("Enable form input before changing a selection control")
                 if element["readonly"]:
                     raise ValueError("Read-only selection controls cannot be changed")
+            if action == "SEARCH" and read_only and options.get("allow_read_search"):
+                from .search import execute_scoped_search
+
+                result = await execute_scoped_search(self, decision, locator, element, binding, options)
+                if self.page.url != before_url:
+                    self.runner.policy.check(self.page.url)
+                    await self.runner.visit(self.page, self.page.url, navigate=False)
+                    self.tabs[self.active]["history"].append(self.page.url)
+                return result
             if action in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}:
                 if not options["allow_form_input"]:
-                    from .discovery import search_control, search_query_allowed
-
-                    if not (read_only and action == "SEARCH" and options.get("allow_read_search")
-                            and search_control(element) and search_query_allowed(self.runner.objective, decision.text)):
-                        raise ValueError("Enable form input when creating the task")
-                    live_metadata = await locator.evaluate(METADATA, timeout=self.engine.timeout_ms)
-                    if not search_control(live_metadata) or live_metadata["form"]["action"] != expected_form["action"]:
-                        raise ValueError("Search form changed before input; reobserve")
-                    # Native GET form only. An implicit Enter submission can
-                    # activate its default submit button, including overrides.
-                    # Do not send unrelated fields or accept submitter overrides.
-                    simple_search = await locator.evaluate(
-                        "e=>!!e.form && !!e.name && (!e.form.target || e.form.target==='_self') && "
-                        "[...e.form.elements].every(x=>x===e || x.disabled || "
-                        "((['submit','image'].includes(x.type)) ? "
-                        "(!x.name && x.type!=='image' && !['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a=>x.hasAttribute(a))) : "
-                        "(!x.name && !x.required && !['password','file'].includes(x.type))))",
-                        timeout=self.engine.timeout_ms,
-                    )
-                    if not simple_search or await self.inspect_target(locator) != live:
-                        raise ValueError("Search form is ambiguous or changed; general form permission required")
+                    raise ValueError("Enable form input when creating the task")
                 if element["type"] in {"password", "file"} or any(
                     x in element["name"].lower() for x in ("password", "credit card", "api key", "secret")
                 ):
