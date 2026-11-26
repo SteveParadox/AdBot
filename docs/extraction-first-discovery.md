@@ -17,3 +17,6 @@ Run from the backend development environment:
 `pytest -q tests/test_extraction_first_discovery.py tests/test_category_enumeration.py tests/test_directory_strategy.py tests/test_research_pipeline.py tests/test_provider_handoff.py tests/test_model_response_contract.py`.
 
 Replay the reported listing task and unrelated authorized-site fixtures. Compare qualified records, source evidence, model calls, tokens, unchanged-scroll count and provider errors. Live provider behavior and semantic relevance require actual replay; the lexical ranking is only a candidate heuristic, not an entailment judgment. No provider-specific schema relaxation is introduced.
+
+## Review hardening
+Automatic mappings must map every observed row without ambiguous identities; model-assisted partial mapping retains its existing behavior. Rejected groups no longer blacklist an entire source. Direct navigation is limited to autonomous read-side jobs, excludes fragment and keyboard actions, and rechecks the live binding. Provider retries use actual estimated input when reducing output limits. All existing policy and verifier checks remain mandatory.

@@ -196,13 +196,18 @@ class Controller:
                 raise ValueError("Element is disabled")
             if (prefer_navigation and read_only and action == "CLICK" and live.get("href")
                     and element.get("role") == "link" and not live.get("form")
-                    and not decision.expected_text and not self.needs_review(decision, "autonomous")):
+                    and decision.input_method == "auto" and not decision.expected_text
+                    and not urlsplit(live["href"]).fragment
+                    and not self.needs_review(decision, "autonomous")):
                 ordinary = await locator.evaluate(
                     "e=>e.matches('a[href]:not([download]):not([onclick]):not([role=button])') "
                     "&& (!e.target || e.target==='_self') && !e.closest('form,dialog,[role=dialog]')",
                     timeout=self.engine.timeout_ms,
                 )
                 if ordinary:
+                    # Recheck the live binding after the extra DOM inspection.
+                    if await self.inspect_target(locator) != live:
+                        raise ValueError("Target changed before direct navigation; reobserve")
                     await self.navigate(live["href"])
                     return {"navigation_direct": True, "interaction": {
                         "changed": self.page.url != before_url, "verified": self.page.url != before_url,

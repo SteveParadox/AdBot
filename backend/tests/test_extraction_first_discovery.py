@@ -99,3 +99,32 @@ def test_catalog_ranking_prefers_collection_to_keyword_matching_interface():
     decision = navigation_candidate(observation, "List software buying and comparison tools",
                                     Policy(["example.test"]), catalog_only=True, minimum=8)
     assert decision.url == "https://example.test/products"
+
+
+def test_automatic_mapping_rejects_duplicate_even_in_large_group():
+    rows = [record(f"Tool {i}", "Compare supplier purchase costs before buying.") for i in range(6)]
+    rows.append(record("Tool 0", "Different duplicate record for comparing costs."))
+    group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": rows}
+    observed = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
+    assert automatic_capture(observed, {2: group}, "List buying tools") is None
+
+
+def test_discovery_ignores_malformed_hidden_and_fragment_links():
+    elements = [
+        {"role": "link", "actionable": True, "name": "Buying catalog", "href": "https://[bad"},
+        {"role": "link", "actionable": True, "name": "Buying catalog", "href": "https://example.test/hidden", "visible": False},
+        {"role": "link", "actionable": True, "name": "Buying catalog", "href": "https://example.test/#catalog"},
+    ]
+    page = {"url": "https://example.test/", "elements": elements}
+    assert navigation_candidate(page, "List buying tools", Policy(["example.test"])) is None
+    compact = compact_page(page, "List buying tools", elements=elements, groups=[])
+    assert all(item.get("href") != "https://[bad" for item in compact["elements"])
+
+
+def test_automatic_mapping_does_not_shift_unlabeled_fields_across_rows():
+    first = record("Atlas", "Compare supplier costs before buying software.")
+    second = record("Beacon", "Compare vendor purchase costs before buying software.")
+    second["segments"][1]["label"] = "Editorial"
+    group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": [first, second]}
+    page = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
+    assert automatic_capture(page, {2: group}, "List buying tools") is None

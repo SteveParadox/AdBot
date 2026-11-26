@@ -226,7 +226,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
         memory["failures"] = memory.get("failures", [])[-3:]
         memory["recent_actions"] = memory.get("recent_actions", [])[-3:]
         memory["recent_actions"] = [{"action":a.get("action"),"reason":_clip(a.get("reason"),160),
-            "outcome": {k:a["outcome"][k] for k in ("page_changed","after_url","interaction") if k in a["outcome"]}
+            "outcome": {k:a["outcome"][k] for k in ("page_changed","after_url","interaction","information_progress","record_groups_changed","content_changed") if k in a["outcome"]}
             if isinstance(a.get("outcome"),dict) else _clip(a.get("outcome"),160)} for a in memory["recent_actions"] if isinstance(a,dict)]
         for action in memory["recent_actions"]:
             if isinstance(action.get("outcome"),dict) and isinstance(action["outcome"].get("interaction"),dict):
@@ -669,7 +669,10 @@ class ModelClient:
                             remaining_limit = min(context_limit, remaining_limit) if remaining_limit is not None else context_limit
                         if not context_retry:
                             if kind == "decide" and remaining_limit is not None and remaining_limit >= 1024:
-                                output_limit = min(output_limit, max(512, remaining_limit // 4))
+                                # Fit the actual request first; if input must shrink,
+                                # leave at least 512 tokens for the decision schema.
+                                room = remaining_limit - estimate()
+                                output_limit = min(output_limit, max(512, min(remaining_limit // 4, room)))
                                 if native:
                                     provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
                                 else:
@@ -686,6 +689,9 @@ class ModelClient:
                             unavailable = True
                             break
                         raise
+                    # A later provider was able to reserve this request. Do not
+                    # report an earlier provider's stale budget rejection.
+                    budget_failure = None
                     started = time.monotonic()
                     settled = False
                     provider_retry_after = cfg.ai_failure_cooldown_seconds

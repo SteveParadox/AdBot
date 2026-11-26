@@ -351,7 +351,8 @@ class AgentRunner(Runner):
             if structured.get("restrict_to_objective"):
                 await self.classify_structured(structured)
             if enumeration and not any(row.get("classification") == "match" for row in structured["records"].values()):
-                self.reject_enumeration_source(structured)
+                # An unrelated group does not invalidate the whole source.
+                self.reject_enumeration_source(structured, reject_url=False)
                 await self.checkpoint(self.controller)
                 raise ValueError("This source yielded no qualifying records. Explore a different observed source.")
         qualified = self.enumeration_records(structured) if enumeration else {}
@@ -440,7 +441,7 @@ class AgentRunner(Runner):
                     "instruction": "Continue discovery using a different observed record group or authorized source. "
                                    "Previously verified records are retained; do not recapture the rejected group.",
                 }
-                self.reject_enumeration_source(structured, reject_url=bool(capture_check and not capture_check.met))
+                self.reject_enumeration_source(structured, reject_url=False)
                 await self.checkpoint(self.controller)
             raise ValueError("Goal verification incomplete: " + (
                 "; ".join(problems)[:380] if problems else "Required structured evidence was not verified"
@@ -515,7 +516,7 @@ class AgentRunner(Runner):
 
         cfg = settings()
         pending = [row for row in capture["records"].values() if not row.get("classification")]
-        size = min(cfg.agent_classification_batch_rows, max(1, (cfg.ai_max_request_chars - 3500) // 3000))
+        size = min(40, cfg.agent_classification_batch_rows, max(1, (cfg.ai_max_request_chars - 3500) // 3000))
         for offset in range(0, len(pending), size):
             count = (self.memory.get("enumeration_classification_calls", 0)
                      if getattr(self, "enumeration_mode", False) else capture.get("classification_calls", 0))
@@ -924,9 +925,7 @@ class AgentRunner(Runner):
                         raise ValueError(
                             "OBSERVE already returned unchanged content; navigate an observed link, interact with a relevant control, or report the blockage"
                         )
-                if (research or enumeration or use_directory) and not self.options["allow_form_input"]:
-                    if decision.decision in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}:
-                        raise PermissionError("Form input is disabled. Use an observed authorized link or request permission.")
+                # Retain the common planning permission guard below.
                 decision_data = decision.model_dump()
                 key = action_key(decision_data)
                 if enumeration:
@@ -1044,7 +1043,7 @@ class AgentRunner(Runner):
                     self.memory["summary"] = [c.model_dump() for c in decision.claims]
                     outcome = {"summary": self.memory["summary"]}
                 else:
-                    read_link = (research or enumeration) and not self.options["allow_form_input"] and (
+                    read_link = (research or enumeration) and self.mode == "autonomous" and not self.options["allow_form_input"] and (
                         decision.decision == "CLICK" and decision.target and any(
                             element.get("element_id") == decision.target.element_id
                             and element.get("role") == "link" and element.get("href") and not element.get("form")
@@ -1292,13 +1291,13 @@ class AgentRunner(Runner):
                                 claims=[{"text": "Observed candidate records", "evidence_ids": [evidence["id"]]}])
         if capture:
             return None
-        if structural_groups:
+        if structural_groups and not exhaustive_request(self.objective):
             candidate = automatic_capture(
                 observation, structural_groups, self.objective,
                 rejected=self.memory.get("rejected_collection_scopes", []),
                 max_rows=min(48, max(0, settings().agent_classification_max_calls -
                                       self.memory.get("enumeration_classification_calls", 0)) *
-                             min(settings().agent_classification_batch_rows,
+                             min(40, settings().agent_classification_batch_rows,
                                  max(1, (settings().ai_max_request_chars - 3500) // 3000))),
             )
             if candidate is not None:
@@ -1429,9 +1428,16 @@ class AgentRunner(Runner):
     def research_model_page(self, observation):
         history = self.memory.get("research_destinations", {})
         count = len(self.memory["evidence"])
-        available = [element for element in observation["elements"] if not element.get("href")
-                     or (history.get(destination_key(element["href"])) != count
-                         and destination_key(element["href"]) not in self.memory.get("rejected_collection_sources", []))]
+        def available_control(element):
+            if not element.get("href"):
+                return True
+            try:
+                key = destination_key(element["href"])
+            except ValueError:
+                return False
+            return (history.get(key) != count and key not in self.memory.get("rejected_collection_sources", []))
+
+        available = [element for element in observation["elements"] if available_control(element)]
         groups = observation.get("record_groups", [])
         if getattr(self, "enumeration_mode", False):
             from .structure import rejected_group

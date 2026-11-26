@@ -111,7 +111,8 @@ async def test_listing_rejects_a_misleading_source_and_publishes_qualified_recor
                     classification, evidence = "match", excerpts.index("SideNote") + 1
                 else:
                     classification = "match" if any("purchase supplier" in excerpt for excerpt in excerpts) else "excluded"
-                    evidence = 1
+                    evidence = next((i for i, excerpt in enumerate(excerpts, 1)
+                                     if "purchase supplier" in excerpt), 1)
                 records.append({"id": row["id"], "classification": classification, "evidence": evidence})
             return AssessmentBatch(records=records)
         if kind == "verify":
@@ -128,7 +129,7 @@ async def test_listing_rejects_a_misleading_source_and_publishes_qualified_recor
         page = payload["current_page"]
         defaults = {"observation": "Observed candidate group", "reason": "Inspect the record descriptions",
                     "confidence": 1, "expected_result": "Sources for category qualification"}
-        if payload["rejected_collection_sources"] and page["url"].endswith("/related" + suffix):
+        if (payload["rejected_collection_sources"] or payload.get("rejected_collection_scopes")) and page["url"].endswith("/related" + suffix):
             return Decision(decision="NAVIGATE", url=next(e["href"] for e in page["elements"]
                             if (e.get("href") or "").endswith("/catalog" + suffix)), **defaults)
         group = next(group for group in page["record_groups"]

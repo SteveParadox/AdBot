@@ -34,8 +34,12 @@ def source_score(objective, element):
     name = element.get("name") or ""
     label = set(words(name))
     href = element.get("href") or ""
-    path = set(words(urlsplit(href).path))
-    context = str((element.get("context") or {}).get("heading", ""))
+    try:
+        path = set(words(urlsplit(href).path))
+    except ValueError:
+        return -100
+    context = element.get("context")
+    context = str(context.get("heading", "")) if isinstance(context, dict) else ""
     topical = relevance(objective, name)
     score = 5 * topical + 2 * relevance(objective, context) + relevance(objective, href)
     score += 8 * bool((label | path) & _CATALOG)
@@ -51,11 +55,15 @@ def observed_links(observation, objective, policy, *, excluded=(), catalog_only=
     candidates = {}
     for element in observation.get("elements", []):
         href = element.get("href")
-        if (not href or not element.get("actionable") or element.get("disabled")
+        if (not href or not element.get("actionable") or element.get("visible") is False or element.get("disabled")
                 or element.get("blocked_by_modal") or element.get("form")
                 or element.get("role") != "link"):
             continue
         try:
+            parsed = urlsplit(href)
+            # Do not normalize an in-page fragment into a full navigation.
+            if parsed.fragment:
+                continue
             href = policy.check(href)
         except ValueError:
             continue
@@ -122,17 +130,25 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
                 {"name": "Name", "position": identity}, {"name": "Description", "position": position},
             ], restrict_to_objective=True)
             try:
+                # Automatic mapping must not silently skip ambiguous rows.
+                strict = map_group(group, capture)
                 mapped = map_group(group, capture, preserve_context=True)
             except ValueError:
                 continue
-            if len(mapped) < 2 or len(mapped) < len(rows) * 0.8:
+            if len(strict) != len(rows) or set(strict) != set(mapped):
+                continue
+            if not _field_label(example[position - 1]) and any(
+                len(row.get("segments", [])) < position
+                or _field_label(row["segments"][position - 1])
+                for row in rows
+            ):
                 continue
             if any(len(name) > 220 or len(words(name)) > 20 or
                    len(fields["Description"]) < 25 or
                    fields["Description"] == fields["Name"]
                    for name, (fields, _) in mapped.items()):
                 continue
-            relevant = sum(bool(relevance(objective, " ".join(excerpts))) for _, excerpts in mapped.values())
+            relevant = sum(bool(relevance(objective, fields["Description"])) for fields, _ in mapped.values())
             heading_score = relevance(objective, group.get("label", ""))
             # Unrelated cards remain available to the model, but don't spend a
             # classification batch on them purely because they are repeated.
@@ -141,7 +157,8 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
             )
             if not relevant and not heading_score and not generic_catalog:
                 continue
-            choices.append((4 * heading_score + 3 * relevant, len(mapped), capture))
+            # Prefer relevance density over a large group with incidental matches.
+            choices.append((4 * heading_score + 6 * relevant / len(mapped), relevant, capture))
             break
     if not choices:
         return None
@@ -190,6 +207,7 @@ def ranked_excerpt(objective, text, *, limit=1400):
 def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False):
     """Preserve exact IDs and small, relevant page excerpts for read-side decisions."""
     available = [element for element in elements if element.get("actionable")
+                 and element.get("visible") is not False
                  and not element.get("blocked_by_modal") and not element.get("disabled")]
     if not form_input:
         available = [element for element in available
@@ -201,7 +219,12 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
     concise = []
     for element in available[:18]:
         row = {key: value for key, value in element.items() if key in fields}
-        row["name"] = row.get("name", "")[:160]
+        if row.get("href"):
+            try:
+                urlsplit(row["href"])
+            except ValueError:
+                continue
+        row["name"] = (row.get("name") or "")[:160]
         if isinstance(row.get("context"), dict):
             row["context"] = {key: str(value)[:120] for key, value in row["context"].items()
                               if key in {"heading", "region"}}
@@ -216,7 +239,8 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
     page.update(text=ranked_excerpt(objective, observation.get("text", "")),
                 viewport_text=ranked_excerpt(objective, observation.get("viewport_text", ""), limit=350),
                 headings=observation.get("headings", [])[:8], elements=concise,
-                record_groups=ranked[:5], research_chunks=observation.get("research_chunks", [])[:4],
+                record_groups=[{**group, "examples": group.get("examples", [])[:2]} for group in ranked[:5]],
+                research_chunks=observation.get("research_chunks", [])[:4],
                 unchanged_scrolls=unchanged_scrolls(observation, actions),
                 note="Record groups and text are observed candidates, not proof of membership. "
                      "Prefer capturing or classifying records to scrolling unchanged content.")
