@@ -213,6 +213,11 @@ export default function AgentPanel({
     [persist, setPersist] = useState(false);
   const [downloads, setDownloads] = useState(false);
   const [readSearch, setReadSearch] = useState(true);
+  const [postSearchUrl, setPostSearchUrl] = useState("");
+  const [postSearchField, setPostSearchField] = useState("q");
+  const [postSearchVerified, setPostSearchVerified] = useState(false);
+  const approvedPostSearch = mode === "autonomous" && readSearch && postSearchVerified && postSearchUrl.trim()
+    ? [{ url: postSearchUrl.trim(), query_field: postSearchField.trim(), verified_read_only: true }] : [];
   const [priority, setPriority] = useState(0);
   const [dependency, setDependency] = useState("");
   const [dataset, setDataset] = useState("");
@@ -227,6 +232,7 @@ export default function AgentPanel({
   const taskOptions = {
     objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
     max_steps: maxSteps, allow_form_input: formInput, allow_search_input: readSearch,
+    approved_post_search: approvedPostSearch,
     allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
   };
   const config = useQuery({
@@ -291,6 +297,7 @@ export default function AgentPanel({
           session_persistence: persist,
           allow_form_input: formInput,
           allow_search_input: readSearch,
+          approved_post_search: approvedPostSearch,
           allow_downloads: downloads,
           dataset_id: dataset || null,
           output_format: outputFormat || null,
@@ -473,6 +480,24 @@ export default function AgentPanel({
                 onChange={(e) => setReadSearch(e.target.checked)} />
               Allow read-only site search in autonomous research tasks
             </label>
+            {mode === "autonomous" && readSearch && (
+              <details>
+                <summary>Approved read-only POST search (optional)</summary>
+                <p>Only configure a search endpoint you have verified is non-mutating. Exact URL and a single query field are required.</p>
+                <label>Endpoint URL
+                  <input type="url" value={postSearchUrl} placeholder="https://example.com/api/search"
+                    onChange={(e) => { setPostSearchUrl(e.target.value); setPostSearchVerified(false); }} />
+                </label>
+                <label>Query field
+                  <input value={postSearchField} onChange={(e) => { setPostSearchField(e.target.value); setPostSearchVerified(false); }} />
+                </label>
+                <label>
+                  <input type="checkbox" checked={postSearchVerified} disabled={!postSearchUrl.trim() || !postSearchField.trim()}
+                    onChange={(e) => setPostSearchVerified(e.target.checked)} />
+                  I have verified this exact POST endpoint is read-only
+                </label>
+              </details>
+            )}
             <label>
               <input
                 type="checkbox"

@@ -252,3 +252,61 @@ def test_relevant_structure_is_not_hidden_behind_unrelated_groups():
     groups.append(group(9, [record("Atlas", "Compare supplier costs before buying software.")]))
     assert 9 not in {item["id"] for item in summarize_structure(groups)}
     assert summarize_structure(groups, "List buying tools")[0]["id"] == 9
+
+
+def test_scripted_search_control_recognizes_nonstandard_editable_without_form():
+    from app.agent.search import search_interface
+    from app.agent.discovery import search_candidate
+
+    element = {"element_id": "custom1", "tag": "div", "type": "", "role": "searchbox",
+               "actionable": True, "search_interface": {"search_semantics": True, "editable": True}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    assert search_interface(element) == "scripted"
+    assert search_candidate(page, "List buying tools", Policy(["example.test"]), []).target.element_id == "custom1"
+    assert search_interface({**element, "name": "Password search"}) is None
+    assert search_interface({**element, "role": "textbox", "search_interface": {"editable": True}}) is None
+    assert search_interface({**element, "readonly": True}) is None
+
+
+def test_approved_post_search_is_exact_and_query_only():
+    from app.agent.search import ApprovedPostSearch, approved_post_payload, search_interface
+
+    endpoint = ApprovedPostSearch(url="https://example.test/api/search", query_field="q",
+                                  verified_read_only=True).model_dump()
+    endpoints = [endpoint]
+    url, query = endpoint["url"], "buying tools"
+    assert approved_post_payload(url, "application/json", '{"q":"buying tools"}', query, endpoints)
+    assert approved_post_payload(url, "application/x-www-form-urlencoded; charset=utf-8", "q=buying+tools", query, endpoints)
+    for body in ('{"q":"buying tools","delete":true}', '{"q":"buying tools","q":"different"}',
+                 '{"q":{"value":"buying tools"}}', '[["q","buying tools"]]', '{"q":"different"}'):
+        assert not approved_post_payload(url, "application/json", body, query, endpoints)
+    assert not approved_post_payload(url + "?admin=1", "application/json", '{"q":"buying tools"}', query, endpoints)
+    assert not approved_post_payload("https://outside.test/api/search", "application/json", '{"q":"buying tools"}', query, endpoints)
+    assert not approved_post_payload(url, "application/json", '{"q":"buying tools"}', query, [])
+    element = {"tag": "input", "type": "search", "role": "searchbox", "actionable": True,
+               "form": {"method": "POST", "action": url, "search": True}}
+    assert search_interface(element, endpoints) == "approved_post"
+    assert search_interface(element) is None
+
+
+def test_post_search_approval_requires_attestation_and_allowed_domain():
+    import pytest
+    from app.agent.search import ApprovedPostSearch, validate_post_endpoints
+
+    for url in ("https://example.test/*", "https://example.test/api/search?x=1",
+                "https://example.test/api/search#fragment", "https://user:pw@example.test/search"):
+        with pytest.raises(ValueError):
+            ApprovedPostSearch(url=url, query_field="q", verified_read_only=True)
+    with pytest.raises(ValueError):
+        ApprovedPostSearch(url="https://example.test/search", query_field="q", verified_read_only=False)
+    with pytest.raises(ValueError):
+        validate_post_endpoints([{"url": "https://outside.test/search", "query_field": "q",
+                                  "verified_read_only": True}], Policy(["example.test"]))
+
+
+def test_formless_search_attempt_keys_are_page_scoped():
+    from app.agent.discovery import search_attempt_key
+
+    control = {"role": "searchbox", "name": "Search"}
+    assert search_attempt_key(control, "buying tools", "https://example.test/a") != search_attempt_key(
+        control, "buying tools", "https://example.test/b")

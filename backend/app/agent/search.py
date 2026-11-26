@@ -73,8 +73,13 @@ def approved_post_payload(url, content_type, body, query, endpoints):
 
 def search_interface(element, endpoints=()):
     """Return a candidate kind, never permission to send arbitrary requests."""
+    import re
+
     if (not element.get("actionable") or element.get("visible") is False
-            or any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))):
+            or any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))
+            or re.search(r"\b(password|passcode|pin|login|sign[ -]?in|register|credit card|payment|secret|token|email)\b",
+                         " ".join(str(element.get(k) or "") for k in ("name", "placeholder")), re.I)):
+
         return None
     tag, role, kind = element.get("tag"), element.get("role"), element.get("type")
     hints = element.get("search_interface") or {}
@@ -83,7 +88,7 @@ def search_interface(element, endpoints=()):
     if not (native or custom) or role not in {"searchbox", "textbox", "combobox"}:
         return None
     if not (role == "searchbox" or kind == "search" or hints.get("search_semantics") is True
-            or (element.get("form") or {}).get("search")):
+            or (not hints and (element.get("form") or {}).get("search"))):
         return None
     form = element.get("form")
     if form:
@@ -264,6 +269,8 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
                 return False
             if not await target.evaluate(SAFE_FORM):
                 return False
+            if not await control.evaluate("e=>e.isConnected") or not await target.evaluate("e=>e.isConnected"):
+                return False
             await control.click(timeout=engine.timeout_ms)
             return True
         finally:
@@ -304,6 +311,9 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
             elif pending:
                 strategy = "pending_results"
                 after, choices = await settle(before, 3.0, inspect_suggestions=True)
+                if choices and after["url"] == before["url"] and await click_scoped(SUGGESTION_TARGET, query):
+                    strategy = "exact_suggestion"
+                    after, choices = await settle(before, 2.0, inspect_suggestions=True)
             elif time.monotonic() < scope["until"] and await target.evaluate("e=>e.isConnected"):
                 current = await target.evaluate(METADATA)
                 if search_interface(current, endpoints) != kind or not await target.evaluate(SAFE_FORM):
@@ -315,6 +325,9 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
                 if kind.startswith("scripted") and await click_scoped(SEARCH_BUTTON):
                     strategy = "search_button"
                 else:
+                    # Revalidate the bound input after any asynchronous wait.
+                    if not await target.evaluate("e=>e.isConnected") or not await target.evaluate(SAFE_FORM):
+                        raise ValueError("Search control detached or form changed before submission")
                     await target.press("Enter", timeout=engine.timeout_ms)
                     strategy = "enter"
                 after, choices = await settle(before, 3.0, inspect_suggestions=True)

@@ -341,3 +341,88 @@ async def test_autonomous_native_search_then_capture_without_general_form_permis
     assert {row["fields"]["Name"] for row in records} == {"Atlas", "Beacon"}
     assert all("/autonomous-search-results?" in row["source_url"] for row in records)
     assert "decide" not in purposes
+
+
+@fixture.app.get("/dynamic-search-fixture/{mode}", response_class=HTMLResponse)
+def dynamic_search_fixture(mode: str):
+    # No native form: actual browser input events drive delayed suggestions,
+    # AJAX results or an explicitly attested POST query.
+    if mode == "suggestion":
+        return """<main><h1>Find software</h1><section role="search">
+        <div contenteditable="true" role="searchbox" aria-label="Search software" aria-controls="suggestions"></div>
+        <div id="suggestions" role="listbox"></div></section><div id="results"></div>
+        <script>
+        const input=document.querySelector('[role=searchbox]');
+        input.addEventListener('input',()=>setTimeout(()=>{
+          const option=document.createElement('div'); option.setAttribute('role','option');
+          option.tabIndex=0; option.textContent=input.textContent;
+          option.onclick=()=>{document.getElementById('suggestions').replaceChildren(); load(input.textContent)};
+          document.getElementById('suggestions').replaceChildren(option);
+        },250));
+        async function load(q){const r=await fetch('/dynamic-search-data?q='+encodeURIComponent(q));document.getElementById('results').innerHTML=await r.text()}
+        </script></main>"""
+    method = "POST" if mode == "post" else "GET"
+    return """<main><h1>Find software</h1><section role="search">
+    <input type="text" aria-label="Search software"><button type="button">Search</button></section>
+    <div id="results" aria-busy="false"></div>
+    <script>
+    const input=document.querySelector('input');const results=document.getElementById('results');
+    async function load(){
+      results.setAttribute('aria-busy','true');
+      await new Promise(r=>setTimeout(r,350));
+      const method=METHOD;
+      const response=await fetch('/dynamic-search-data'+(method==='GET'?'?q='+encodeURIComponent(input.value):''),
+        method==='POST'?{method,headers:{'Content-Type':'application/json'},body:JSON.stringify({q:input.value})}:{});
+      results.innerHTML=await response.text();results.setAttribute('aria-busy','false');
+    }
+    document.querySelector('button').onclick=load;
+    </script></main>""".replace("METHOD", repr(method))
+
+
+@fixture.app.get("/dynamic-search-data", response_class=HTMLResponse)
+def dynamic_search_data(q: str = ""):
+    return extraction_first_fixture() if q.casefold() == "software buying and comparison tools" else "<p>No results</p>"
+
+
+@fixture.app.post("/dynamic-search-data", response_class=HTMLResponse)
+def dynamic_search_post(data: dict):
+    return dynamic_search_data(data.get("q", ""))
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("mode", ["suggestion", "ajax", "post"])
+async def test_dynamic_search_variants_capture_rendered_results(client, target, fixture_server, monkeypatch, mode):  # noqa: F811
+    monkeypatch.setattr(settings(), "ai_provider", "local")
+    registration = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
+    registration.update(base_url=f"http://127.0.0.1:8765/dynamic-search-fixture/{mode}", authorized=True)
+    registration["configuration"].update(screenshots=False, max_duration_seconds=120)
+    assert client.patch("/api/websites/" + target["id"], json=registration).status_code == 200
+    options = {"approved_post_search": [{"url": "http://127.0.0.1:8765/dynamic-search-data", "query_field": "q",
+                                       "verified_read_only": True}]} if mode == "post" else {}
+    job = client.post("/api/agent/tasks", json={
+        "website_id": target["id"], "objective": "List software buying and comparison tools",
+        "mode": "autonomous", "allow_form_input": False, "max_steps": 8, **options,
+    }).json()["id"]
+    purposes = []
+
+    async def respond(self, kind, payload, schema, *_args, **_kwargs):
+        purposes.append(kind)
+        if kind == "classify":
+            return AssessmentBatch(records=[
+                {"id": row["id"], "classification": "match",
+                 "evidence": next(i for i, quote in enumerate(row["excerpts"], 1) if "before buying" in quote)}
+                for row in payload["records"]
+            ])
+        assert kind == "verify"
+        assert set(payload["captured_records"]["records"]) == {"Atlas", "Beacon"}
+        cited = [row["id"] for row in payload["evidence"] if row["id"].startswith("capture-")]
+        return Verification(complete=True, explanation="The rendered products qualify",
+                            checks=[{"criterion": criterion, "met": True, "evidence_ids": cited}
+                                    for criterion in payload["success_criteria"]])
+
+    monkeypatch.setattr(ModelClient, "request", respond)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + job).json()
+    assert result["status"] == "completed", result.get("error_message")
+    assert {row["fields"]["Name"] for row in result["result"]["structured_records"]} == {"Atlas", "Beacon"}
+    assert "decide" not in purposes

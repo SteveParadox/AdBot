@@ -234,7 +234,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
             if isinstance(a.get("outcome"),dict) else _clip(a.get("outcome"),160)} for a in memory["recent_actions"] if isinstance(a,dict)]
         for action in memory["recent_actions"]:
             if isinstance(action.get("outcome"),dict) and isinstance(action["outcome"].get("interaction"),dict):
-                action["outcome"]["interaction"]={k:v for k,v in action["outcome"]["interaction"].items() if k in {"verified","verification","key"}}
+                action["outcome"]["interaction"]={k:v for k,v in action["outcome"]["interaction"].items() if k in {"verified","verification","key","search"}}
 
     def serialize(value):
         if isinstance(current_page, dict):

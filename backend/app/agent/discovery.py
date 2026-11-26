@@ -260,7 +260,7 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
     available.sort(key=lambda element: (not (read_search and search_control(element, approved_posts)), -source_score(objective, element)))
     fields = {"element_id", "role", "name", "href", "tag", "type", "actionable", "visible",
               "disabled", "readonly", "form", "focused", "context", "expanded", "selected", "blocked_by_modal",
-              "search_interface", "controls", "active_descendant"}
+              "search_interface", "controls", "active_descendant", "placeholder"}
     concise = []
     for element in available[:18]:
         row = {key: value for key, value in element.items() if key in fields}
