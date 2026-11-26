@@ -46,7 +46,7 @@ def action_key(decision):
 
 
 def semantic_action_key(decision, observation):
-    """Track equivalent read-side actions despite changing element IDs or scroll offsets."""
+    """Track equivalent read-side actions without confusing progressive scrolling with loops."""
     action = decision["decision"]
     if action not in {"CLICK", "SCROLL", "SCROLL_BACK"}:
         return None
@@ -64,7 +64,10 @@ def semantic_action_key(decision, observation):
         "text": observation.get("text", ""),
     }
     if action in {"SCROLL", "SCROLL_BACK"}:
-        material["at_end"] = observation.get("scroll", {}).get("at_end")
+        scroll = observation.get("scroll", {})
+        material["at_end"] = scroll.get("at_end")
+        material["scroll_y"] = scroll.get("y")
+        material["scroll_height"] = scroll.get("height")
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
 
 

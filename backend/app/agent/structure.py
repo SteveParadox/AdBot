@@ -101,17 +101,33 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
  if (individual) {
    const content = document.querySelector('main,[role=main]') || document.body;
    const title = [...content.querySelectorAll('h1,[role=heading][aria-level="1"]')].filter(safe);
-   const details = [...content.querySelectorAll('p,[itemprop=description]')].slice(0,100)
-     .filter(node=>safe(node) && !node.closest('nav,aside,header,footer,[role=navigation]'))
-     .map(text).filter(value=>value.length>=30 && value.length<=500).slice(0,5);
-   if (title.length===1 && text(title[0]) && details.length) {
+   if (title.length===1 && text(title[0])) {
      const label=text(title[0]).slice(0,220);
-     groups.unshift({label,context:[],kind:'detail',static_table:false,truncated:false,observed_count:1,
-       records:[{truncated:false,segments:[{label:'',value:label},...details.map(value=>({label:'',value}))]}]});
+     // Keep introductory evidence local to this heading; do not mix cards.
+     const owner=title[0].closest('article,section,[role=region]') || content;
+     const walk=document.createTreeWalker(owner,NodeFilter.SHOW_ELEMENT);
+     const details=[];
+     let found=false;
+     for (let node=walk.nextNode(), count=0;node && count++<nodes;node=walk.nextNode()) {
+       if (node===title[0]) {found=true;continue;}
+       if (!found) continue;
+       if (node.matches('h1,h2,h3,h4,h5,h6,[role=heading],article,section,[role=listitem],li,tr,[itemscope],form,table')) break;
+       if (!node.matches('p,[itemprop=description]') || !safe(node)) continue;
+       const value=text(node);
+       if (value.length>=30 && value.length<=500 && !details.includes(value)) details.push(value);
+       if (details.length>=3) break;
+     }
+     if (details.length) {
+       groups.push({label,context:[],kind:'detail',static_table:false,truncated:false,observed_count:1,
+         records:[{truncated:false,segments:[{label:'',value:label},...details.map(value=>({label:'',value}))]}]});
+     }
    }
  }
  const deduped=groups.filter(g=>g.records.some(r=>r.segments.length));
- return deduped.slice(0,12).map((g,i)=>({...g,id:i+1}));
+ const selected=deduped.slice(0,12);
+ const detail=deduped.find(g=>g.kind==='detail');
+ if (detail && !selected.includes(detail)) selected[selected.length-1]=detail;
+ return selected.map((g,i)=>({...g,id:i+1}));
 }"""
 
 
@@ -137,13 +153,17 @@ class RecordCapture(Strict):
 
 
 def summarize_structure(groups):
+    selected = groups[:6]
+    detail = next((group for group in groups if group["kind"] == "detail"), None)
+    if detail and detail not in selected:
+        selected = [*selected[:5], detail]
     return [
         {**{key: group[key] for key in ("id", "label", "context", "kind", "observed_count", "truncated", "static_table")},
          "examples": [
              [{"label": segment["label"][:80], "value": segment["value"][:100]} for segment in row["segments"][:12]]
              for row in group["records"][:2]
          ]}
-        for group in groups[:6]
+        for group in selected
     ]
 
 
@@ -249,3 +269,42 @@ def classification_request(objective, records):
             for index, row in enumerate(records, 1)
         ],
     }
+
+
+
+def scroll_blocked(action, direction, observation, recent_actions):
+    """Reject boundary/no-movement loops, not successful progressive scrolling."""
+    scroll = observation.get("scroll", {})
+    y = scroll.get("y")
+    direction = "up" if action == "SCROLL_BACK" else direction
+    if direction == "down" and scroll.get("at_end") is True:
+        return True
+    if direction == "up" and y == 0:
+        return True
+    if y is None:
+        return False
+    last = next((step for step in reversed(recent_actions)
+                 if step.get("action") in {"SCROLL", "SCROLL_BACK"}
+                 and isinstance(step.get("outcome"), dict)
+                 and step["outcome"].get("after_url") == observation.get("url")), None)
+    if not last:
+        return False
+    outcome = last["outcome"]
+    before, after = outcome.get("scroll_before", {}), outcome.get("scroll_after", {})
+    return (outcome.get("scroll_direction") == direction and before.get("y") == y == after.get("y")
+            and before.get("height") == after.get("height") == scroll.get("height")
+            and not outcome.get("record_groups_changed") and not outcome.get("content_changed"))
+
+
+def merge_qualified_records(previous, current):
+    """Combine independently classified candidates without conflating identities."""
+    records = {}
+    for row in [*previous, *current]:
+        if row.get("classification") != "match":
+            continue
+        identity = row["identity"]
+        key = identity
+        if key in records and records[key]["source_url"] != row["source_url"]:
+            key = f"{identity} @ {row['source_url']}"
+        records.setdefault(key, row)
+    return records

@@ -347,6 +347,7 @@ class AgentRunner(Runner):
                 self.reject_enumeration_source(structured)
                 await self.checkpoint(self.controller)
                 raise ValueError("This source yielded no qualifying records. Explore a different observed source.")
+        qualified = self.enumeration_records(structured) if enumeration else {}
         if len(criteria) > 60:
             raise ValueError("Too many verification checks; consolidate related claims without dropping required criteria")
         verification = await self.ask_model(
@@ -370,8 +371,7 @@ class AgentRunner(Runner):
                                     "own function and preserve any scope or category constraints in the original objective."}
                    if enumeration else {}),
                 **({"captured_records": {
-                    **structured, "records": {identity: row for identity, row in structured["records"].items()
-                                              if row.get("classification") == "match"},
+                    **structured, "records": qualified,
                 } if enumeration else structured} if structured else {}),
             },
             Verification,
@@ -393,6 +393,12 @@ class AgentRunner(Runner):
             valid = valid and all(
                 proof_ids.intersection(c.evidence_ids) for c in checks if c.criterion in {capture_criterion, coverage_criterion}
             )
+        if enumeration:
+            capture_check = next((check for check in checks if check.criterion == capture_criterion), None)
+            required_proofs = {f"capture-{row['step_id']}" for row in qualified.values()}
+            if not capture_check or not required_proofs <= set(capture_check.evidence_ids):
+                problems.append("Not every qualifying record has a cited capture source")
+                valid = False
         if not valid:
             if research:
                 from .research import citation_candidates
@@ -406,22 +412,27 @@ class AgentRunner(Runner):
                 }
                 await self.checkpoint(self.controller)
             if enumeration:
-                capture_check = next((check for check in checks if check.criterion == capture_criterion), None)
-                if capture_check and not capture_check.met:
-                    self.reject_enumeration_source(structured)
-                    await self.checkpoint(self.controller)
                 if capture_check and capture_check.met and capture_check.evidence_ids and set(capture_check.evidence_ids) <= verification_ids:
                     cited = set(capture_check.evidence_ids)
-                    verified_records = [row for row in structured["records"].values()
-                                        if row.get("classification") == "match" and f"capture-{row['step_id']}" in cited]
+                    verified_records = [row for row in qualified.values() if f"capture-{row['step_id']}" in cited]
                     if verified_records:
+                        from .structure import merge_qualified_records
+                        old = self.memory.get("research_partial", {})
+                        merged = merge_qualified_records(old.get("structured_records", []), verified_records)
+                        retained = {f"capture-{row['step_id']}" for row in merged.values()}
                         self.memory["research_partial"] = {
-                            "partial": True, "claims": [], "structured_records": verified_records,
-                            "evidence": [row for key, row in evidence.items() if key in cited],
-                            "verification": {"complete": False, "explanation": "These records qualified. The full listing was not verified.",
+                            "partial": True, "claims": [], "structured_records": list(merged.values()),
+                            "evidence": [row for key, row in evidence.items() if key in retained],
+                            "verification": {"complete": False, "explanation": "These records qualified. The listing was not fully verified.",
                                              "missing_criteria": [criterion for criterion in criteria if criterion != capture_criterion]},
                         }
-                        await self.checkpoint(self.controller)
+                self.memory["verification_feedback"] = {
+                    "problems": problems[:12],
+                    "instruction": "Continue discovery using a different observed record group or authorized source. "
+                                   "Previously verified records are retained; do not recapture the rejected group.",
+                }
+                self.reject_enumeration_source(structured, reject_url=bool(capture_check and not capture_check.met))
+                await self.checkpoint(self.controller)
             raise ValueError("Goal verification incomplete: " + (
                 "; ".join(problems)[:380] if problems else "Required structured evidence was not verified"
             ))
@@ -480,8 +491,10 @@ class AgentRunner(Runner):
                 result["claims"] = [{"text": evidence[identifier]["quote"], "evidence_ids": [identifier]}
                                     for identifier in evidence if identifier in supported_ids]
         if structured:
-            result["structured_records"] = [record for record in structured["records"].values()
-                                            if record.get("classification", "match") == "match"]
+            result["structured_records"] = list(qualified.values()) if enumeration else [
+                record for record in structured["records"].values()
+                if record.get("classification", "match") == "match"
+            ]
         if enumeration:
             result["claims"] = []
         # Publication belongs to worker finalization, after the final checkpoint
@@ -868,7 +881,9 @@ class AgentRunner(Runner):
                                 "steps_remaining": self.options["max_steps"] - number,
                                 "form_input_enabled": self.options["allow_form_input"],
                                 "task_plan": plan,
-                                **({"rejected_collection_sources": self.memory.get("rejected_collection_sources", [])[-8:]}
+                                **({"rejected_collection_sources": self.memory.get("rejected_collection_sources", [])[-8:],
+                                    "rejected_collection_scopes": self.memory.get("rejected_collection_scopes", [])[-8:],
+                                    "verified_partial_record_count": len(self.memory.get("research_partial", {}).get("structured_records", []))}
                                    if enumeration else {}),
                                 **({"captured_record_count": len(self.memory["structured_capture"]["records"]),
                                     "expected_record_count": self.memory["structured_capture"]["expected_count"]}
@@ -895,15 +910,25 @@ class AgentRunner(Runner):
                     if decision.decision == "CLICK":
                         link = next((element.get("href") for element in observation["elements"]
                                      if element["element_id"] == decision.target.element_id), None)
+                    if decision.decision == "GO_BACK":
+                        history = controller.tabs[controller.active]["history"]
+                        link = history[-2] if len(history) >= 2 else None
                     if link:
-                        guard_navigation(self.memory.get("research_destinations", {}), link, observation["url"],
-                                         len(self.memory["evidence"]))
-                    if decision.decision == "SCROLL" and any(
-                        step["action"] == "SCROLL" and step["outcome"].get("after_url") == observation["url"]
-                        and not step["outcome"].get("record_groups_changed")
-                        for step in self.memory["recent_actions"][-3:] if isinstance(step["outcome"], dict)
-                    ):
-                        raise ValueError("This source was already scrolled. Capture observed records or choose another source.")
+                        if destination_key(link) in self.memory.get("rejected_collection_sources", []):
+                            raise ValueError("The proposed source was already rejected. Choose another observed collection.")
+                        if decision.decision == "GO_BACK":
+                            edge = [destination_key(observation["url"]), destination_key(link)]
+                            if edge in self.memory.get("enumeration_return_edges", []):
+                                raise ValueError("This discovery return route was already attempted.")
+                        else:
+                            guard_navigation(self.memory.get("research_destinations", {}), link, observation["url"],
+                                             len(self.memory["evidence"]))
+                    if decision.decision in {"SCROLL", "SCROLL_BACK"}:
+                        from .structure import scroll_blocked
+
+                        if scroll_blocked(decision.decision, decision.direction, observation, self.memory["recent_actions"]):
+                            raise ValueError("Scrolling made no progress or reached the document boundary. "
+                                             "Capture observed records or choose another authorized source.")
                 if research or (use_directory and not deterministic):
                     target = decision.url if decision.decision in {"NAVIGATE", "OPEN_TAB"} else None
                     if decision.decision == "CLICK":
@@ -1038,8 +1063,16 @@ class AgentRunner(Runner):
                 outcome["traffic_kind"] = "automated"
                 if enumeration:
                     outcome["record_groups_changed"] = after.get("record_groups") != observation.get("record_groups")
+                    if decision.decision in {"SCROLL", "SCROLL_BACK"}:
+                        outcome["scroll_before"] = observation.get("scroll", {})
+                        outcome["scroll_after"] = after.get("scroll", {})
+                        outcome["scroll_direction"] = "up" if decision.decision == "SCROLL_BACK" else decision.direction
                 outcome["after_url"] = controller.page.url if deterministic else after["url"]
                 outcome["url_changed"] = outcome["after_url"] != observation["url"]
+                if enumeration and decision.decision == "GO_BACK" and outcome["url_changed"]:
+                    edges = self.memory.setdefault("enumeration_return_edges", [])
+                    edges.append([destination_key(observation["url"]), destination_key(outcome["after_url"])])
+                    del edges[:-100]
                 interaction = outcome.get("interaction") or {}
                 outcome["content_changed"] = (interaction.get("content_changed") if deterministic else
                                               after["text"] != observation["text"])
@@ -1159,6 +1192,8 @@ class AgentRunner(Runner):
                         task = session.get(AgentTask, self.id)
                         task.pending_step_id = None
                         step = session.get(AgentStep, step_id)
+                        if isinstance(decision_data, Decision) and not step.decision:
+                            step.decision = controller.observer.sanitize(decision_data.model_dump())
                         step.status, step.outcome = (
                             "failed",
                             {
@@ -1217,10 +1252,13 @@ class AgentRunner(Runner):
         direct = set()
         subject = {word[:6] for word in words(self.objective) if word not in {"list", "and", "for", "of", "the"}}
         if not any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
-            for group in observation.get("record_groups", []):
-                if (group["kind"] == "detail"
-                        and len(subject & {word[:6] for word in words(group["label"])}) >= 2
-                        and [observation["url"], group["label"]] not in self.memory.get("rejected_collection_scopes", [])):
+            groups = [group for group in observation.get("record_groups", [])
+                      if [observation["url"], group["label"]] not in self.memory.get("rejected_collection_scopes", [])]
+            repeated = any(group["kind"] != "detail" and group.get("observed_count", 0) >= 2
+                           for group in groups)
+            for group in groups:
+                if (group["kind"] == "detail" and not repeated
+                        and len(subject & {word[:6] for word in words(group["label"])}) >= 2):
                     return Decision(
                         observation="A visible detail record has a relevant heading", decision="CAPTURE_RECORDS",
                         reason="Capture the record for category qualification", confidence=1,
@@ -1241,25 +1279,40 @@ class AgentRunner(Runner):
                 target = self.policy.check(href)
             except ValueError:
                 continue
-            if target not in self.memory["visited_urls"] and target not in self.memory.get("rejected_collection_sources", []):
+            if (destination_key(target) not in {destination_key(url) for url in self.memory.get("visited_urls", [])}
+                    and destination_key(target) not in self.memory.get("rejected_collection_sources", [])):
                 (direct if specific else destinations).add(target)
         destinations = direct or destinations
         if len(destinations) == 1:
-            return Decision(observation="Observed catalog for the requested record type", decision="NAVIGATE",
-                            url=destinations.pop(), reason="Inspect the relevant authorized catalog",
-                            confidence=1, expected_result="Candidate records with visible descriptions")
+            return Decision(observation="Observed link potentially relevant to the requested records", decision="NAVIGATE",
+                            url=destinations.pop(), reason="Inspect the authorized destination and establish its purpose",
+                            confidence=0.8, expected_result="Candidate records or further discovery links")
         return None
 
-    def reject_enumeration_source(self, collection):
-        rejected = self.memory.setdefault("rejected_collection_sources", [])
-        if collection["source_url"] not in rejected:
-            rejected.append(collection["source_url"])
+    def reject_enumeration_source(self, collection, *, reject_url=True):
+        # Release active scope but retain independently verified partial results.
+        if reject_url:
+            rejected = self.memory.setdefault("rejected_collection_sources", [])
+            url = destination_key(collection["source_url"])
+            if url not in rejected:
+                rejected.append(url)
+            del rejected[:-100]
         groups = self.memory.setdefault("rejected_collection_scopes", [])
         scope = [collection["source_url"], collection["scope"][2]]
         if scope not in groups:
             groups.append(scope)
+        del groups[:-100]
         self.memory.pop("structured_capture", None)
-        self.memory["evidence"] = [row for row in self.memory["evidence"] if not row["id"].startswith("capture-")]
+        self.memory.pop("enumeration_verified_capture", None)
+        retained = {row["id"] for row in self.memory.get("research_partial", {}).get("evidence", [])}
+        self.memory["evidence"] = [row for row in self.memory["evidence"]
+                                   if not row["id"].startswith("capture-") or row["id"] in retained]
+
+    def enumeration_records(self, collection):
+        from .structure import merge_qualified_records
+
+        previous = [] if collection.get("exhaustive") else self.memory.get("research_partial", {}).get("structured_records", [])
+        return merge_qualified_records(previous, collection["records"].values())
 
     def research_decision(self, observation):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
@@ -1307,8 +1360,13 @@ class AgentRunner(Runner):
         history = self.memory.get("research_destinations", {})
         count = len(self.memory["evidence"])
         available = [element for element in observation["elements"] if not element.get("href")
-                     or history.get(destination_key(element["href"])) != count]
-        return {**observation, "text": "", "viewport_text": "", "elements": available}
+                     or (history.get(destination_key(element["href"])) != count
+                         and destination_key(element["href"]) not in self.memory.get("rejected_collection_sources", []))]
+        page = {**observation, "text": "", "viewport_text": "", "elements": available}
+        if getattr(self, "enumeration_mode", False):
+            page["record_groups"] = [group for group in observation.get("record_groups", [])
+                                     if [observation["url"], group["label"]] not in self.memory.get("rejected_collection_scopes", [])]
+        return page
 
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))

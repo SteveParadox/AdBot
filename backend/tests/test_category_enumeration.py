@@ -184,3 +184,49 @@ async def test_other_read_side_tasks_retain_evidence_verification(client, target
     result = client.get(f"/api/agent/tasks/{task}").json()
     assert result["status"] == "completed", result.get("error_message")
     assert result["result"]["claims"][0]["text"] == expected
+
+
+
+def test_progressive_scroll_not_blocked_by_unchanged_record_groups():
+    from app.agent.structure import scroll_blocked
+    from app.agent.memory import semantic_action_key
+
+    page = {"url": "https://example.test/catalog", "scroll": {"y": 486, "height": 8336, "at_end": False}}
+    prior = {"action": "SCROLL", "outcome": {"after_url": page["url"], "scroll_direction": "down",
+             "scroll_before": {"y": 0, "height": 8336}, "scroll_after": {"y": 486, "height": 8336},
+             "record_groups_changed": False}}
+    assert not scroll_blocked("SCROLL", "down", page, [prior])
+    action = {"decision": "SCROLL", "direction": "down"}
+    key = semantic_action_key(action, page)
+    page["scroll"]["y"] = 972
+    assert semantic_action_key(action, page) != key
+    page["scroll"]["at_end"] = True
+    assert scroll_blocked("SCROLL", "down", page, [prior])
+
+
+def test_incomplete_enumeration_releases_scope_and_keeps_verified_records():
+    runner = AgentRunner.__new__(AgentRunner)
+    url = "https://example.test/catalog"
+    verified = {"identity": "Atlas", "source_url": url, "classification": "match", "step_id": 1}
+    collection = {"source_url": url, "scope": ["https", "example.test", "Intro", ["Name"]], "records": {}}
+    runner.memory = {"structured_capture": collection, "enumeration_verified_capture": "capture-2",
+                     "evidence": [{"id": "capture-1"}, {"id": "capture-2"}],
+                     "research_partial": {"structured_records": [verified], "evidence": [{"id": "capture-1"}]}}
+    runner.reject_enumeration_source(collection, reject_url=False)
+    assert "structured_capture" not in runner.memory
+    assert "enumeration_verified_capture" not in runner.memory
+    assert runner.memory["evidence"] == [{"id": "capture-1"}]
+    assert runner.memory["rejected_collection_scopes"] == [[url, "Intro"]]
+    assert url not in runner.memory.get("rejected_collection_sources", [])
+    other = {"identity": "Beacon", "source_url": url, "classification": "match", "step_id": 3}
+    assert set(runner.enumeration_records({"records": {"Beacon": other}})) == {"Atlas", "Beacon"}
+
+
+def test_listing_prefers_record_groups_to_generic_detail_heading():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.objective = "List comparison tools"
+    runner.memory = {}
+    result = runner.enumeration_decision({"url": "https://example.test/", "elements": [],
+        "record_groups": [{"id": 1, "kind": "detail", "label": "Compare tools side by side"},
+                          {"id": 2, "kind": "repeated", "label": "Tools", "observed_count": 4}]})
+    assert result is None
