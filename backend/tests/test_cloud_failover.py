@@ -290,6 +290,7 @@ async def test_last_provider_failure_revisits_recovered_primary(cloud, monkeypat
     from app import provider_quota
     clock, calls = [1000.0], []
     monkeypatch.setattr(provider_quota, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr("app.agent.model.time", SimpleNamespace(monotonic=lambda: clock[0]))
     original = httpx.AsyncClient
 
     async def respond(request):

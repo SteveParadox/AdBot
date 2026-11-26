@@ -676,8 +676,8 @@ def test_fallback_budget_is_reserved_from_primary(client, target, agent_config):
 
     runner.account(primary_budget - 100, 100, 0, True, {"provider_index": 0})
     with pytest.raises(RuntimeError, match="token budget"):
-        runner.account(1, 1, 0, True, {"provider_index": 0})
-    runner.account(1, 1, 0, True, {"provider_index": 1})
+        runner.account(fallback_reserve - 100, 100, 0, True, {"provider_index": 0})
+    runner.account(fallback_reserve - 100, 100, 0, True, {"provider_index": 1})
 
 
 @pytest.mark.browser
