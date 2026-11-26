@@ -61,6 +61,18 @@ def test_direct_relevance_prefers_an_observed_utility_to_an_editorial_link():
     assert decision.url == "https://example.test/options"
 
 
+def test_relevant_detail_is_captured_with_its_description_before_navigation():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.objective = "List comparison tools"
+    runner.memory = {}
+    decision = runner.enumeration_decision({
+        "url": "https://example.test/record",
+        "record_groups": [{"id": 1, "kind": "detail", "label": "Compare tools side by side"}],
+    })
+    assert decision.decision == "CAPTURE_RECORDS"
+    assert [field.position for field in decision.capture.fields] == [1, 2]
+
+
 @fixture.app.get("/category-probe/{source}", response_class=HTMLResponse)
 def category_source(source: str):
     if source.startswith("related"):

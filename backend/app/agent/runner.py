@@ -296,6 +296,11 @@ class AgentRunner(Runner):
                                     "If sources materially disagree about a required fact, report the disagreement "
                                     "and leave that criterion unverified unless the answer explicitly accounts for it."}
                    if research else {}),
+                **({"instructions": "Verify each supplied candidate from its observed fields and classification evidence. "
+                                    "A detail page may directly document a qualifying record. A request with no explicit count "
+                                    "or exhaustive requirement can be answered with the qualifying records found. Assess the tool's "
+                                    "own function and preserve any scope or category constraints in the original objective."}
+                   if enumeration else {}),
                 **({"captured_records": {
                     **structured, "records": {identity: row for identity, row in structured["records"].items()
                                               if row.get("classification") == "match"},
@@ -1112,7 +1117,8 @@ class AgentRunner(Runner):
                         observation="A visible detail record has a relevant heading", decision="CAPTURE_RECORDS",
                         reason="Capture the record for category qualification", confidence=1,
                         expected_result="An observed title and its own description",
-                        capture={"group": group["id"], "fields": [{"name": "Name", "position": 1}], "identity": 1},
+                        capture={"group": group["id"], "fields": [{"name": "Name", "position": 1},
+                                                                 {"name": "Description", "position": 2}], "identity": 1},
                     )
         for element in observation.get("elements", []):
             href = element.get("href")
