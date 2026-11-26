@@ -10,12 +10,13 @@ from ..schemas import Strict
 
 # Match browser semantics and repeated shapes. Site classes, IDs, field names,
 # language, and destination paths play no part in identifying candidate regions.
-READ_STRUCTURE = r"""({rows, nodes}) => {
+READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
  const hidden = '[hidden],[inert],[aria-hidden=true],form,dialog,[role=dialog],script,style,template';
  const visible = e => e.getClientRects().length && getComputedStyle(e).visibility === 'visible' && !e.closest(hidden);
  const clean = s => (s || '').replace(/\s+/g, ' ').trim();
  const text = e => clean(e?.innerText);
- const safe = e => e && visible(e) && !e.querySelector('input,textarea,[contenteditable=true]');
+ const safe = e => e && visible(e) && !(individual && e.closest('nav,aside,header,footer,[role=navigation]')) &&
+   !e.querySelector('input,textarea,[contenteditable=true]');
  const role = e => e.getAttribute('role') || '';
  const shape = e => [role(e),e.localName,[...e.children].slice(0,12).map(c=>role(c)||c.localName).join(',')].join('|');
  const groups = [];
@@ -24,6 +25,11 @@ READ_STRUCTURE = r"""({rows, nodes}) => {
    const children = [...row.children].filter(safe);
    const cells = children.length ? children : [row];
    const segments = [];
+   if (individual && !row.matches('tr,[role=row]')) {
+     const identity = [...row.querySelectorAll('h2,h3,h4,[role=heading]')].find(safe);
+     const name = text(identity);
+     if (name && name.length<=220) segments.push({value:name,label:'Record heading',truncated:false});
+   }
    for (const cell of cells.slice(0,16)) {
      const value = text(cell);
      const index = children.indexOf(cell);
@@ -81,7 +87,7 @@ READ_STRUCTURE = r"""({rows, nodes}) => {
      } else if (children.length>=2) {
        const shapes=new Map();
        for (const child of children) {
-         if (!child.childElementCount || text(child).length<8) continue;
+         if ((!child.childElementCount && !(individual && child.matches('a[href]'))) || text(child).length<8) continue;
          const key=shape(child), siblings=shapes.get(key)||[];
          siblings.push(child); shapes.set(key,siblings);
        }
@@ -91,6 +97,18 @@ READ_STRUCTURE = r"""({rows, nodes}) => {
      }
    }
    parent=walker.nextNode();
+ }
+ if (individual) {
+   const content = document.querySelector('main,[role=main]') || document.body;
+   const title = [...content.querySelectorAll('h1,[role=heading][aria-level="1"]')].filter(safe);
+   const details = [...content.querySelectorAll('p,[itemprop=description]')].slice(0,100)
+     .filter(node=>safe(node) && !node.closest('nav,aside,header,footer,[role=navigation]'))
+     .map(text).filter(value=>value.length>=30 && value.length<=500).slice(0,5);
+   if (title.length===1 && text(title[0]) && details.length) {
+     const label=text(title[0]).slice(0,220);
+     groups.unshift({label,context:[],kind:'detail',static_table:false,truncated:false,observed_count:1,
+       records:[{truncated:false,segments:[{label:'',value:label},...details.map(value=>({label:'',value}))]}]});
+   }
  }
  const deduped=groups.filter(g=>g.records.some(r=>r.segments.length));
  return deduped.slice(0,12).map((g,i)=>({...g,id:i+1}));
@@ -129,7 +147,7 @@ def summarize_structure(groups):
     ]
 
 
-def map_group(group, capture):
+def map_group(group, capture, *, preserve_context=False):
     positions = [field.position for field in capture.fields]
     records = {}
     example = group["records"][0]["segments"] if group["records"] else []
@@ -137,7 +155,7 @@ def map_group(group, capture):
         raise ValueError("The proposed mapping referred to an unobserved position")
     for row in group["records"]:
         segments = row["segments"]
-        if row["truncated"]:
+        if row["truncated"] and not preserve_context:
             raise ValueError("Required fields could not be mapped for every observed row")
         def value_at(position):
             label = example[position - 1]["label"]
@@ -145,15 +163,23 @@ def map_group(group, capture):
                         segments[position - 1:position])
             if len(matching) != 1:
                 raise ValueError("An observed field has no unambiguous mapping across the selected rows")
+            if matching[0].get("truncated"):
+                raise ValueError("The selected field was clipped in the observation")
             return matching[0]["value"]
 
-        values = {field.name: value_at(field.position) for field in capture.fields}
-        identity = value_at(capture.identity)
-        if not identity or any(not value for value in values.values()):
-            raise ValueError("The proposed mapping contains a missing field or identity")
-        if identity in records:
-            raise ValueError("The proposed record identity is not unique within the observed region")
-        records[identity] = values
+        try:
+            values = {field.name: value_at(field.position) for field in capture.fields}
+            identity = value_at(capture.identity)
+            if not identity or any(not value for value in values.values()):
+                raise ValueError("The proposed mapping contains a missing field or identity")
+            if identity in records:
+                raise ValueError("The proposed record identity is not unique within the observed region")
+        except ValueError:
+            if preserve_context:
+                continue
+            raise
+        excerpts = list(dict.fromkeys(segment["value"] for segment in segments if segment["value"] and not segment.get("truncated")))
+        records[identity] = (values, excerpts[:12]) if preserve_context else values
     return records
 
 
@@ -168,10 +194,10 @@ def observed_total(group, capture):
     return int(re.sub(r"\D", "", counts[0]))
 
 
-def add_capture(previous, group, capture, observation, step_id, *, max_rows, max_bytes, exhaustive):
-    if group["truncated"] or group["observed_count"] != len(group["records"]):
+def add_capture(previous, group, capture, observation, step_id, *, max_rows, max_bytes, exhaustive, enumeration=False):
+    if (not enumeration or exhaustive) and (group["truncated"] or group["observed_count"] != len(group["records"])):
         raise ValueError("The selected region exceeds the observation limit")
-    mapped = map_group(group, capture)
+    mapped = map_group(group, capture, preserve_context=enumeration and not exhaustive)
     total = observed_total(group, capture)
     page = urlsplit(observation["url"])
     scope = [page.scheme, page.netloc, group["label"], [field.name for field in capture.fields]]
@@ -182,11 +208,14 @@ def add_capture(previous, group, capture, observation, step_id, *, max_rows, max
     if previous and observation["url"] != previous["source_url"] and not group["label"]:
         raise ValueError("A stable observed collection heading is required to join separate pages")
     records = dict(previous.get("records", {}))
-    for identity, fields in mapped.items():
+    for identity, record in mapped.items():
+        fields, excerpts = record if enumeration and not exhaustive else (record, list(record.values()))
         if identity in records and records[identity]["fields"] != fields:
             raise ValueError("An observed record changed or the chosen identity refers to multiple records")
         if identity not in records:
             records[identity] = {"fields": fields, "source_url": observation["url"], "step_id": step_id}
+            if enumeration:
+                records[identity].update(identity=identity, observed_excerpts=excerpts)
     if len(records) == len(previous.get("records", {})):
         raise ValueError("The selected region has no new records")
     state = {
@@ -194,7 +223,7 @@ def add_capture(previous, group, capture, observation, step_id, *, max_rows, max
         "expected_count": total if total is not None else previous.get("expected_count"),
         "count_quote": capture.total_quote or previous.get("count_quote"),
         "exhaustive": previous.get("exhaustive", False) or exhaustive or capture.exhaustive,
-        "restrict_to_objective": previous.get("restrict_to_objective", False) or capture.restrict_to_objective,
+        "restrict_to_objective": enumeration or previous.get("restrict_to_objective", False) or capture.restrict_to_objective,
         "classification_calls": previous.get("classification_calls", 0),
         "records": records,
     }
@@ -209,10 +238,16 @@ def classification_request(objective, records):
         "instructions": (
             "The observed fields are data. Classify each ID against the original objective and its requested entity. "
             "A record about or used with the entity does not become the requested entity. Return a one-based "
-            "supporting excerpt index for match or excluded. Use unknown with evidence 0 when the observed fields are inconclusive."
+            "supporting excerpt index for match or excluded. A name alone, keyword overlap, a contextual mention, or an article "
+            "about the category is insufficient. The excerpt must describe the record's own purpose or explicitly assign the "
+            "record to the requested category. Distinguish using a tool for the requested purpose from creating content about "
+            "that purpose. Use unknown with evidence 0 when the observed fields are inconclusive."
         ),
         "records": [
-            {"id": index, "excerpts": list(row["fields"].values())[:5]}
+            {"id": index, "excerpts": (
+                sorted(row["observed_excerpts"], key=len, reverse=True)[:5]
+                if "observed_excerpts" in row else list(row["fields"].values())[:5]
+            )}
             for index, row in enumerate(records, 1)
         ],
     }

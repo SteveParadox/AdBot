@@ -197,7 +197,7 @@ async def _execute(job_id, token):
                         captured = task.memory.get("structured_capture")
                         if task.memory.get("research_partial"):
                             task.result = task.memory["research_partial"]
-                        elif captured:
+                        elif captured and (task.memory.get("execution_route") or {}).get("name") != "enumeration":
                             task.result = {
                                 "strategy": "structured_discovery", "partial": True, "claims": [],
                                 "structured_records": list(captured["records"].values()),

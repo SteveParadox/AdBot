@@ -90,6 +90,7 @@ class Observer:
 
             structural_groups = await page.evaluate(READ_STRUCTURE, {
                 "rows": min(250, settings().agent_collection_batch_rows), "nodes": 1000,
+                "individual": structure == "enumeration",
             })
         directory_cache_hit = False
         if directory:

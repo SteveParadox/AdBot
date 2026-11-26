@@ -622,7 +622,7 @@ class ModelClient:
                             endpoint,
                             json=provider_body,
                             headers=headers,
-                            timeout=request_timeout(provider_index),
+                            timeout=httpx.Timeout(request_timeout(provider_index), connect=min(3, request_timeout(provider_index))),
                         ) as response:
                             if response.status_code == 429 or (
                                 response.status_code >= 500 and response.headers.get("retry-after")
