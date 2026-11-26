@@ -85,13 +85,19 @@ def execution_intent(objective):
     hints = (
         ("form_interaction", r"\b(?:fill|submit|register|sign up)\b"),
         ("document_retrieval", r"\b(?:download|retrieve)\b.*\b(?:file|document|pdf)\b"),
-        ("comparison", r"\b(?:compare|comparison|versus)\b"),
+        ("comparison", r"\b(?:compare|versus)\b|\bcomparison\s+(?:of|between)\b"),
         ("structured_extraction", r"\b(?:list|collect|extract)\b"),
         ("search", r"\b(?:search|find|look up)\b"),
         ("research", r"\b(?:research|summarize|explain|verify)\b"),
         ("navigation", r"\b(?:navigate|open|visit|go to)\b"),
     )
-    strategy = next((name for name, pattern in hints if re.search(pattern, objective, re.I)), "general")
+    from .routing import requested_operation
+
+    operation = requested_operation(objective)
+    strategy = {"enumeration": "structured_extraction", "comparison": "comparison",
+                "recommendation": "research"}.get(operation) or next(
+        (name for name, pattern in hints if re.search(pattern, objective, re.I)), "general",
+    )
     quantifiers = re.findall(
         r"\b(?:all|every|first|latest|cheapest|highest rated|at least \d+|exactly \d+|between \d+ and \d+)\b",
         objective, re.I,

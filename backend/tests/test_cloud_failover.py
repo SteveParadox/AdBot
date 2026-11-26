@@ -83,6 +83,7 @@ async def test_chain_hands_off_each_failure_once_and_preserves_request(cloud, mo
         assert request.url.path == "/v1/chat/completions"  # Never Ollama for remote fallbacks.
         if len(calls) <= failed:
             assert request.extensions["timeout"]["read"] == 10
+            assert request.extensions["timeout"]["connect"] == 3
             if isinstance(failure, int):
                 return httpx.Response(failure, headers={"retry-after": "3600"})
             if failure == "timeout":

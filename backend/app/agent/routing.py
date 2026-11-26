@@ -50,6 +50,22 @@ def words(value):
     return re.findall(r"[^\W_]+", value.casefold())
 
 
+def requested_operation(objective):
+    tokens = words(objective)
+    prefix = {"please", "could", "would", "can", "you", "me", "a", "the"}
+    leading = next((token for token in tokens if token not in prefix), "")
+    if leading in {"list", "enumerate", "catalog", "catalogue", "collect", "extract", "inventory"} or re.match(
+        r"\s*(?:please\s+)?(?:give|show|provide)\s+(?:me\s+)?(?:a\s+|the\s+)?list\b", objective, re.I,
+    ):
+        return "enumeration"
+    if leading in {"rank", "recommend"}:
+        return "recommendation"
+    if (leading == "compare" or (leading == "comparison" and set(tokens) & {"of", "between"})
+            or (leading not in _INVENTORY and "versus" in tokens)):
+        return "comparison"
+    return None
+
+
 def exhaustive_request(objective):
     terms = set(words(objective))
     return bool(terms & _EXHAUSTIVE and terms & _INVENTORY)
@@ -137,12 +153,21 @@ def select_route(objective, options, has_dataset=False):
     if entity:
         return inventory_route(entity)
     terms = set(words(objective))
+    operation = requested_operation(objective)
     if has_dataset or options.get("output_format") in {"json", "csv"}:
         return ExecutionRoute("configured_extraction", "Use the configured dataset phases and verify the requested record scope and export.")
-    if terms & {"then", "workflow", "afterwards"}:
+    if terms & {"then", "afterwards"} or ("workflow" in terms and not operation):
         return ExecutionRoute("workflow", "Execute the ready step and preserve its dependencies. Verify each requested outcome.")
-    if terms & {"compare", "comparison", "versus"}:
+    if operation == "enumeration":
+        if exhaustive_request(objective):
+            return ExecutionRoute("general", "Discover the requested record structure and establish exhaustive source coverage before completion.")
+        return ExecutionRoute("enumeration", "Find an authorized source of the requested records. Capture a visible record group before "
+                              "answering. Classify each candidate using its own observed purpose or category. "
+                              "A similar category name, mention or related article does not establish membership.")
+    if operation == "comparison":
         return ExecutionRoute("comparison", "Gather independent sources for each entity and requested criterion. Identify missing evidence for either side.")
+    if operation == "recommendation":
+        return ExecutionRoute("research", "Gather relevant options and compare their observed merits against the requested ranking or recommendation criteria.")
     if terms & {"download", "pdf", "document", "retrieve"}:
         return ExecutionRoute("document_retrieval", "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")
     if terms & {"fill", "submit", "register"}:
