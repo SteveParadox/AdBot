@@ -7,10 +7,33 @@ from pydantic import SecretStr, ValidationError
 
 from app.agent.classification import AssessmentBatch
 from app.agent.contracts import Decision
-from app.agent.model import ModelClient, structured_response_format, validate_response
+from app.agent.model import ModelClient, ModelContextExceeded, bounded_request_text, structured_response_format, validate_response
 from app.agent.planning import TaskPlan
 from app.config import settings
 from test_browser import fixture_server  # noqa: F401
+
+
+def test_compaction_preserves_late_actionable_control_and_exact_evidence():
+    quote = "Sourced exact wording. " * 35
+    controls = [{"element_id": f"link{i}", "visible": True, "actionable": True,
+                 "name": "Unrelated navigation", "description": "Supplementary detail " * 12} for i in range(50)]
+    controls.append({"element_id": "target", "visible": True, "actionable": True, "name": "Embarkation schedule"})
+    packed = json.loads(bounded_request_text("System", "decide", {
+        "objective": "Find the embarkation schedule",
+        "current_page": {"elements": controls},
+        "session_memory": {"evidence": [{"id": "exact", "quote": quote}]},
+    }, Decision, 9000, reduced=True))
+    assert packed["current_page"]["elements"][0]["element_id"] == "target"
+    assert packed["session_memory"]["evidence"][0]["quote"] == quote
+
+
+def test_irreducible_context_reports_component_sizes_without_material():
+    secret_marker = "required original wording"
+    with pytest.raises(ModelContextExceeded) as failure:
+        bounded_request_text("System", "verify", {"objective": secret_marker * 200}, Decision, 2000)
+    assert failure.value.components["objective"] >= 4000
+    assert failure.value.components["schema"] > 0
+    assert secret_marker not in str(failure.value)
 
 
 def decision(**values):

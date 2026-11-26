@@ -81,9 +81,9 @@ class Observer:
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
         if research:
-            from .research import READ_RESEARCH
+            from .research import READ_RESEARCH, terms
 
-            data["research_chunks"] = await page.evaluate(READ_RESEARCH)
+            data["research_chunks"] = await page.evaluate(READ_RESEARCH, sorted(terms(goal))[:100])
         if structure:
             from ..config import settings
             from .structure import READ_STRUCTURE

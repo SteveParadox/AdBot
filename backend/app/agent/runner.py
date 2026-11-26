@@ -285,6 +285,10 @@ class AgentRunner(Runner):
                 "claims": [c.model_dump() for c in decision.claims],
                 "evidence": (self.verification_evidence(evidence, decision.claims) if research else list(evidence.values())),
                 "artifact": artifact_context,
+                **({"instructions": "Check the original objective and each claim against its cited excerpts. "
+                                    "If sources materially disagree about a required fact, report the disagreement "
+                                    "and leave that criterion unverified unless the answer explicitly accounts for it."}
+                   if research else {}),
                 **({"captured_records": structured} if structured else {}),
             },
             Verification,
@@ -1146,7 +1150,8 @@ class AgentRunner(Runner):
                       if step["id"] == plan.get("active_subtask")), "")
         return {
             "visited_urls": self.memory["visited_urls"][-30:],
-            "evidence": retrieve_evidence(self.memory["evidence"], self.objective, observation, phase=phase),
+            "evidence": retrieve_evidence(self.memory["evidence"], self.objective, observation, phase=phase,
+                                          exact=getattr(self, "research_mode", False)),
             "failures": self.memory["failures"][-6:],
             "answers": self.memory["answers"][-3:],
             "recent_actions": self.memory["recent_actions"][-6:],
@@ -1255,6 +1260,10 @@ class AgentRunner(Runner):
                 state["plan"]["intent"]["entities"] = [route["entity"].removeprefix("semantic:")]
         if getattr(self, "research_mode", False):
             state["research_evidence_required"] = True
+            state["research_requirements"] = {
+                "entities": comparison_entities(self.objective, state["plan"]["intent"].get("entities", [])),
+                "criteria": comparison_dimensions(self.objective),
+            }
         if not state.get("initialized"):
             if not deterministic and needs_model_plan(expected):
                 try:

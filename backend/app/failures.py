@@ -4,6 +4,8 @@ from .db import AgentStep, PageVisit
 
 
 def diagnose(session, job, message, exception=None):
+    from .agent.model import ModelContextExceeded
+
     last = session.scalar(select(AgentStep).where(AgentStep.job_id == job.id).order_by(AgentStep.number.desc()).limit(1))
     successful = session.scalar(select(AgentStep).where(AgentStep.job_id == job.id, AgentStep.status == "succeeded").order_by(AgentStep.number.desc()).limit(1))
     action = (last.decision or {}).get("decision") if last else None
@@ -16,7 +18,7 @@ def diagnose(session, job, message, exception=None):
         category, stage, recovery = "uncertain_submission", "interaction", "Check the destination for the action result before starting another task; do not replay automatically."
     elif "token budget exhausted" in text:
         category, stage, recovery = "model_token_budget", "model_request", "Inspect estimated input, reserved output and the remaining task token budget."
-    elif "context window too small" in text:
+    elif isinstance(exception, ModelContextExceeded) or "context window too small" in text:
         category, stage, recovery = "model_context_limit", "model_request", "Use a compatible provider context window or narrow the task context."
     elif "quota" in text or "429" in text or "throttl" in text:
         category, stage, recovery = "provider_throttling", "model_request", "Wait for the provider cooldown, then retry within the configured shared quota."
@@ -44,6 +46,9 @@ def diagnose(session, job, message, exception=None):
     else:
         visit = session.scalar(select(PageVisit).where(PageVisit.job_id == job.id, PageVisit.error.is_(None)).order_by(PageVisit.id.desc()).limit(1))
         last_success = {"action": "NAVIGATE", "step": None} if visit else None
+    diagnostics = ({"request_component_bytes": exception.components}
+                   if category == "model_context_limit" and isinstance(exception, ModelContextExceeded)
+                   and exception.components else {})
     return {"category": category, "stage": stage, "last_successful_action": last_success,
             "retry_eligible": not uncertain and job.job_type in {"crawl", "export"},
-            "suggested_recovery": recovery, "automatic_retry_scheduled": False}
+            "suggested_recovery": recovery, "automatic_retry_scheduled": False, **diagnostics}

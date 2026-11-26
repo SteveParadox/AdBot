@@ -6,13 +6,27 @@ from urllib.parse import urlsplit
 from .routing import words
 
 
-READ_RESEARCH = r"""() => {
+READ_RESEARCH = r"""(query) => {
  const excluded = 'nav,aside,header,footer,form,dialog,[hidden],[inert],[aria-hidden=true],[role=navigation],[role=dialog]';
  const root = document.querySelector('main,[role=main]') || document.body;
  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
- const snippets = [];
+ const snippets = new Map();
+ const wanted = new Set(query);
+ const words = text => new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
+ const hits = text => [...words(text)].filter(term => wanted.has(term)).length;
+ const remember = (heading, quote, row) => {
+   if (snippets.has(quote)) return;
+   const score = hits(quote)*4 + hits(heading);
+   if (snippets.size >= 96) {
+     let weakest;
+     for (const entry of snippets) if (!weakest || entry[1].score < weakest[1].score) weakest = entry;
+     if (weakest[1].score >= score) return;
+     snippets.delete(weakest[0]);
+   }
+   snippets.set(quote, {heading, quote, row, score});
+ };
  let heading = '', scanned = 0;
- for (let node = walker.nextNode(); node && scanned++ < 2500; node = walker.nextNode()) {
+ for (let node = walker.nextNode(); node && scanned++ < 6000; node = walker.nextNode()) {
    if (!node.getClientRects().length || node.closest(excluded) || getComputedStyle(node).visibility !== 'visible') continue;
    if (node.matches('h1,h2,h3,h4,h5,h6,[role=heading]')) {
      heading = (node.innerText || '').trim().slice(0,160);
@@ -26,12 +40,17 @@ READ_RESEARCH = r"""() => {
    const linkTextLength = [...node.querySelectorAll('a[href]')].slice(0,12)
      .reduce((length, link) => length + (link.innerText || '').trim().length, 0);
    if (linkTextLength > 0 && linkTextLength >= quote.length * 0.8) continue;
-   if (quote.length >= 35 && !snippets.some(item => item.quote === quote.slice(0,700))) {
-     snippets.push({heading,quote:quote.slice(0,700)});
-     if (snippets.length >= 220) break;
+   const row = node.matches('tr,[role=row]') && node.children.length >= 2;
+   if (quote.length >= 35 || (row && quote.length >= 10)) {
+     // Inspect overlapping windows so a relevant sentence can survive even
+     // when it occurs near the end of a long block.
+     for (let start=0; start<Math.min(quote.length,24000); start+=560) {
+       remember(heading, quote.slice(start,start+700).trim(), row);
+       if (start+700>=quote.length) break;
+     }
    }
  }
- return snippets;
+ return [...snippets.values()].sort((a,b)=>b.score-a.score).map(({heading,quote,row})=>({heading,quote,row}));
 }"""
 
 STOP = set("a an the to and or of in on for from with about against versus compare comparison research find show list give all each what which is are please".split())
@@ -69,7 +88,7 @@ def ranked_chunks(chunks, objective, title, entities=(), criteria=()):
     for chunk in chunks:
         quote = chunk["quote"]
         body = terms(quote)
-        if len(body) < 4:
+        if len(body) < (2 if chunk.get("row") else 4):
             continue
         heading = chunk["heading"]
         section = terms(heading)
