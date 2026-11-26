@@ -184,9 +184,10 @@ def select_route(objective, options, has_dataset=False):
     if operation == "enumeration":
         if exhaustive_request(objective):
             return ExecutionRoute("general", "Discover the requested record structure and establish exhaustive source coverage before completion.")
-        return ExecutionRoute("enumeration", "Find an authorized source of the requested records. Capture a visible record group before "
-                              "answering. Classify each candidate using its own observed purpose or category. "
-                              "A similar category name, mention or related article does not establish membership.")
+        return ExecutionRoute("enumeration", "Inspect authorized sources and capture coherent candidate records before further navigation. "
+                              "Classify each candidate using its own observed purpose or category. "
+                              "A similar category name, mention or related article does not establish membership. "
+                              "Prefer new information over repeated scrolling; do not infer exhaustive coverage.")
     if operation == "comparison":
         return ExecutionRoute("comparison", "Gather independent sources for each entity and requested criterion. Identify missing evidence for either side.")
     if operation == "recommendation":

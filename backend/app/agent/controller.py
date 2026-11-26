@@ -156,7 +156,7 @@ class Controller:
             "form": {k: live["form"][k] for k in ("method", "action")} if live["form"] else None,
         }
 
-    async def act(self, decision, options, approved=False, *, read_only=False):
+    async def act(self, decision, options, approved=False, *, read_only=False, prefer_navigation=False):
         self.check_page()
         self.prune_tabs()
         action = decision.decision
@@ -194,6 +194,20 @@ class Controller:
                 raise ValueError("Target changed since observation; inspect and replan")
             if element["disabled"]:
                 raise ValueError("Element is disabled")
+            if (prefer_navigation and read_only and action == "CLICK" and live.get("href")
+                    and element.get("role") == "link" and not live.get("form")
+                    and not decision.expected_text and not self.needs_review(decision, "autonomous")):
+                ordinary = await locator.evaluate(
+                    "e=>e.matches('a[href]:not([download]):not([onclick]):not([role=button])') "
+                    "&& (!e.target || e.target==='_self') && !e.closest('form,dialog,[role=dialog]')",
+                    timeout=self.engine.timeout_ms,
+                )
+                if ordinary:
+                    await self.navigate(live["href"])
+                    return {"navigation_direct": True, "interaction": {
+                        "changed": self.page.url != before_url, "verified": self.page.url != before_url,
+                        "verification": "Authorized ordinary hyperlink navigated directly",
+                    }}
             if action == "CLICK" and element["role"] in {"checkbox", "radio", "switch", "option"}:
                 if not options.get("allow_form_input", False):
                     raise ValueError("Enable form input before changing a selection control")
