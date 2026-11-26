@@ -2,7 +2,7 @@ import { useJobEvents } from "./useJobEvents";
 import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
+import { BrainCircuit, Play, ArrowLeft, RefreshCw, LoaderCircle } from "lucide-react";
 import { queryApi,
   api,
   type Collection,
@@ -531,6 +531,20 @@ export default function AgentPanel({
   );
 }
 
+export function AgentTaskActivity({ status }: { status?: Job["status"] }) {
+  const label = status === undefined ? "Loading agent task…" : status === "running" ? "Thinking…" : null;
+  return (
+    <p className="agent-task-activity" role="status">
+      {label && (
+        <>
+          <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          <span>{label}</span>
+        </>
+      )}
+    </p>
+  );
+}
+
 function AgentDetail({
   id,
   token,
@@ -594,14 +608,9 @@ function AgentDetail({
         {task.error.message}
       </p>
     );
-  if (!task.data) return <Empty text="Loading agent task…" />;
   const t = task.data;
-  return (
+  const details = t && (
     <>
-      <Button variant="ghost" onClick={back}>
-        <ArrowLeft size={15} />
-        All agent tasks
-      </Button>
       <section className="panel form-panel">
         <div className="panel-heading">
           <div>
@@ -860,6 +869,17 @@ function AgentDetail({
           </pre>
         </details>
       </section>
+    </>
+  );
+
+  return (
+    <>
+      <Button variant="ghost" onClick={back}>
+        <ArrowLeft size={15} />
+        All agent tasks
+      </Button>
+      <AgentTaskActivity status={t?.status} />
+      {details}
     </>
   );
 }
