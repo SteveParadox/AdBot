@@ -83,6 +83,23 @@ async def test_filtered_export_numeric_order_and_ownership(client, target):
     assert client.post(f"/api/extraction/datasets/{dataset['id']}/exports", json=options).status_code == 422
 
 
+def test_classification_diagnostic_ignores_successful_action_timing(client, target):
+    from app.failures import diagnose
+
+    identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
+    with transaction() as session:
+        job = session.get(Job, identifier)
+        job.job_type = "agent"
+        session.add(AgentTask(job_id=identifier, objective="List all AI chatbots", mode="supervised", options={}))
+        session.flush()
+        session.add(AgentStep(job_id=identifier, number=1, observation={}, decision={"decision": "CLICK"},
+                              status="succeeded", outcome={"trace": [{"phase": "waiting", "duration_ms": 40}]}))
+        session.flush()
+        diagnostic = diagnose(session, job, "Some products could not be classified from their visible category or description")
+    assert diagnostic["category"] == "classification"
+    assert diagnostic["stage"] == "verification"
+
+
 def test_uncertain_submission_diagnostic_never_advises_retry(client, target):
     from app.failures import diagnose
     identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
@@ -180,15 +197,18 @@ async def test_agent_query_artifact_verifies_selected_scope(client, target, monk
     assert result["records"][0]["price"] == "9"
 
 
-@pytest.mark.parametrize("message,expected", [("Navigation failed", "navigation"), ("Provider throttling: quota", "provider_throttling"), ("Extraction required fields missing", "extraction")])
+@pytest.mark.parametrize("message,expected", [("Navigation failed", "navigation"), ("Provider throttling: quota", "provider_throttling"), ("Extraction required fields missing", "extraction"), ("Request does not fit", "model_context_limit")])
 async def test_worker_failure_diagnostics(client, target, monkeypatch, message, expected):
     from app import worker
+    from app.agent.model import ModelContextExceeded
     identifier = client.post("/api/jobs", json={"website_id": target["id"]}).json()["id"]
     class FailedRunner:
         def __init__(self, *args):
             self.cfg = target["configuration"]
             self.gate = asyncio.Event()
         async def run(self):
+            if expected == "model_context_limit":
+                raise ModelContextExceeded(message, {"schema": 4300, "objective": 800})
             raise RuntimeError(message)
     monkeypatch.setattr(worker, "Runner", FailedRunner)
     await execute(*claim())
@@ -196,6 +216,8 @@ async def test_worker_failure_diagnostics(client, target, monkeypatch, message, 
     assert result["status"] == "failed"
     assert result["failure"]["category"] == expected
     assert result["failure"]["suggested_recovery"]
+    if expected == "model_context_limit":
+        assert result["failure"]["request_component_bytes"] == {"schema": 4300, "objective": 800}
 
 
 

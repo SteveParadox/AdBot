@@ -25,6 +25,7 @@ type Task = Job & {
   objective: string;
   execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
     directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
+    entity?: string | null; collection_kind?: string | null;
     classification_calls?: number };
   mode: string;
   options: {
@@ -37,7 +38,8 @@ type Task = Job & {
     partial?: boolean;
     claims?: Claim[];
     evidence?: Evidence[];
-    verification?: { complete: boolean; explanation: string };
+    structured_records?: { fields: Record<string, string>; source_url: string; step_id: number }[];
+    verification?: { complete: boolean; explanation: string; dimensions?: Record<string, boolean>; historical_unverified?: boolean; missing_criteria?: string[] };
   };
   pending_step_id: number | null;
   memory: Record<string, unknown>;
@@ -52,7 +54,7 @@ type Step = {
   status: string;
   observation: SemanticObservationData & {
     url: string;
-    screenshot_path: string;
+    screenshot_path: string | null;
     tabs?: { tab_id: string; url: string; purpose: string }[];
     elements?: { element_id: string; name: string; role: string }[];
   };
@@ -64,8 +66,10 @@ type Step = {
     target?: { element_id: string };
   };
   outcome: {
+    url_changed?: boolean;
+    content_changed?: boolean | null;
     semantic?: SemanticAction;
-    trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
+    trace?: { phase: string; started_at?: number; duration_ms?: number; status?: string }[];
     interaction?: SemanticInteraction & { changed: boolean; scroll?: {y: number; height: number} | null };
     [key: string]: unknown;
   };
@@ -103,6 +107,85 @@ type Metrics = {
 };
 const finished = (status: string) =>
   ["completed", "failed", "cancelled"].includes(status);
+
+export function DecisionStatus({ status, decision, verified }: {
+  status: string;
+  decision?: Step["decision"];
+  verified?: boolean;
+}) {
+  if (status === "completed") return <p className="hint"><strong>Completed</strong>{verified && " · Result verified"}</p>;
+  if (status === "unverified") return <p className="hint"><strong>Unverified</strong> · Historical source type was not verified</p>;
+  if (status === "failed") return <p className="hint"><strong>Failed</strong></p>;
+  if (status === "cancelled") return <p className="hint"><strong>Cancelled</strong></p>;
+  if (status === "queued") return <p className="hint"><strong>Queued</strong> · Waiting for the worker</p>;
+  if (status === "paused") return <p className="hint"><strong>Paused</strong></p>;
+  if (status === "waiting_user") return <p className="hint"><strong>Waiting for your review</strong></p>;
+  return <>
+    <p className="hint"><strong>{decision?.decision || "Observing"}</strong>{decision?.reason && ` · ${decision.reason}`}</p>
+    {decision?.expected_result && <p>{decision.expected_result}</p>}
+  </>;
+}
+
+export function PageChanges({ url, content }: { url?: boolean; content?: boolean | null }) {
+  if (typeof url !== "boolean" && typeof content !== "boolean") return null;
+  return <p className="hint">
+    {typeof url === "boolean" && (url ? "URL changed" : "URL unchanged")}
+    {typeof url === "boolean" && " · "}
+    {typeof content === "boolean" ? (content ? "Page content changed" : "Page content unchanged") : "Content change not measured"}
+  </p>;
+}
+
+export function BrowserPreview({ capture, token, status, directory }: {
+  capture?: string | null; token: string; status: string; directory?: boolean;
+}) {
+  if (capture) return <PreviewImage key={capture} capture={capture} token={token} />;
+  return <Empty text={finished(status) ? "No browser capture was recorded for this run." :
+    directory ? "The browser preview is captured when collection finishes." : "Waiting for a browser capture."} />;
+}
+
+function StructuredRecords({ records }: { records: NonNullable<Task["result"]["structured_records"]> }) {
+  const columns = Object.keys(records[0].fields);
+  return <div className="table-wrap">
+    <table>
+      <caption>Captured records</caption>
+      <thead><tr>{columns.map((column) => <th key={column} scope="col">{column}</th>)}<th scope="col">Source</th></tr></thead>
+      <tbody>{records.map((record, index) => <tr key={`${record.step_id}-${index}`}>
+        {columns.map((column) => <td key={column}>{record.fields[column]}</td>)}
+        <td className="url">{record.source_url}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function PreviewImage({ capture, token }: { capture: string; token: string }) {
+  const [image, setImage] = useState<string>();
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    let blobUrl: string | undefined;
+    fetch("/api/artifacts/" + encodeURIComponent(capture), {
+      headers: { Authorization: "Bearer " + token },
+      signal: controller.signal,
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error("Preview unavailable");
+        return r.blob();
+      })
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        blobUrl = URL.createObjectURL(blob);
+        setImage(blobUrl);
+      })
+      .catch(() => { if (!controller.signal.aborted) setUnavailable(true); });
+    return () => {
+      controller.abort();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [capture, token]);
+  if (unavailable) return <Empty text="The browser capture is unavailable or has expired." />;
+  if (!image) return <Empty text="Loading browser capture…" />;
+  return <img className="agent-preview" src={image} alt="Current agent browser page" onError={() => setUnavailable(true)} />;
+}
 
 export default function AgentPanel({
   token,
@@ -484,7 +567,7 @@ export default function AgentPanel({
                     </td>
                     <td>{t.mode}</td>
                     <td>
-                      <Badge status={t.status} />
+                      <Badge status={t.result.verification?.historical_unverified ? "unverified" : t.status} />
                     </td>
                     <td>{t.prompt_tokens + t.completion_tokens}</td>
                     <td>
@@ -574,34 +657,20 @@ function AgentDetail({
     );
   const imageEvent = [...events]
     .reverse()
-    .find((e) => typeof e.details.screenshot_path === "string");
+    .find((e) => typeof e.details.screenshot_path === "string" && e.details.screenshot_path);
+  const capturedStep = [...(steps.data?.items || [])].reverse().find((s) => s.observation.screenshot_path);
   const capture =
     (imageEvent?.details.screenshot_path as string | undefined) ||
-    latest?.observation.screenshot_path;
-  const [image, setImage] = useState<string | null>(null),
-    [answer, setAnswer] = useState("");
-  useEffect(() => {
-    if (!capture) return;
-    const controller = new AbortController();
-    let blobUrl: string | undefined;
-    fetch("/api/artifacts/" + capture, {
-      headers: { Authorization: "Bearer " + token },
-      signal: controller.signal,
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error("Preview unavailable");
-        return r.blob();
-      })
-      .then((blob) => {
-        blobUrl = URL.createObjectURL(blob);
-        setImage(blobUrl);
-      })
-      .catch(() => {});
-    return () => {
-      controller.abort();
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-    };
-  }, [capture, token]);
+    capturedStep?.observation.screenshot_path;
+  const previewUrl = (typeof imageEvent?.details.url === "string" && imageEvent.details.url) ||
+    capturedStep?.observation.url || latest?.observation.url;
+  const [answer, setAnswer] = useState("");
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const memory = useQuery({
+    queryKey: ["agent-task-memory", id, token, task.data?.status],
+    queryFn: async ({signal}) => (await queryApi<Task>("/agent/tasks/" + id, token, signal)).memory,
+    enabled: memoryOpen,
+  });
   if (task.error)
     return (
       <p className="error" role="alert">
@@ -609,6 +678,7 @@ function AgentDetail({
       </p>
     );
   const t = task.data;
+  const shownStatus = t?.result.verification?.historical_unverified ? "unverified" : t?.status;
   const details = t && (
     <>
       <section className="panel form-panel">
@@ -619,7 +689,7 @@ function AgentDetail({
               {t.mode} · {t.id}
             </p>
           </div>
-          <Badge status={t.status} />
+          <Badge status={shownStatus ?? t.status} />
         </div>
         <div className="button-row">
           {!finished(t.status) && (
@@ -660,7 +730,11 @@ function AgentDetail({
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
         {t.execution && t.execution.strategy !== "general" && (
-          <p className="hint">Strategy {t.execution.strategy.replaceAll("_", " ")}</p>
+          <p className="hint">
+            Strategy {t.execution.strategy.replaceAll("_", " ")}
+            {t.execution.entity && ` · ${t.execution.entity.replace(/^semantic:/, "")}`}
+            {t.execution.collection_kind && ` · Source catalog ${t.execution.collection_kind}`}
+          </p>
         )}
         {t.execution && ["directory_collection", "table_extraction"].includes(t.execution.strategy) && (
           <p className="hint">
@@ -747,28 +821,17 @@ function AgentDetail({
             <div>
               <h2>Browser preview</h2>
               <p className="url">
-                {latest?.observation.url || "Waiting for browser"}
+                {previewUrl || (finished(t.status) ? "No browser observation recorded" : "Waiting for browser")}
               </p>
             </div>
             <RefreshCw size={15} />
           </div>
-          {image ? (
-            <img
-              className="agent-preview"
-              src={image}
-              alt="Current agent browser page"
-            />
-          ) : (
-            <Empty text="A real browser capture will appear after the first observation." />
-          )}
+          <BrowserPreview capture={capture} token={token} status={t.status}
+            directory={["directory_collection", "table_extraction"].includes(t.execution?.strategy || "")} />
         </section>
         <section className="panel form-panel">
           <h2>Current decision</h2>
-          <p className="hint">
-            <strong>{latest?.decision.decision || "Observing"}</strong> ·{" "}
-            {latest?.decision.reason || "Waiting for the worker"}
-          </p>
-          <p>Expected: {latest?.decision.expected_result || "—"}</p>
+          <DecisionStatus status={shownStatus ?? t.status} decision={latest?.decision} verified={t.result.verification?.complete} />
           <h2 className="agent-subheading">Tabs and context</h2>
           {latest?.observation.tabs?.map((tab) => (
             <p className="hint url" key={tab.tab_id}>
@@ -777,18 +840,19 @@ function AgentDetail({
               {tab.url}
             </p>
           ))}
-          <details>
+          <details onToggle={(event) => setMemoryOpen(event.currentTarget.open)}>
             <summary>Session memory</summary>
-            <pre className="agent-json">
-              {JSON.stringify(t.memory, null, 2)}
-            </pre>
+            {memoryOpen && (memory.error ? <p className="error" role="alert">{memory.error.message}</p> :
+              memory.data ? <pre className="agent-json">{JSON.stringify(memory.data, null, 2)}</pre> :
+              <Empty text="Loading saved session memory…" />)}
           </details>
           <SemanticObservation observation={latest?.observation} />
         </section>
       </div>
       {((t.status === "completed" && t.result.verification?.complete) || t.result.partial) && t.result.claims && (
         <section className="panel form-panel">
-          <h2>{t.result.partial ? "Partial task result" : "Verified task result"}</h2>
+          <h2>{t.result.verification?.historical_unverified ? "Unverified historical result" :
+            t.result.partial ? "Partial task result" : "Verified task result"}</h2>
           {t.status === "completed" && t.result.artifact && <Button disabled={busy} onClick={() => run(async () => {
             const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: "Bearer " + token } });
             if (!response.ok) throw new Error("Export unavailable or expired");
@@ -797,7 +861,19 @@ function AgentDetail({
             setTimeout(() => URL.revokeObjectURL(url), 1000);
           })}>Download verified artifact</Button>}
           <p className="hint">{t.result.verification?.explanation}</p>
-          {t.result.partial && t.result.claims.length === 0 && <p>No verified matches were collected.</p>}
+          {t.result.verification?.dimensions && <ul className="hint">
+            {Object.entries(t.result.verification.dimensions).map(([name, passed]) =>
+              <li key={name}>{name.replaceAll("_", " ")} · {passed ? "Verified" : "Unverified"}</li>
+            )}
+          </ul>}
+          {!!t.result.structured_records?.length && <StructuredRecords records={t.result.structured_records} />}
+          {t.result.partial && t.result.claims.length === 0 && !t.result.structured_records?.length && <p>No verified matches were collected.</p>}
+          {!!t.result.verification?.missing_criteria?.length && (
+            <div>
+              <p>Unverified criteria</p>
+              <ul>{t.result.verification.missing_criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+            </div>
+          )}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
               <p>{claim.text}</p>
@@ -835,6 +911,7 @@ function AgentDetail({
                 </strong>
                 <p className="hint">{step.decision.reason}</p>
                 <small className="url">{step.observation.url}</small>
+                <PageChanges url={step.outcome.url_changed} content={step.outcome.content_changed} />
                 <InteractionOutcome interaction={step.outcome.interaction} />
                 <SemanticTrace semantic={step.outcome.semantic} interaction={step.outcome.interaction} resolution={step.outcome.trace?.find(s => s.phase === "resolution")} />
                 {typeof step.outcome.error === "string" && <p className="error" role="status">{step.outcome.error}</p>}
@@ -842,8 +919,10 @@ function AgentDetail({
                   <summary>Interaction trace · automated session</summary>
                   <table className="interaction-trace"><thead><tr><th scope="col">Phase</th><th scope="col">Started (UTC)</th><th scope="col">Duration</th><th scope="col">Status</th></tr></thead>
                     <tbody>{step.outcome.trace.map((span, i) => <tr key={i}>
-                      <td>{span.phase}</td><td>{new Date(span.started_at * 1000).toISOString().slice(11, 23)}</td>
-                      <td>{Math.round(span.duration_ms)} ms</td><td>{span.status}</td>
+                      <td>{span.phase}</td><td>{typeof span.started_at === "number" && Number.isFinite(span.started_at)
+                        ? new Date(span.started_at * 1000).toISOString().slice(11, 23) : "Unavailable"}</td>
+                      <td>{typeof span.duration_ms === "number" && Number.isFinite(span.duration_ms)
+                        ? `${Math.round(span.duration_ms)} ms` : "Unavailable"}</td><td>{span.status || "Unrecorded"}</td>
                     </tr>)}</tbody></table>
                 </details>}
                 <details>

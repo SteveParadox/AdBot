@@ -5,14 +5,16 @@ import json
 import re
 from urllib.parse import parse_qsl, urlsplit
 
+from .classification import explicit_topic, non_prompt_excerpt, primary_chatbot_role
 from .contracts import Decision, Target
-from .routing import directory_intent  # noqa: F401
+from .routing import collection_kinds, collection_topic, directory_intent, words  # noqa: F401
 
 _CHATBOT = re.compile(r"\b(?:ai\s+)?chatbot(?:s)?\b|\bconversational\s+ai\b", re.I)
 _NEGATIVE_TYPES = {"image generator", "video editor", "audio editor", "seo tool", "code editor", "image editor",
                    "analytics tool", "transcription tool", "design tool"}
-_FORWARD = re.compile(r"(?:next(?: page| results| products| tools| articles)?(?:[ \u2192\u203a\u00bb]+)?|(?:load|show) more(?: results| tools| products| articles| entries)?)", re.I)
+_FORWARD = re.compile(r"(?:next(?: page| results| products| tools| articles| prompts)?(?:[ \u2192\u203a\u00bb]+)?|(?:load|show) more(?: results| tools| products| articles| prompts| entries)?)", re.I)
 _PAGE = re.compile(r"(?:page\s+)?(\d+)", re.I)
+_CATALOG_LABEL = re.compile(r"(?:(?:browse|view|explore) )?(?:(?:all|ai) )*(?:tools?|products?|directory|articles?|tables?|prompts?|rankings?|guides?|collections?|reviews?)(?: (?:catalog|directory|library))?")
 
 
 def pagination_element(element):
@@ -30,17 +32,18 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
  const visible = e => !e.closest('[hidden],[inert],[aria-hidden=true],form,dialog,[role=dialog],nav,aside,footer') &&
    e.getClientRects().length && ['visible',''].includes(getComputedStyle(e).visibility);
  const clean = s => (s || '').replace(/\s+/g, ' ').trim();
- const totalPattern = /^(?:showing\s+(?:\d+\s*[-\u2013]\s*)?\d+\s+(?:of|out of)\s+|total:\s*)?([\d,]+)\s+(?:matching\s+)?(tools|products|results|entries|articles|items|rows)(?:\s+found)?[.]?$/i;
+ const totalPattern = /^(?:showing\s+(?:\d+\s*[-\u2013]\s*)?\d+\s+(?:of|out of)\s+|total:\s*)?([\d,]+)\s+(?:matching\s+)?(tools|products|results|entries|articles|items|rows|rankings|guides|collections|reviews|prompts)(?:\s+found)?[.]?$/i;
  const totals = [...scope.querySelectorAll('p,output,[role=status],[aria-live],[data-total-results]')].slice(0, 500)
    .filter(e=>visible(e) && !e.closest('article,[role=listitem],li,tr,[itemscope]'))
-   .map(e=>totalPattern.exec(clean(e.innerText).slice(0, 160))).filter(Boolean);
- const total = totals.length && totals.every(match=>match[1]===totals[0][1] && match[2].toLowerCase()===totals[0][2].toLowerCase()) ? totals[0] : null;
+   .map(e=>[e,totalPattern.exec(clean(e.innerText).slice(0, 160))]).filter(([,match])=>match);
+ const first = totals[0]?.[1];
+ const total = first && totals.every(([,match])=>match[1]===first[1] && match[2].toLowerCase()===first[2].toLowerCase()) ? first : null;
  const candidates = [...scope.querySelectorAll('a[href],button,[role=button],[role=link]')];
  const controlVisible = e=>e.getClientRects().length && getComputedStyle(e).visibility==='visible' &&
    !e.closest('[hidden],[inert],[aria-hidden=true],dialog,[role=dialog]');
  const controlName = e=>clean(e.getAttribute('aria-label') || e.innerText);
  const forward = candidates.filter(e=>controlVisible(e) && (e.rel?.split(/\s+/).includes('next') ||
-   /^(?:next(?: page| results| products| tools| articles)?(?:[ \u2192\u203a\u00bb]+)?|(?:load|show) more(?: results| tools| products| articles| entries)?)$/i.test(controlName(e))));
+   /^(?:next(?: page| results| products| tools| articles| prompts)?(?:[ \u2192\u203a\u00bb]+)?|(?:load|show) more(?: results| tools| products| articles| prompts| entries)?)$/i.test(controlName(e))));
  const pagination = [...scope.querySelectorAll('nav[aria-label],[role=navigation][aria-label]')]
    .filter(e=>/paginat|pages/i.test(e.getAttribute('aria-label')) && controlVisible(e));
  const currentNumbers = pagination.flatMap(nav=>[...nav.querySelectorAll('[aria-current=page]')].map(e=>/^(?:page\s+)?(\d+)$/i.exec(controlName(e))?.[1]).filter(Boolean));
@@ -51,8 +54,14 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
  });
  const enabled = e=>!e.matches(':disabled,[aria-disabled=true]') && !e.closest('[aria-disabled=true]');
  const busy = !!scope.querySelector('[aria-busy=true]');
- const heading = clean(scope.querySelector('h1,[role=heading]')?.textContent);
- const kind = total?.[2]?.toLowerCase() || (/\b(?:tools|products|articles)\b/i.exec(heading)?.[0]?.toLowerCase() || null);
+ const headingNode = scope.querySelector('h1,[role=heading]');
+ const heading = headingNode && visible(headingNode) ? clean(headingNode.innerText).slice(0,220) : '';
+ const countKind = total?.[2]?.toLowerCase();
+ const headingKind = /\b(?:prompts|rankings|guides|collections|reviews|articles|tools|products)\s*$/i.exec(heading)?.[0]?.toLowerCase();
+ const namedCount = countKind && !['results','entries','items'].includes(countKind);
+ const kindConflict = namedCount && headingKind && countKind!==headingKind &&
+   ![countKind,headingKind].every(value=>['tools','products'].includes(value));
+ const kind = kindConflict ? null : (namedCount ? countKind : headingKind || countKind || null);
  const availableForward = new Set([...forward,...numbered].filter(enabled)).size;
  if (table) {
    const tables = [...scope.querySelectorAll('table')].filter(visible);
@@ -108,47 +117,72 @@ READ_DIRECTORY = r"""({limit=250, table=false}={}) => {
    const overlay = overlays.get(card);
    const anchor = overlay?.anchor || title?.closest('a[href]') || title?.querySelector('a[href]') || card.querySelector('a[href]');
    if ((!overlay && title && !visible(title)) || !anchor || !visible(anchor)) continue;
-   const name = overlay?.name || clean(title?.innerText || title?.textContent || anchor.innerText).slice(0, 180);
+   const name = clean(title && visible(title) ? title.innerText : (overlay?.name || anchor.innerText)).slice(0, 180);
    const quote = clean(card.innerText).slice(0, 1400);
    if (!name || !quote.includes(name)) continue;
    const label = [...card.querySelectorAll('[itemprop=category],[data-category-label],.category')].find(visible);
    const category = clean(label?.innerText).slice(0, 160) ||
      (/(?:^|\n)\s*(?:category|type):\s*([^\n]+)/i.exec(card.innerText)?.[1] || '').trim().slice(0, 160);
    const paragraphs = [...card.querySelectorAll('p,[itemprop=description]')].filter(visible).slice(0, 5).map(n=>clean(n.innerText));
-   const description = (paragraphs.length ? paragraphs : card.innerText.split('\n').map(clean).filter(line=>line.length>=35).slice(0, 4)).join(' ').slice(0, 600);
+   const lines = card.innerText.split('\n').map(clean).filter(line=>line.length>=35 && line!==name);
+   const description = (paragraphs.length ? paragraphs : lines.slice(0, 4)).join(' ').slice(0, 600);
+   const topics = [...card.querySelectorAll('a[href],[itemprop=keywords],[data-tag-label]')]
+     .filter(e=>visible(e) && (e.matches('[rel~=tag],[itemprop=keywords],[data-tag-label]') ||
+       /\/(?:tags?|topics?|categor(?:y|ies))\/[^/]+\/?$/i.test(e.pathname || '')))
+     .slice(0,12).map(e=>clean(e.innerText).slice(0,80)).filter(Boolean);
    const href = anchor.href;
    if (!/^https?:\/\//i.test(href) || href.length > 1800) continue;
    // Count one record per card, even when the card contains its own tag list.
    for (const nested of card.querySelectorAll('article,[role=listitem],li,tbody tr,[itemscope]')) suppressed.add(nested);
    const group = groups.get(card.parentElement) || [];
-   group.push({name, category, description, href, quote});
+   group.push({name, category, description, href, quote, topics});
    groups.set(card.parentElement, group);
  }
- const batches = [...groups.values()].sort((a,b)=>b.length-a.length);
- const rows = batches[0] || [];
+ let batches = [...groups.entries()];
+ // Count and pagination controls can identify the catalog inside a page with
+ // other visible lists. Keep completeness checks within that shared region.
+ const pagers = [...forward,...numbered];
+ let collectionRegion = scope;
+ if (total && pagers.length) {
+   for (let parent=totals[0][0].parentElement;parent && parent!==scope;parent=parent.parentElement) {
+     const local = batches.filter(([group])=>parent.contains(group));
+     if (local.length && pagers.some(control=>parent.contains(control))) {
+       collectionRegion=parent;
+       batches=local;
+       break;
+     }
+   }
+ }
+ batches.sort((a,b)=>b[1].length-a[1].length);
+ const rows = batches[0]?.[1] || [];
  const filtered = [...scope.querySelectorAll('input[type=search],input[role=searchbox],input[placeholder*=search i]')].some(e=>e.getClientRects().length && e.value.trim()) ||
    [...scope.querySelectorAll('button[aria-pressed=true],select')].some(e=>visible(e) && /filter|tag|category|pricing/i.test(e.closest('fieldset,[role=group],section')?.getAttribute('aria-label')||e.name||'') && !/^(?:all|any)(?:\b|$)/i.test(e.innerText || e.selectedOptions?.[0]?.textContent || ''));
  if (!total && rows.length<2 && !busy) return null;
- return {rows:rows.slice(0, limit), total:total?Number(total[1].replace(/,/g,'')):null, kind, filtered:!!filtered,
-   truncated:cards.length>scanLimit || rows.length>limit || batches.slice(1).some(group=>group.length>1),
-   current_page:current, forward_enabled:availableForward, busy};
+ return {rows:rows.slice(0, limit), total:total?Number(total[1].replace(/,/g,'')):null, kind, label:heading, kind_conflict:!!kindConflict, filtered:!!filtered,
+   truncated:cards.length>scanLimit || rows.length>limit || batches.slice(1).some(([,group])=>group.length>1),
+   current_page:current, forward_enabled:new Set(pagers.filter(e=>collectionRegion.contains(e) && enabled(e))).size, busy};
 }"""
 
 
 def _classify(entity, row):
+    if collection_kinds(entity) == {"prompts"}:
+        quote = non_prompt_excerpt(row)
+        if quote:
+            return "excluded", quote
     if entity.startswith("semantic:"):
-        return "unknown"
+        return explicit_topic(row, collection_topic(entity))
     if not entity.startswith("ai chatbot"):
-        return "match"
+        return "match", None
     category = row["category"].strip().casefold()
     description = row["description"]
-    if _CHATBOT.fullmatch(category) or re.search(
-        r"\bis\s+(?:an?\s+)?(?:ai(?:-powered)?\s+)?(?:chatbot|conversational agent)\b", description, re.I
-    ):
-        return "match"
+    primary, quote = primary_chatbot_role(row)
+    if primary != "unknown":
+        return primary, quote
+    if _CHATBOT.fullmatch(category):
+        return "match", None
     if category in _NEGATIVE_TYPES and not _CHATBOT.search(description):
-        return "excluded"
-    return "unknown"
+        return "excluded", None
+    return "unknown", None
 
 
 def _action(action, reason, **kwargs):
@@ -156,9 +190,41 @@ def _action(action, reason, **kwargs):
                     confidence=1, expected_result="Advance the directory collection", **kwargs)
 
 
-def _directory_link(element):
+def directory_link(element, entity=None):
     name = element.get("name", "").casefold()
-    return re.match(r"^(?:(?:browse|view|explore)\s+(?:all\s+)?)?(?:ai\s+)?(?:tools|products|directory|articles|tables)(?:$|\s+browse\b|\s+directory\b)", name)
+    match = re.match(
+        r"^(?:(?:browse|view|explore)\s+(?:all\s+)?)?(?:ai\s+)?"
+        r"(tools|products|directory|articles|tables|prompts|rankings|guides|collections|reviews)"
+        r"(?:$|\s+(?:browse|directory|catalog|library|find|discover)\b)", name,
+    )
+    if entity and entity.startswith("semantic:") and not collection_kinds(entity):
+        return words(name) == words(entity.removeprefix("semantic:"))
+    kind = "rows" if match and match[1] == "tables" else (match[1] if match else None)
+    expected = collection_kinds(entity)
+    return bool(kind and (not expected or kind in expected))
+
+
+def matching_collection(entity, batch):
+    if batch.get("kind_conflict"):
+        return False
+    expected = collection_kinds(entity)
+    if expected:
+        return batch.get("kind") in expected
+    if entity.startswith("semantic:"):
+        return words(batch.get("label", "")) == words(entity.removeprefix("semantic:"))
+    return True
+
+
+def narrower_heading(entity, batch):
+    label = " ".join(words(batch.get("label", "")))
+    terms = label.split()
+    if len(terms) > 1 and terms[-1] in {"catalog", "directory", "library"}:
+        terms.pop()
+    kind = batch.get("kind")
+    if not kind or len(terms) < 2 or terms[-1] not in {kind, kind.removesuffix("s")}:
+        return False
+    topic = collection_topic(entity)
+    return not _CATALOG_LABEL.fullmatch(label) and terms[:-1] != words(topic)
 
 
 def _collection_path(path):
@@ -186,24 +252,36 @@ class DirectoryCollection:
         batch = observation.get("directory")
         if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
             return None, "A dialog obstructs the directory" if state["pages"] else None
-        if not batch:
+        wrong_kind = batch and not matching_collection(self.entity, batch)
+        parsed = urlsplit(url)
+        query = {name.casefold() for name, _ in parse_qsl(parsed.query)}
+        filtered = batch and (batch["filtered"] or bool(query & {"q", "query", "search", "filter", "category", "topic", "tag"}))
+        narrow = batch and not state["pages"] and narrower_heading(self.entity, batch)
+        if not batch or wrong_kind or filtered or narrow:
             if state["pages"]:
-                return None, "Directory records disappeared before coverage could be verified"
+                if filtered:
+                    return None, "The directory was filtered before coverage could be verified"
+                return None, ("The visible collection changed to a different record type" if wrong_kind
+                              else "Directory records disappeared before coverage could be verified")
             links = {}
             for element in controls:
                 href = element.get("href")
-                if element.get("actionable") and element.get("role") == "link" and href and _directory_link(element):
+                if element.get("actionable") and element.get("role") == "link" and href and directory_link(element, self.entity):
                     try:
                         href = policy.check(href)
                     except ValueError:
                         continue
-                    if href != url and href not in state["attempted"]:
+                    if (href != url and href not in state["attempted"]
+                            and (not narrow or _CATALOG_LABEL.fullmatch(" ".join(words(element["name"]))))):
                         links[href] = element
             if len(links) == 1:
                 href = next(iter(links))
                 state["attempted"].append(href)
                 return _action("NAVIGATE", "Open the observed directory link", url=href), None
-            return None, None
+            if filtered and not links:
+                return None, "The directory is filtered and no broader catalog link was available"
+            if not batch or wrong_kind or narrow or filtered:
+                return None, None
         if batch["busy"]:
             state["loading_checks"] = state.get("loading_checks", 0) + 1
             if state["loading_checks"] <= 2:
@@ -211,19 +289,15 @@ class DirectoryCollection:
             return None, "The directory still reports that results are loading"
         state["loading_checks"] = 0
 
-        parsed = urlsplit(url)
         scope = [parsed.scheme, parsed.netloc, _collection_path(parsed.path)]
         prior_scope = state.setdefault("scope", scope)
         if [*prior_scope[:2], _collection_path(prior_scope[2])] != scope:
             return None, "Traversal left the original directory scope"
         state["scope"] = scope
-        expected_kinds = {"ai tools": {"tools", "products"}, "ai tool": {"tools", "products"},
-                          "products": {"products"}, "product": {"products"}, "articles": {"articles"}}
-        if self.entity in expected_kinds and batch.get("kind") not in expected_kinds[self.entity]:
-            return None, "The visible collection is not the requested record type" if state["pages"] else None
-        state["filtered"] = state.get("filtered", False) or batch["filtered"] or any(
-            name.casefold() not in {"page", "p", "offset", "cursor"} for name, _ in parse_qsl(parsed.query)
-        )
+        state["source_relevance"] = True
+        state["collection_kind"] = batch.get("kind")
+        state["collection_url"] = url
+        state["filtered"] = state.get("filtered", False) or bool(query - {"page", "p", "offset", "cursor"})
         state["truncated"] = state.get("truncated", False) or batch["truncated"]
         if batch["total"] is not None and batch["total"] not in state["totals"]:
             state["totals"].append(batch["total"])
@@ -240,13 +314,17 @@ class DirectoryCollection:
                 if batch.get("unpaginated"):
                     key += f":{row['row_index']}"
             record_ids.add(key)
-            observed = _classify(self.entity, row)
+            observed, classification_quote = _classify(self.entity, row)
             entry = {key: row[key] for key in ("name", "category", "description", "quote")}
+            if row.get("topics"):
+                entry["topics"] = row["topics"]
             if self.entity == "table rows":
                 entry.update(cells=row["cells"], headers=row["headers"])
             entry.update({"source_url": source, "observed_url": url, "classification": observed,
                      "method": "visible_directory", "observed_at": datetime.now(timezone.utc).isoformat(),
                      "step_id": step_id, "id": "directory-" + hashlib.sha256(key.encode()).hexdigest()[:24]})
+            if classification_quote:
+                entry["classification_quote"] = classification_quote
             prior = state["records"].get(key)
             if prior:
                 if prior["method"] == "semantic_directory":
@@ -255,6 +333,7 @@ class DirectoryCollection:
                         prior.pop("classification_quote", None)
                 elif prior["classification"] != observed:
                     prior.update(classification="unknown", classification_conflict=True)
+                    prior.pop("classification_quote", None)
             elif not prior:
                 size = self.record_size(entry)
                 if len(state["records"]) >= self.max_rows or state["record_bytes"] + size > self.max_bytes:
@@ -347,6 +426,15 @@ class DirectoryCollection:
             tried[scroll_key] = True
             state["recovery_actions"] = state.get("recovery_actions", 0) + 1
             return _action("SCROLL", "Inspect the unvisited portion of the visible collection"), None
+        if (repeated and len(state["pages"]) == 1 and len(same_pager) == 1 and tried.get(retry_key) == "retried"
+                and not state.get("initial_reload") and total is not None and len(state["records"]) < total):
+            # A fresh document can restore a stalled client-side pager. One reload
+            # on the first batch preserves observed records and a bounded retry.
+            state["initial_reload"] = True
+            state["recovery_actions"] = state.get("recovery_actions", 0) + 1
+            tried.pop(f"{signature}:{previous['name']}", None)
+            tried.pop(retry_key)
+            return _action("NAVIGATE", "Reload the observed catalog once to recover its pager", url=policy.check(url)), None
         terminal_page = [url, signature]
         if repeated and state.get("terminal_page") != terminal_page:
             return None, "Pagination returned a previously collected record batch. Available recovery paths were exhausted"
@@ -362,8 +450,17 @@ class DirectoryCollection:
     def record_size(row):
         return len(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
 
+    def save_classification(self, row, verdict):
+        fields = {key: verdict[key] for key in ("classification", "method", "classification_quote") if key in verdict}
+        growth = self.record_size({**row, **fields}) - self.record_size(row)
+        if self.state["record_bytes"] + growth <= self.max_bytes:
+            row.update(fields)
+            self.state["record_bytes"] += growth
+
     def blocker(self):
         state = self.state
+        if not state.get("source_relevance"):
+            return "The source was not verified as the requested collection"
         if state.get("filtered") or state.get("truncated"):
             return "The directory was filtered or only part of it could be read"
         if not state["totals"]:
@@ -371,7 +468,7 @@ class DirectoryCollection:
         if len(state["totals"]) != 1 or len(state["records"]) != state["totals"][0]:
             return "Unique records do not match the directory's advertised total"
         if any(row["classification"] == "unknown" for row in state["records"].values()):
-            return "Some products could not be classified from their visible category or description"
+            return "Some records could not be classified from their visible category or description"
         return None
 
 
@@ -380,12 +477,22 @@ def directory_result(state, reason=None):
     matches = [row for row in rows if row["classification"] == "match"]
     total = state["totals"][0] if len(state.get("totals", [])) == 1 else None
     table = state.get("entity") == "table rows"
-    explanation = reason or (f"Collected all {len(rows)} rows in the visible table." if table else
-                             f"Classified all {len(rows)} unique records in the visible directory and reached its last page.")
+    checks = {
+        "source_relevance": state.get("source_relevance") is True,
+        "directory_coverage": bool(state.get("terminal") and total is not None and len(rows) == total and not state.get("filtered")),
+        "extraction_complete": bool(state.get("pages") and not state.get("truncated") and not state.get("resource_limit")),
+        "entity_correctness": bool(state.get("source_relevance") and all(row["classification"] != "unknown" for row in rows)),
+    }
+    complete = reason is None and all(checks.values())
+    name = "prompt catalog" if state.get("collection_kind") == "prompts" else "visible directory"
+    explanation = (reason or "The requested collection could not be verified" if not complete else
+                   f"Collected all {len(rows)} rows in the visible table." if table else
+                   f"Classified all {len(rows)} unique records in the {name} and reached its last page.")
     return {
         "strategy": "table_extraction" if table else "directory_collection",
-        "partial": reason is not None,
+        "partial": not complete,
         "directory": {"records": matches, "unique_records": len(rows), "advertised_total": total,
+                      "collection_kind": state.get("collection_kind"), "collection_url": state.get("collection_url"),
                       "unknown": sum(row["classification"] == "unknown" for row in rows),
                       "pages": len(state.get("pages", [])), "repeated_pages": state.get("repeated_pages", 0),
                       "recovery_actions": state.get("recovery_actions", 0)},
@@ -394,5 +501,6 @@ def directory_result(state, reason=None):
                       "source_url": row["source_url"], "method": row["method"], "observed_at": row["observed_at"],
                       **({"classification_quote": row["classification_quote"]} if row.get("classification_quote") else {})}
                      for row in matches],
-        "verification": {"complete": reason is None, "explanation": explanation},
+        "verification": {"complete": complete, "explanation": explanation,
+                         "dimensions": {**checks, "objective_satisfied": complete}},
     }

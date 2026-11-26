@@ -7,10 +7,33 @@ from pydantic import SecretStr, ValidationError
 
 from app.agent.classification import AssessmentBatch
 from app.agent.contracts import Decision
-from app.agent.model import ModelClient, structured_response_format, validate_response
+from app.agent.model import ModelClient, ModelContextExceeded, bounded_request_text, structured_response_format, validate_response
 from app.agent.planning import TaskPlan
 from app.config import settings
 from test_browser import fixture_server  # noqa: F401
+
+
+def test_compaction_preserves_late_actionable_control_and_exact_evidence():
+    quote = "Sourced exact wording. " * 35
+    controls = [{"element_id": f"link{i}", "visible": True, "actionable": True,
+                 "name": "Unrelated navigation", "description": "Supplementary detail " * 12} for i in range(50)]
+    controls.append({"element_id": "target", "visible": True, "actionable": True, "name": "Embarkation schedule"})
+    packed = json.loads(bounded_request_text("System", "decide", {
+        "objective": "Find the embarkation schedule",
+        "current_page": {"elements": controls},
+        "session_memory": {"evidence": [{"id": "exact", "quote": quote}]},
+    }, Decision, 9000, reduced=True))
+    assert packed["current_page"]["elements"][0]["element_id"] == "target"
+    assert packed["session_memory"]["evidence"][0]["quote"] == quote
+
+
+def test_irreducible_context_reports_component_sizes_without_material():
+    secret_marker = "required original wording"
+    with pytest.raises(ModelContextExceeded) as failure:
+        bounded_request_text("System", "verify", {"objective": secret_marker * 200}, Decision, 2000)
+    assert failure.value.components["objective"] >= 4000
+    assert failure.value.components["schema"] > 0
+    assert secret_marker not in str(failure.value)
 
 
 def decision(**values):
@@ -109,7 +132,11 @@ async def test_diagnostic_reports_schema_path_without_raw_response_or_secret(mon
     assert "secret-fixture-key" not in json.dumps(events)
 
 
-async def test_classification_response_fails_over_after_invalid_schema(monkeypatch):
+@pytest.mark.parametrize("bad_record", [
+    {"id": 1, "classification": "match", "evidence": 2},
+    {"id": 2, "classification": "match", "evidence": 1},
+])
+async def test_classification_response_fails_over_after_invalid_references(monkeypatch, bad_record):
     cfg = settings()
     for name, value in {"ai_provider": "groq", "ai_provider_order": "groq,openrouter",
                         "groq_base_url": "https://primary.test/v1", "openrouter_base_url": "https://secondary.test/v1",
@@ -117,7 +144,7 @@ async def test_classification_response_fails_over_after_invalid_schema(monkeypat
         monkeypatch.setattr(cfg, name, value)
     original = httpx.AsyncClient
     providers = []
-    answer = {"records": [{"id": "one", "classification": "match", "quote": "Answers questions in a conversation."}]}
+    answer = {"records": [{"id": 1, "classification": "match", "evidence": 1}]}
 
     def respond(request):
         host = request.url.host
@@ -125,11 +152,12 @@ async def test_classification_response_fails_over_after_invalid_schema(monkeypat
         body = json.loads(request.content)
         assert json.loads(body["messages"][-1]["content"])["purpose"] == "classify"
         assert body["response_format"]["json_schema"]["name"] == "AssessmentBatch"
-        value = {"records": [{"id": "one", "classification": "invalid"}]} if host == "primary.test" else answer
+        value = {"records": [bad_record]} if host == "primary.test" else answer
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(value)}}]})
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
-    result = await ModelClient().request("classify", {"records": []}, AssessmentBatch, lambda *args: (1, 1))
+    payload = {"records": [{"id": 1, "excerpts": ["Answers questions in a conversation."]}]}
+    result = await ModelClient().request("classify", payload, AssessmentBatch, lambda *args: (1, 1))
     assert result.model_dump() == answer
     assert providers == ["primary.test", "secondary.test"]
 
@@ -157,6 +185,10 @@ async def test_browser_task_accepts_unused_null_claims_and_still_verifies_comple
         await response.aread()
         body = response.json()
         value = json.loads(body["choices"][0]["message"]["content"])
+        if value.get("decision") == "COMPLETE" and not null_responses:
+            # Research already has DOM evidence. Exercise an intermediate response
+            # explicitly so the nullable-claims transport regression still runs.
+            value.update(decision="OBSERVE", claims=None)
         if value.get("decision") and value["decision"] != "COMPLETE":
             value["claims"] = None
             null_responses.append(value["decision"])

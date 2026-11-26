@@ -26,13 +26,44 @@ _ALIASES = {
     "products": ("products", "product"),
     "directory entries": ("directory entries", "directory listings", "directory records"),
     "articles": ("articles", "article", "published articles"),
+    "prompts": ("prompts", "prompt", "ai prompts", "prompt templates"),
     "table rows": ("rows", "table rows", "rows in the table", "rows from the table", "rows in this table",
                    "table records", "table data", "tables", "data in the table"),
+}
+
+_KINDS = {
+    "prompts": {"prompts"}, "articles": {"articles"}, "products": {"products"},
+    "ai tools": {"tools", "products"}, "ai chatbots": {"tools", "products"}, "table rows": {"rows"},
+    "guides": {"guides"}, "reviews": {"reviews"}, "rankings": {"rankings"}, "collections": {"collections"},
+}
+_NOUNS = {kind: singular for kind, singular in (
+    ("prompts", "prompt"), ("articles", "article"), ("products", "product"), ("tools", "tool"),
+    ("guides", "guide"), ("reviews", "review"), ("rankings", "ranking"), ("collections", "collection"),
+)}
+_SCOPE_MODIFIERS = {
+    "and", "or", "except", "only", "without", "excluding", "not", "under", "over", "between", "before", "after",
+    "then", "sort", "rank", "compare", "download", "latest", "top", "send", "submit", "delete", "extract", "list",
 }
 
 
 def words(value):
     return re.findall(r"[^\W_]+", value.casefold())
+
+
+def requested_operation(objective):
+    tokens = words(objective)
+    prefix = {"please", "could", "would", "can", "you", "me", "a", "the"}
+    leading = next((token for token in tokens if token not in prefix), "")
+    if leading in {"list", "enumerate", "catalog", "catalogue", "collect", "extract", "inventory"} or re.match(
+        r"\s*(?:please\s+)?(?:give|show|provide)\s+(?:me\s+)?(?:a\s+|the\s+)?list\b", objective, re.I,
+    ):
+        return "enumeration"
+    if leading in {"rank", "recommend"}:
+        return "recommendation"
+    if (leading == "compare" or (leading == "comparison" and set(tokens) & {"of", "between"})
+            or (leading not in _INVENTORY and "versus" in tokens)):
+        return "comparison"
+    return None
 
 
 def exhaustive_request(objective):
@@ -56,7 +87,43 @@ def directory_intent(objective, options, has_dataset=False):
             for index in range(len(terms) - len(phrase) + 1):
                 if terms[index:index + len(phrase)] == phrase and set(terms[:index] + terms[index + len(phrase):]) <= _FRAME:
                     return entity
+    # A bounded adjective/noun phrase can identify a record type and a topic
+    # without asking the model. Leave constraints and multiple goals to planning.
+    phrase = [term for term in terms if term not in _FRAME]
+    if (2 <= len(phrase) <= 4 and collection_kinds("semantic:" + " ".join(phrase))
+            and not set(phrase) & _SCOPE_MODIFIERS and not any(term.isdigit() for term in phrase)):
+        start = terms.index(phrase[0])
+        if terms[start:start + len(phrase)] == phrase:
+            return "semantic:" + " ".join(phrase)
     return None
+
+
+def collection_kinds(entity):
+    if not entity:
+        return set()
+    if entity in _KINDS:
+        return _KINDS[entity]
+    terms = words(entity.removeprefix("semantic:"))
+    if entity.startswith("semantic:") and terms:
+        for kind, singular in _NOUNS.items():
+            if terms[-1] in {kind, singular}:
+                return {"tools", "products"} if kind == "tools" else {kind}
+    return set()
+
+
+def collection_topic(entity):
+    if not entity.startswith("semantic:") or not collection_kinds(entity):
+        return ""
+    return " ".join(words(entity.removeprefix("semantic:"))[:-1])
+
+
+def inventory_route(entity):
+    name = "table_extraction" if entity == "table rows" else "directory_collection"
+    kinds = ", ".join(sorted(collection_kinds(entity)))
+    subject = entity.removeprefix("semantic:")
+    discovery = (f"Find an authorized catalog of {kinds} relevant to {subject}." if kinds else
+                 f"Find an authorized catalog explicitly identifying its records as {subject}.")
+    return ExecutionRoute(name, discovery + " Verify the source type before collecting records.", entity)
 
 
 class RouteAssessment(Strict):
@@ -74,8 +141,7 @@ def assessed_entity(objective, assessment):
         return None
     if set(words(before + " " + after)) - _FRAME:
         return None
-    risky = {"and", "or", "except", "only", "without", "excluding", "not", "under", "over", "between", "before", "after"}
-    if set(words(phrase)) & risky or any(word.isdigit() for word in words(phrase)):
+    if set(words(phrase)) & _SCOPE_MODIFIERS or any(word.isdigit() for word in words(phrase)):
         return None
     # Require evidence-based filtering for inferred entity types. Do not treat
     # the directory contents themselves as proof that they match this phrase.
@@ -85,15 +151,23 @@ def assessed_entity(objective, assessment):
 def select_route(objective, options, has_dataset=False):
     entity = directory_intent(objective, options, has_dataset)
     if entity:
-        name = "table_extraction" if entity == "table rows" else "directory_collection"
-        return ExecutionRoute(name, "Collect visible rows before moving to the next observed batch.", entity)
+        return inventory_route(entity)
     terms = set(words(objective))
+    operation = requested_operation(objective)
     if has_dataset or options.get("output_format") in {"json", "csv"}:
         return ExecutionRoute("configured_extraction", "Use the configured dataset phases and verify the requested record scope and export.")
-    if terms & {"then", "workflow", "afterwards"}:
+    if terms & {"then", "afterwards"} or ("workflow" in terms and not operation):
         return ExecutionRoute("workflow", "Execute the ready step and preserve its dependencies. Verify each requested outcome.")
-    if terms & {"compare", "comparison", "versus"}:
+    if operation == "enumeration":
+        if exhaustive_request(objective):
+            return ExecutionRoute("general", "Discover the requested record structure and establish exhaustive source coverage before completion.")
+        return ExecutionRoute("enumeration", "Find an authorized source of the requested records. Capture a visible record group before "
+                              "answering. Classify each candidate using its own observed purpose or category. "
+                              "A similar category name, mention or related article does not establish membership.")
+    if operation == "comparison":
         return ExecutionRoute("comparison", "Gather independent sources for each entity and requested criterion. Identify missing evidence for either side.")
+    if operation == "recommendation":
+        return ExecutionRoute("research", "Gather relevant options and compare their observed merits against the requested ranking or recommendation criteria.")
     if terms & {"download", "pdf", "document", "retrieve"}:
         return ExecutionRoute("document_retrieval", "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")
     if terms & {"fill", "submit", "register"}:

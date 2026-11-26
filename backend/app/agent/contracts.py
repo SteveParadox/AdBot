@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ..schemas import Strict
+from .structure import RecordCapture
 
 
 class Target(Strict):
@@ -37,6 +38,7 @@ class Decision(Strict):
         "GO_BACK",
         "WAIT",
         "EXTRACT",
+        "CAPTURE_RECORDS",
         "SUMMARIZE",
         "ASK_USER",
         "COMPLETE",
@@ -88,9 +90,12 @@ class Decision(Strict):
     option: str | None = Field(
         None, min_length=1, max_length=200, description="Exact observed native option label or value; never invented."
     )
+    capture: RecordCapture | None = None
 
     @model_validator(mode="after")
     def parameters(self):
+        if (self.decision == "CAPTURE_RECORDS") != (self.capture is not None):
+            raise ValueError("Only CAPTURE_RECORDS accepts an observed group and field mapping")
         if (
             self.decision in {"CLICK", "TYPE", "SEARCH", "DOWNLOAD", "HOVER", "FOCUS", "SELECT_OPTION", "SET_CHECKED"}
             and self.target is None

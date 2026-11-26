@@ -36,6 +36,7 @@ def action_key(decision):
                     "expected_text",
                     "checked",
                     "option",
+                    "capture",
                 )
             },
             sort_keys=True,
