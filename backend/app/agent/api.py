@@ -104,21 +104,29 @@ def configuration(owner: Owner):
         "provider_rpm": cfg.ai_provider_rpm,
         "provider_tpm": cfg.ai_provider_tpm,
         "memory_enabled": cfg.agent_memory_enabled,
-        "visual_reasoning": cfg.agent_visual_reasoning,
+        "visual_reasoning": cfg.vision_available(),
         "session_persistence": cfg.browser_session_persistence,
         "max_tabs": cfg.agent_max_tabs,
         "max_concurrency": cfg.max_concurrency,
     }
 
 
+def resolved_task_options(data: TaskInput, cfg):
+    vision = cfg.vision_available()
+    if data.visual_reasoning is True and not vision:
+        raise HTTPException(422, "No configured vision-capable model is available")
+    if data.session_persistence is True and not cfg.browser_session_persistence:
+        raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
+    options = data.model_dump(exclude={"priority", "depends_on"})
+    options["visual_reasoning"] = vision if data.visual_reasoning is None else data.visual_reasoning
+    options["session_persistence"] = bool(cfg.browser_session_persistence) if data.session_persistence is None else data.session_persistence
+    return options
+
+
 @router.post("/tasks", status_code=201)
 def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | None, Header(max_length=160)] = None):
     cfg = settings()
-    if data.visual_reasoning and not cfg.agent_visual_reasoning:
-        raise HTTPException(422, "Visual reasoning is not enabled by the server")
-    if data.session_persistence and not cfg.browser_session_persistence:
-        raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
-    options = data.model_dump(exclude={"priority", "depends_on"})
+    options = resolved_task_options(data, cfg)
     options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
     options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens)
     options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
@@ -132,10 +140,18 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
             request_values.pop(optional, None)
     digest = hashlib.sha256(json.dumps(request_values, sort_keys=True).encode()).hexdigest()
     accepted_digests = {digest}
+    # Requests made before capability defaults changed had false for omitted flags.
+    # Only permit legacy replay when the caller actually omitted the new defaults.
+    old_defaults = dict(request_values)
+    for flag in ("visual_reasoning", "session_persistence", "allow_downloads"):
+        if flag not in data.model_fields_set:
+            old_defaults[flag] = False
+    accepted_digests.add(hashlib.sha256(json.dumps(old_defaults, sort_keys=True).encode()).hexdigest())
     if data.allow_search_input and not data.approved_post_search:
-        legacy_values = {k: v for k, v in request_values.items()
-                         if k not in {"allow_search_input", "approved_post_search"}}
-        accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
+        for values in (request_values, old_defaults):
+            legacy_values = {k: v for k, v in values.items()
+                             if k not in {"allow_search_input", "approved_post_search"}}
+            accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
     try:
         with transaction() as session:
             website = owned(session, Website, data.website_id, owner)
@@ -205,7 +221,7 @@ def preview(data: TaskInput, owner: Owner):
             if dataset.website_id != website.id:
                 raise HTTPException(422, "Dataset must belong to the selected website")
         try:
-            options = data.model_dump()
+            options = resolved_task_options(data, settings())
             validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             dataset_id = data.dataset_id or website.configuration.get("extraction_dataset_id")
             if dataset_id:
