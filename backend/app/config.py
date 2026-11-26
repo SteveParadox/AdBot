@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     ai_max_request_chars: int = Field(18000, ge=4000, le=100000)
     ai_json_mode: bool = True
     ai_context_windows: dict[str, int] = Field(default_factory=dict)
-    ai_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    ai_reasoning_effort: Literal["auto", "low", "medium", "high"] = "auto"
     agent_collection_max_rows: int = Field(2000, ge=1, le=10000)
     agent_collection_batch_rows: int = Field(250, ge=1, le=1000)
     agent_collection_max_bytes: int = Field(4_000_000, ge=4096, le=16_000_000)
@@ -101,8 +101,10 @@ class Settings(BaseSettings):
     agent_max_tabs: int = Field(4, ge=1, le=10)
     agent_max_retries: int = Field(3, ge=1, le=10)
     agent_memory_enabled: bool = True
-    agent_visual_reasoning: bool = False
-    browser_session_persistence: bool = False
+    agent_visual_reasoning: bool = True
+    # Exact provider:model entries for additional vision-capable deployments.
+    ai_vision_models: str = ""
+    browser_session_persistence: bool | None = None
     session_encryption_key: SecretStr = SecretStr("")
 
     @field_validator("ai_provider_order", mode="before")
@@ -137,6 +139,27 @@ class Settings(BaseSettings):
         if self.ai_provider_order:
             return self.ai_provider_order.split(",")[index].strip() == "local"
         return self.ai_provider == "local" or (index > 0 and self.ai_fallback_provider == "local")
+
+    def supports_vision(self, provider: str, model: str, *, native: bool = False) -> bool:
+        if not self.agent_visual_reasoning or native or provider == "disabled":
+            return False
+        configured = {item.strip() for item in self.ai_vision_models.split(",") if item.strip()}
+        return (f"{provider}:{model}" in configured
+                or (provider == "google" and model.startswith("gemini-")))
+
+    def vision_available(self) -> bool:
+        names = ([name.strip() for name in self.ai_provider_order.split(",")]
+                 if self.ai_provider_order else [self.ai_provider, "local"])
+        return any(self.supports_vision(names[index], model,
+                                        native=self.model_provider_is_local(index) and self.ai_ollama_native)
+                   for index, (_, _, model) in enumerate(self.model_providers()))
+
+    def reasoning_effort_for(self, purpose: str) -> str:
+        if self.ai_reasoning_effort != "auto":
+            return self.ai_reasoning_effort
+        if purpose in {"plan", "verify"}:
+            return "high"
+        return "medium" if purpose == "decide" else "low"
 
     @model_validator(mode="after")
     def secure(self):
@@ -215,6 +238,9 @@ class Settings(BaseSettings):
                 raise ValueError("Invalid local AI fallback endpoint")
             if self.agent_fallback_tokens < self.ai_max_output_tokens:
                 raise ValueError("AI fallback token reserve must cover at least one maximum-length response")
+        # Auto-enable only when a durable operator-provided key is available.
+        if self.browser_session_persistence is None:
+            self.browser_session_persistence = bool(self.session_encryption_key.get_secret_value())
         if self.browser_session_persistence:
             from cryptography.fernet import Fernet
 
