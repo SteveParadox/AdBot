@@ -43,7 +43,9 @@ class ModelDeadlineExceeded(ModelError):
 
 
 class ModelContextExceeded(ModelError):
-    pass
+    def __init__(self, message, components=None):
+        super().__init__(message)
+        self.components = components or {}
 
 
 class ModelBudgetExceeded(RuntimeError):
@@ -110,6 +112,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
     """Keep an observation useful while enforcing a strict serialized prompt limit."""
     compact = copy.deepcopy(payload)
     current_page = compact.get("current_page")
+    contract = schema.model_json_schema()
     if reduced:
         compact.pop("historical_hints", None)
         if isinstance(current_page, dict):
@@ -127,6 +130,11 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
         current_page["headings"] = [_clip(heading, 200) for heading in current_page.get("headings", [])[:15]]
         elements = current_page.get("elements", [])
         if isinstance(elements, list):
+            query = set(re.findall(r"\w{3,}", compact.get("objective", "").casefold()))
+            elements.sort(key=lambda element: (
+                not element.get("focused"), not element.get("actionable"), not element.get("visible"),
+                -len(query.intersection(re.findall(r"\w{3,}", str(element.get("name", "")).casefold()))),
+            ) if isinstance(element, dict) else (True, True, True, 0))
             fields = {
                 "element_id",
                 "role",
@@ -168,13 +176,11 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
             for element in elements[:40]:
                 if isinstance(element, dict):
                     element["name"] = _clip(element.get("name"), 100)
-                    element["href"] = _clip(element.get("href"), 400)
                     if isinstance(element.get("options"), list):
-                        terms = set(__import__("re").findall(r"\w{3,}", compact.get("objective", "").lower()))
                         options = element["options"]
                         options = sorted(
                             options,
-                            key=lambda o: -len(terms & set(__import__("re").findall(r"\w{3,}", str(o).lower()))),
+                            key=lambda o: -len(query & set(re.findall(r"\w{3,}", str(o).casefold()))),
                         )
                         element["options"] = [{k: _clip(v, 100) for k, v in o.items()} for o in options[:12]]
                         element["options_truncated"] = len(options) > 12
@@ -199,7 +205,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
             memory.pop("research_coverage", None)
         memory["visited_urls"] = [_clip(url, 400) for url in memory.get("visited_urls", [])[-10:]]
         memory["evidence"] = [
-            {**item, "quote": _clip(item.get("quote"), 600)}
+            item
             for item in memory.get("evidence", [])[:8]
             if isinstance(item, dict)
         ]
@@ -220,7 +226,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 "model_elements"
             ] < metrics.get("included", metrics["model_elements"])
         return json.dumps(
-            {"purpose": kind, "schema": schema.model_json_schema(), **value},
+            {"purpose": kind, "schema": contract, **value},
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -257,12 +263,23 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
         for element in elements:
             if isinstance(element, dict):
                 element["name"] = _clip(element.get("name"), 60)
-                element["href"] = _clip(element.get("href"), 200)
         current_page["elements"] = elements
         current_page["research_chunks"] = current_page.get("research_chunks", [])[:2]
+    if isinstance(memory, dict):
+        memory["evidence"] = memory.get("evidence", [])[:2]
+        for key in ("summary", "answers", "research_coverage"):
+            memory.pop(key, None)
+    plan = compact.get("task_plan")
+    if isinstance(plan, dict):
+        plan.pop("replanning", None)
+        for subtask in plan.get("subtasks", []):
+            subtask.pop("outcome", None)
     request_text = serialize(compact)
     if len(system) + len(request_text) > max_chars:
-        raise ModelContextExceeded("Model request is too large after observation compaction")
+        components = {"system": len(system.encode()), "schema": len(json.dumps(contract, ensure_ascii=False).encode())}
+        components.update({key: len(json.dumps(value, ensure_ascii=False).encode()) for key, value in compact.items()})
+        largest = ", ".join(f"{name}={size}B" for name, size in sorted(components.items(), key=lambda x: -x[1])[:4])
+        raise ModelContextExceeded(f"Model request is too large after observation compaction ({largest})", components)
     return request_text
 
 
@@ -542,6 +559,11 @@ class ModelClient:
                 for attempt in range(attempts + 1):
                     if attempt >= attempts and not context_retry:
                         break
+                    provider_estimate = estimate()
+                    if context_limit is not None and provider_estimate + cfg.ai_max_output_tokens > context_limit:
+                        if not rebuild(context_limit):
+                            raise ModelContextExceeded("Provider retry cannot fit the request and reserved output")
+                        provider_estimate = estimate()
                     try:
                         from ..provider_quota import identity, reserve, settle, release, cooldown, QuotaBlocked
                         from ..concurrency import database_call
@@ -600,7 +622,7 @@ class ModelClient:
                             endpoint,
                             json=provider_body,
                             headers=headers,
-                            timeout=request_timeout(provider_index),
+                            timeout=httpx.Timeout(request_timeout(provider_index), connect=min(3, request_timeout(provider_index))),
                         ) as response:
                             if response.status_code == 429 or (
                                 response.status_code >= 500 and response.headers.get("retry-after")

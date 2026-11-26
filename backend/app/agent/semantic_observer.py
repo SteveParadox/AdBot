@@ -81,15 +81,16 @@ class Observer:
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
         if research:
-            from .research import READ_RESEARCH
+            from .research import READ_RESEARCH, terms
 
-            data["research_chunks"] = await page.evaluate(READ_RESEARCH)
+            data["research_chunks"] = await page.evaluate(READ_RESEARCH, sorted(terms(goal))[:100])
         if structure:
             from ..config import settings
             from .structure import READ_STRUCTURE
 
             structural_groups = await page.evaluate(READ_STRUCTURE, {
                 "rows": min(250, settings().agent_collection_batch_rows), "nodes": 1000,
+                "individual": structure == "enumeration",
             })
         directory_cache_hit = False
         if directory:

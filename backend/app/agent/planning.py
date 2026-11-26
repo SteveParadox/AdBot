@@ -85,13 +85,19 @@ def execution_intent(objective):
     hints = (
         ("form_interaction", r"\b(?:fill|submit|register|sign up)\b"),
         ("document_retrieval", r"\b(?:download|retrieve)\b.*\b(?:file|document|pdf)\b"),
-        ("comparison", r"\b(?:compare|comparison|versus)\b"),
+        ("comparison", r"\b(?:compare|versus)\b|\bcomparison\s+(?:of|between)\b"),
         ("structured_extraction", r"\b(?:list|collect|extract)\b"),
         ("search", r"\b(?:search|find|look up)\b"),
         ("research", r"\b(?:research|summarize|explain|verify)\b"),
         ("navigation", r"\b(?:navigate|open|visit|go to)\b"),
     )
-    strategy = next((name for name, pattern in hints if re.search(pattern, objective, re.I)), "general")
+    from .routing import requested_operation
+
+    operation = requested_operation(objective)
+    strategy = {"enumeration": "structured_extraction", "comparison": "comparison",
+                "recommendation": "research"}.get(operation) or next(
+        (name for name, pattern in hints if re.search(pattern, objective, re.I)), "general",
+    )
     quantifiers = re.findall(
         r"\b(?:all|every|first|latest|cheapest|highest rated|at least \d+|exactly \d+|between \d+ and \d+)\b",
         objective, re.I,
@@ -316,6 +322,23 @@ def ready(state):
 
 def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False,
              *, collection_complete=None, source_verified=None):
+    research_ids = collect_ids = None
+    research_ready = collect_ready = True
+    requirements = state.get("research_requirements")
+    if requirements is not None:
+        from .research import coverage
+
+        entities, criteria = requirements["entities"], requirements["criteria"]
+        hints = coverage(evidence, entities, criteria)
+        by_entity = hints["entities"]
+        by_criterion = hints["criteria"]
+        research_ready = bool(evidence) and all(by_entity.values())
+        research_ids = set().union(*(map(set, by_entity.values()))) if entities else {row["id"] for row in evidence}
+        collect_ready = research_ready and all(
+            ids and all(set(ids).intersection(subject_ids) for subject_ids in by_entity.values())
+            for ids in by_criterion.values()
+        )
+        collect_ids = research_ids & set().union(*map(set, by_criterion.values())) if criteria else research_ids
     for node in state["plan"]["subtasks"]:
         if node["status"] in {"failed", "blocked"}:
             continue
@@ -326,8 +349,10 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
             and observation.get("url", "").startswith(("http://", "https://"))
             and source_verified is not False
             and (not state.get("research_evidence_required") or bool(evidence))
+            and (research_ready or verified)
             or node["kind"] == "collect"
             and (bool(evidence) if collection_complete is None else collection_complete)
+            and (collect_ready or verified)
             or node["kind"] == "dataset"
             and dataset_count > 0
             or node["kind"] == "export"
@@ -337,7 +362,8 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
         )
         if satisfied:
             node["status"] = "completed"
-            node["evidence_ids"] = [e["id"] for e in evidence][:40]
+            selected = research_ids if node["kind"] == "research" else collect_ids if node["kind"] == "collect" else None
+            node["evidence_ids"] = [e["id"] for e in evidence if verified or selected is None or e["id"] in selected][:40]
             node["outcome"] = (
                 "Verified completion"
                 if node["kind"] == "verify"

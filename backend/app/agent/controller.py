@@ -74,10 +74,10 @@ class Controller:
         data = await self.observer.observe(
             self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", ""),
             **({"directory": directory} if directory else {}),
-            **({"structure": True} if structure else {}),
+            **({"structure": structure} if structure else {}),
             **({"research": True} if research else {}),
         )
-        if research:
+        if research or structure == "enumeration":
             response = self.runner.response_for(self.page)
             data["http_status"] = response.status if response and response.url == data["url"] else None
         data["tabs"] = [
