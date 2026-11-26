@@ -62,7 +62,9 @@ def source_eligible(objective, element, *, catalog_only=False):
         return True
     # A broad product inventory is useful for narrower product queries, but
     # unrelated libraries are not automatically relevant just because of type.
-    return generic_catalog and bool(set(words(objective)) & family) and bool(label & family) and not bool(label & _EDITORIAL)
+    broad_words = family | _CATALOG | {"all", "view", "see", "explore", "open", "our", "the", "by", "use", "case", "cases", "ai", "of", "and"}
+    return (generic_catalog and bool(set(words(objective)) & family) and bool(label & family)
+            and not (label - broad_words))
 
 
 def observed_links(observation, objective, policy, *, excluded=(), catalog_only=False):
@@ -170,6 +172,9 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
                 continue
             if len(strict) != len(rows) or set(strict) != set(mapped):
                 continue
+            if len({" ".join(name.casefold().split()) for name in mapped}) != len(mapped):
+                reject("duplicate_identity")
+                continue
             if not _field_label(example[position - 1]) and any(
                 len(row.get("segments", [])) < position
                 or _field_label(row["segments"][position - 1])
@@ -213,8 +218,8 @@ def unchanged_scrolls(observation, actions):
         outcome = action.get("outcome")
         if (action.get("action") not in {"SCROLL", "SCROLL_BACK"} or not isinstance(outcome, dict)
                 or outcome.get("after_url") != observation.get("url")
-                or outcome.get("record_groups_changed") or outcome.get("content_changed")
-                or outcome.get("information_progress")):
+                or outcome.get("information_progress", bool(outcome.get("record_groups_changed")
+                                                            or outcome.get("content_changed")))):
             break
         count += 1
     return count
@@ -298,12 +303,19 @@ def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=N
 
 
 _READ_INTENTS = {"structured_extraction", "research", "comparison", "search"}
-_NO_SEARCH = re.compile(r"\b(?:do not|must not|never|without|no|don['’]t)\s+(?:use\s+(?:the\s+)?)?(?:search(?:ing|\s+bar)?|forms?|form input|enter(?:ing)?\s+(?:text|data)|submit(?:ting)?)\b", re.I)
+_NO_SEARCH = re.compile(
+    r"\b(?:do\s+not|must\s+not|never|without|no|don['’]t|avoid)\s+"
+    r"(?:(?:use|using|perform|performing|fill|filling)\s+)?(?:(?:the|a|any|site|website|read.only)\s+)*"
+    r"(?:search(?:es|ing|\s+bars?)?|forms?|form input|enter(?:ing)?\s+(?:text|data)|submit(?:ting)?|submissions?)\b",
+    re.I,
+)
+MAX_SEARCH_ATTEMPTS = 8
 
 
-def read_search_permission(objective, options, intent):
+def read_search_permission(objective, options, intent, criteria=()):
     return (options.get("mode") == "autonomous" and options.get("allow_search_input") is True
-            and intent in _READ_INTENTS and not _NO_SEARCH.search(objective))
+            and intent in _READ_INTENTS
+            and not any(_NO_SEARCH.search(text) for text in [objective, *criteria]))
 
 
 def search_control(element):
@@ -312,16 +324,30 @@ def search_control(element):
                 and not any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))
                 and element.get("tag") == "input" and element.get("type") in {"search", "text"}
                 and element.get("role") in {"searchbox", "textbox"}
-                and form.get("search") and form.get("method") == "GET" and form.get("action"))
+                and form.get("search") and form.get("method") == "GET" and valid_search_action(form.get("action"))) 
+
+
+def valid_search_action(value):
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        return bool(parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username
+                    and not parsed.password and not parsed.fragment)
+    except ValueError:
+        return False
 
 
 def objective_query(objective):
     query = re.sub(r"^\s*(?:please\s+)?(?:list|find|search(?:\s+for)?|look\s+up|show(?:\s+me)?|identify|recommend)\s+(?:all\s+)?", "", objective, flags=re.I)
-    return " ".join(query.split())[:200].strip(" .?!,")
+    normalized = " ".join(query.split()).strip(" .?!,")
+    if len(normalized) > 200:
+        normalized = normalized[:201].rsplit(" ", 1)[0]
+    return normalized if len(normalized) <= 200 else ""
 
 
 def search_query_allowed(objective, query):
-    return bool(query and 0 < len(query) <= 200 and words(query)
+    return bool(isinstance(query, str) and 0 < len(query) <= 200 and words(query)
                 and set(words(query)) <= set(words(objective)))
 
 
@@ -332,13 +358,16 @@ def search_attempt_key(element, query):
 
 def search_candidate(observation, objective, policy, attempts):
     query = objective_query(objective)
-    if not search_query_allowed(objective, query) or any(d.get("visible") for d in observation.get("dialogs", [])):
+    if (len(attempts) >= MAX_SEARCH_ATTEMPTS or not search_query_allowed(objective, query)
+            or any(d.get("visible") for d in observation.get("dialogs", []))):
         return None
     for element in observation.get("elements", []):
-        if not search_control(element) or search_attempt_key(element, query) in attempts:
+        if not search_control(element):
             continue
         try:
             policy.check(element["form"]["action"])
+            if search_attempt_key(element, query) in attempts:
+                continue
         except ValueError:
             continue
         return Decision(decision="SEARCH", target={"element_id": element["element_id"]}, text=query,

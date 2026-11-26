@@ -226,17 +226,21 @@ class Controller:
                             and search_control(element) and search_query_allowed(self.runner.objective, decision.text)):
                         raise ValueError("Enable form input when creating the task")
                     live_metadata = await locator.evaluate(METADATA, timeout=self.engine.timeout_ms)
-                    if not search_control(live_metadata):
+                    if not search_control(live_metadata) or live_metadata["form"]["action"] != expected_form["action"]:
                         raise ValueError("Search form changed before input; reobserve")
-                    # Do not submit unrelated populated fields or sensitive
-                    # controls along with a native search query.
+                    # Native GET form only. An implicit Enter submission can
+                    # activate its default submit button, including overrides.
+                    # Do not send unrelated fields or accept submitter overrides.
                     simple_search = await locator.evaluate(
-                        "e=>!!e.form && [...e.form.elements].every(x=>x===e || x.disabled || "
-                        "(!x.name && !x.required) || ['submit','button','reset'].includes(x.type))",
+                        "e=>!!e.form && !!e.name && (!e.form.target || e.form.target==='_self') && "
+                        "[...e.form.elements].every(x=>x===e || x.disabled || "
+                        "((['submit','image'].includes(x.type)) ? "
+                        "(!x.name && x.type!=='image' && !['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a=>x.hasAttribute(a))) : "
+                        "(!x.name && !x.required && !['password','file'].includes(x.type))))",
                         timeout=self.engine.timeout_ms,
                     )
-                    if not simple_search:
-                        raise ValueError("Search form contains other named fields; general form permission required")
+                    if not simple_search or await self.inspect_target(locator) != live:
+                        raise ValueError("Search form is ambiguous or changed; general form permission required")
                 if element["type"] in {"password", "file"} or any(
                     x in element["name"].lower() for x in ("password", "credit card", "api key", "secret")
                 ):

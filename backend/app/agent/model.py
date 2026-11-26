@@ -139,10 +139,13 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
         elements = current_page.get("elements", [])
         if isinstance(elements, list):
             query = set(re.findall(r"\w{3,}", compact.get("objective", "").casefold()))
+            from .discovery import search_control
+
             elements.sort(key=lambda element: (
+                not (compact.get("read_search_enabled") and search_control(element)),
                 not element.get("focused"), not element.get("actionable"), not element.get("visible"),
                 -len(query.intersection(re.findall(r"\w{3,}", str(element.get("name", "")).casefold()))),
-            ) if isinstance(element, dict) else (True, True, True, 0))
+            ) if isinstance(element, dict) else (True, True, True, True, 0))
             fields = {
                 "element_id",
                 "role",

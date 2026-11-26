@@ -24,7 +24,7 @@ from .memory import action_key, decrypt_session, encrypt_session, relevant_memor
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelContextExceeded, ModelError, ModelProvidersUnavailable
 from .structure import add_capture, classification_request
 from .discovery import (
-    automatic_capture, compact_page, frontier_candidate, navigation_candidate, relevant_group_signatures,
+    MAX_SEARCH_ATTEMPTS, automatic_capture, compact_page, frontier_candidate, navigation_candidate, relevant_group_signatures,
     search_attempt_key, search_candidate, task_token_allowance, unchanged_scrolls, update_frontier,
 )
 from .research import (
@@ -937,8 +937,16 @@ class AgentRunner(Runner):
                         raise ValueError(
                             "OBSERVE already returned unchanged content; navigate an observed link, interact with a relevant control, or report the blockage"
                         )
-                if enumeration and decision.decision in {"NAVIGATE", "OPEN_TAB", "CLICK"}:
-                    target_url = decision.url if decision.decision != "CLICK" else next(
+                if enumeration and self.mode == "autonomous" and not self.options["allow_form_input"] and (
+                    decision.decision == "NAVIGATE" or (
+                        decision.decision == "CLICK" and decision.input_method == "auto" and not decision.expected_text
+                        and decision.target and any(
+                            e["element_id"] == decision.target.element_id and e.get("href") and not e.get("form")
+                            and e.get("role") == "link" for e in observation.get("elements", [])
+                        )
+                    )
+                ):
+                    target_url = decision.url if decision.decision == "NAVIGATE" else next(
                         (e.get("href") for e in observation["elements"]
                          if decision.target and e["element_id"] == decision.target.element_id), None)
                     if target_url:
@@ -1029,7 +1037,7 @@ class AgentRunner(Runner):
                     attempts = self.memory.setdefault("search_attempts", [])
                     if attempt in attempts:
                         raise ValueError("This search query was already attempted; use the observed results or a different search")
-                    if len(attempts) >= 8:
+                    if len(attempts) >= MAX_SEARCH_ATTEMPTS:
                         raise ValueError("Read-only search attempt limit reached; inspect the observed sources")
                     attempts.append(attempt)
                     await self.checkpoint(controller)
@@ -1253,10 +1261,13 @@ class AgentRunner(Runner):
                     self.record_semantic_attempt(semantic_key)
                 from .planning import classify_failure, replan
 
+                # A scoped read-only SEARCH never receives a write grant.
+                # Preserve uncertainty handling for ordinary inputs/submissions.
                 ambiguous_write = bool(
                     controller.engine.dispatch_started
                     and decision
                     and decision.decision in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
+                    and not (read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"])
                 )
                 original_error = controller.observer.safe_text(str(exc))[:500]
                 if ambiguous_write:
@@ -1293,7 +1304,8 @@ class AgentRunner(Runner):
                                 "cause": original_error,
                                 "replanning": not ambiguous_write,
                                 "failure_classification": category,
-                                **({"discovery": self.discovery_context(observation)} if enumeration or research or use_directory else {}),
+                                **({"discovery": controller.observer.sanitize(self.discovery_context(observation))}
+                                   if enumeration or research or use_directory else {}),
                                 "uncertain_submission": ambiguous_write,
                                 "trace": controller.observer.sanitize(controller.engine.trace.copy()),
                                 "traffic_kind": "automated",

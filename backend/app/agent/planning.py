@@ -169,7 +169,8 @@ def specification(objective, criteria, options, domains):
         "allowed_domains": list(domains),
         "permissions": {
             "form_input": bool(options.get("allow_form_input")),
-            "read_search": read_search_permission(objective, options, intent["category"]),
+            **({"read_search": read_search_permission(objective, options, intent["category"], criteria)}
+               if "allow_search_input" in options else {}),
             "downloads": bool(options.get("allow_downloads")),
         },
         "output_format": requested,
@@ -409,7 +410,7 @@ def guard(state, decision, observation):
         raise PermissionError("Explicit task prohibition blocks downloads")
     ambiguities = state["specification"]["ambiguities"] + state["plan"]["intent"]["ambiguities"]
     if any(a["category"] == "clarify" for a in ambiguities):
-        if activation and not target.get("href") or decision.decision in {"EXPORT_DATASET", "COMPLETE"}:
+        if (activation and not target.get("href") or decision.decision in {"EXPORT_DATASET", "COMPLETE", "SEARCH"}):
             raise PermissionError("Critical task ambiguity requires clarification before this action")
     if (
         decision.decision in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}
