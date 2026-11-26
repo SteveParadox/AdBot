@@ -162,6 +162,10 @@ async def test_browser_task_accepts_unused_null_claims_and_still_verifies_comple
         await response.aread()
         body = response.json()
         value = json.loads(body["choices"][0]["message"]["content"])
+        if value.get("decision") == "COMPLETE" and not null_responses:
+            # Research already has DOM evidence. Exercise an intermediate response
+            # explicitly so the nullable-claims transport regression still runs.
+            value.update(decision="OBSERVE", claims=None)
         if value.get("decision") and value["decision"] != "COMPLETE":
             value["claims"] = None
             null_responses.append(value["decision"])

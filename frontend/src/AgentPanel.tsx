@@ -39,7 +39,7 @@ type Task = Job & {
     claims?: Claim[];
     evidence?: Evidence[];
     structured_records?: { fields: Record<string, string>; source_url: string; step_id: number }[];
-    verification?: { complete: boolean; explanation: string; dimensions?: Record<string, boolean>; historical_unverified?: boolean };
+    verification?: { complete: boolean; explanation: string; dimensions?: Record<string, boolean>; historical_unverified?: boolean; missing_criteria?: string[] };
   };
   pending_step_id: number | null;
   memory: Record<string, unknown>;
@@ -868,6 +868,12 @@ function AgentDetail({
           </ul>}
           {!!t.result.structured_records?.length && <StructuredRecords records={t.result.structured_records} />}
           {t.result.partial && t.result.claims.length === 0 && !t.result.structured_records?.length && <p>No verified matches were collected.</p>}
+          {!!t.result.verification?.missing_criteria?.length && (
+            <div>
+              <p>Unverified criteria</p>
+              <ul>{t.result.verification.missing_criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+            </div>
+          )}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
               <p>{claim.text}</p>

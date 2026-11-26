@@ -57,7 +57,7 @@ class Observer:
             return {k: self.sanitize(v) for k, v in value.items()}
         return value
 
-    async def observe(self, page, tab_id, goal="", _retry=0, *, directory=False, structure=False):
+    async def observe(self, page, tab_id, goal="", _retry=0, *, directory=False, structure=False, research=False):
         start = time.perf_counter()
         await asyncio.gather(*(h.dispose() for h in self.bindings.values()), return_exceptions=True)
         self.bindings, self.registry, self.private_targets = {}, {}, {}
@@ -80,6 +80,10 @@ class Observer:
             self.generation += 1
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
+        if research:
+            from .research import READ_RESEARCH
+
+            data["research_chunks"] = await page.evaluate(READ_RESEARCH)
         if structure:
             from ..config import settings
             from .structure import READ_STRUCTURE
@@ -208,11 +212,11 @@ class Observer:
         if not coherent:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
             if _retry < 1:
-                return await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure)
+                return await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure, research=research)
             raise ValueError("Page changed repeatedly during semantic observation; no coherent evidence available")
         if len(inspected) < len(candidates) and _retry < 1:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
-            retried = await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure)
+            retried = await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure, research=research)
             retried["observation_metrics"]["read_attempts"] = 2
             retried["observation_metrics"]["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
             return retried

@@ -134,12 +134,14 @@ class Runner:
         self.log("navigation_started", "Opening permitted page", url=url)
         start, response, error, screenshot, title, content_hash = time.monotonic(), None, None, None, "", ""
         links = []
+        research = getattr(self, "research_mode", False)
         try:
             if navigate:
                 for attempt in range(self.cfg["retries"] + 1):
                     try:
                         response = await page.goto(
-                            url, wait_until=self.cfg["wait_until"], timeout=self.cfg["navigation_timeout_ms"]
+                            url, wait_until=("domcontentloaded" if research and self.cfg["wait_until"] == "networkidle"
+                                             else self.cfg["wait_until"]), timeout=self.cfg["navigation_timeout_ms"]
                         )
                         break
                     except NavigationTimeout:
@@ -155,7 +157,7 @@ class Runner:
                 raise RateLimited(response.headers.get("retry-after"))
             if self.cfg["wait_selector"]:
                 await page.locator(self.cfg["wait_selector"]).first.wait_for(timeout=self.cfg["navigation_timeout_ms"])
-            if self.cfg["scroll"]:
+            if self.cfg["scroll"] and not research:
                 for _ in range(random.randint(3, 6)):
                     await page.mouse.wheel(0, polymorph.get_random_scroll_amount())
                     await asyncio.sleep(polymorph.get_random_wait_time(0.05, 0.15))
@@ -172,7 +174,8 @@ class Runner:
             content_hash = hashlib.sha256((await page.content()).encode()).hexdigest()
             if self.cfg["screenshots"]:
                 screenshot = await self.screenshot(page)
-            links = await page.locator("a[href]").evaluate_all("els => els.slice(0, 5000).map(e => e.href)")
+            if not research:
+                links = await page.locator("a[href]").evaluate_all("els => els.slice(0, 5000).map(e => e.href)")
         except RateLimited:
             raise
         except Exception as exc:

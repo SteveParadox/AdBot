@@ -18,6 +18,35 @@ class Reply(BaseModel):
     status: str
 
 
+async def test_provider_context_rejection_rebuilds_before_retry(cloud, monkeypatch):
+    original = httpx.AsyncClient
+    requests, reservations = [], []
+    objective = "Compare two observed services"
+
+    async def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"code": "context_length_exceeded"}})
+        return success()
+
+    def account(prompt, completion, latency, reserve, receipt=None):
+        if reserve:
+            reservations.append((prompt, completion))
+            return (prompt, completion)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    page = {"text": "Distracting text " * 400, "research_chunks": [{"quote": "Evidence " * 35}] * 12,
+            "elements": [{"element_id": "observed1", "visible": True, "actionable": True, "name": "Related source"}]}
+    result = await ModelClient().request("decide", {"objective": objective, "current_page": page}, Reply, account)
+    assert result.status == "ok"
+    assert len(requests) == 2 and requests[0]["model"] == requests[1]["model"]
+    assert reservations[1][0] < reservations[0][0]
+    retry = json.loads(requests[1]["messages"][1]["content"])
+    assert retry["objective"] == objective and "schema" in retry
+    assert retry["current_page"]["elements"][0]["element_id"] == "observed1"
+    print(f"context recovery input estimates {reservations[0][0]} -> {reservations[1][0]} with {reservations[1][1]} output reserved")
+
+
 @pytest.fixture
 def cloud(monkeypatch):
     cfg = settings()
