@@ -695,7 +695,7 @@ class AgentRunner(Runner):
                             {
                                 "objective": self.objective,
                                 "success_criteria": self.options["success_criteria"],
-                                "current_page": ({**observation, "text": "", "viewport_text": ""} if research else observation),
+                                "current_page": self.research_model_page(observation) if research else observation,
                                 "session_memory": self.context_memory(observation, plan),
                                 "execution_route": {"name": route.name, "guidance": route.guidance},
                                 "historical_hints": self.hints,
@@ -931,7 +931,7 @@ class AgentRunner(Runner):
                 )
                 if semantic_key is not None and not prevented:
                     self.record_semantic_attempt(semantic_key)
-                from .planning import replan
+                from .planning import classify_failure, replan
 
                 ambiguous_write = bool(
                     controller.engine.dispatch_started
@@ -949,7 +949,15 @@ class AgentRunner(Runner):
                 )
                 # Persist ambiguity before any browser read or cookie checkpoint:
                 # either can fail when the dispatch destroyed the page.
-                category = "uncertain_submission" if ambiguous_write else replan(self.memory["planning"], safe_reason, observation)
+                if ambiguous_write:
+                    category = "uncertain_submission"
+                elif research:
+                    # A one-step synthetic research checkpoint can deadlock a
+                    # multi-hop source search. The current phase and job bounds
+                    # already limit recovery.
+                    category = classify_failure(safe_reason)
+                else:
+                    category = replan(self.memory["planning"], safe_reason, observation)
                 def record_failure():
                     with transaction() as session:
                         owned_job(session, self.id, self.token)
@@ -1015,24 +1023,35 @@ class AgentRunner(Runner):
                     claims=[{"text": row["quote"], "evidence_ids": [row["id"]]} for row in offered],
                 )
         destinations = {}
+        indexes = {}
         for element in observation.get("elements", []):
             url = element.get("href")
             if not url or not element.get("actionable") or element.get("blocked_by_modal"):
                 continue
             label = terms(element.get("name", "") + " " + urlsplit(url).path.replace("-", " "))
-            if not all(terms(entity) <= label for entity in entities):
+            direct = all(terms(entity) <= label for entity in entities)
+            comparison_index = element.get("name", "").casefold().strip() in {"compare", "comparison", "comparisons"}
+            if not direct and not comparison_index:
                 continue
             try:
                 url = self.policy.check(url)
                 guard_navigation(self.memory.get("research_destinations", {}), url, observation["url"], len(evidence))
             except ValueError:
                 continue
-            destinations[destination_key(url)] = url
-        if len(destinations) == 1:
-            return Decision(observation="One observed link covers all requested comparison subjects", decision="NAVIGATE",
-                            url=next(iter(destinations.values())), reason="Open the relevant comparison source",
+            (destinations if direct else indexes)[destination_key(url)] = url
+        choices = destinations or (indexes if not any(matrix["entities"].values()) else {})
+        if len(choices) == 1:
+            return Decision(observation="Observed comparison destination", decision="NAVIGATE",
+                            url=next(iter(choices.values())), reason="Open the relevant comparison source",
                             confidence=1, expected_result="Rendered evidence for the requested subjects")
         return None
+
+    def research_model_page(self, observation):
+        history = self.memory.get("research_destinations", {})
+        count = len(self.memory["evidence"])
+        available = [element for element in observation["elements"] if not element.get("href")
+                     or history.get(destination_key(element["href"])) != count]
+        return {**observation, "text": "", "viewport_text": "", "elements": available}
 
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))

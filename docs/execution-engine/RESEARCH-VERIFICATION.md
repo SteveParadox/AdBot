@@ -13,14 +13,16 @@ The recorded comparison job `77e2c61d-f57c-4f39-82fd-0e1d684943bf` used 42,804 t
 
 | Check | Result |
 | --- | --- |
-| Two-source browser comparison with simulated model responses | Completed with two durable source excerpts and one model decision in 2.27 seconds after adding automatic verification |
-| Missing-source browser comparison | Blocked a repeat visit and published one verified excerpt with missing criteria |
+| Two-source browser comparison with simulated model responses | Completed with two durable source excerpts and one model decision in 2.19 seconds |
+| Missing-source browser comparison | Blocked a repeat visit and published one verified excerpt with missing criteria in 2.48 seconds |
 | Mock provider context rejection | Retried on the same provider with estimated input reduced from 13,164 to 5,597 tokens and 800 tokens reserved for output |
-| Targeted regression suite | 102 backend tests passed, followed by focused coverage, citation and context-recovery checks |
+| Targeted regression suite | 102 backend tests passed, followed by six focused checks and three final browser and entity-coverage checks |
 | Dashboard | 70 frontend tests passed and the production build succeeded |
 
 Fixture timings measure local browser and worker execution with simulated model responses. Provider estimates include request overhead and are estimates rather than measured billing tokens.
 
 ## Authorized live replay
 
-An intermediate replay captured eight excerpts and failed when model decisions requested unavailable or completed phases. Direct routing and automatic verification then completed the same comparison in 55.61 seconds using 28,994 tokens across seven provider calls. The verifier cited two article excerpts for the comparison and both individual subjects. The final evidence filter limits durable comparison excerpts to recognized subjects and publishes only material cited by successful verification checks.
+Intermediate replays exposed two additional defects. Model decisions tried to use unavailable or completed phases, and a blocked destination could create a single-step recovery phase that required evidence before permitting another navigation. Research now keeps the original phase and uses the existing job and recovery limits. Previously observed destinations are removed from the model's actionable links when they have yielded no new evidence.
+
+The final replay, `cbcc18c5-589b-4962-a60a-c02cfead98eb`, completed the original Notion AI and Obsidian comparison in **24.38 seconds with 7,040 tokens across two provider calls**. It persisted three article excerpts and published two that supported the comparison and both subjects. The worker recorded a click, navigation and verification. Compared with the failed baseline, this run used about 84% fewer tokens and took about 87% less time. These figures describe a single authorized replay through an isolated local worker and the configured live providers.

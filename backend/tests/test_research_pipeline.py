@@ -73,7 +73,11 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
                     "confidence": 1, "expected_result": "Verify both departure schedules"}
         if decisions <= 1 or (incomplete and decisions == 2):
             ending = ("/empty" if incomplete else "/second") if decisions == 1 else "/first#top"
-            href = next(e["href"] for e in payload["current_page"]["elements"] if (e.get("href") or "").endswith(ending))
+            if decisions == 1:
+                href = next(e["href"] for e in payload["current_page"]["elements"] if (e.get("href") or "").endswith(ending))
+            else:
+                assert not any((e.get("href") or "").endswith(ending) for e in payload["current_page"]["elements"])
+                href = "http://127.0.0.1:8765/research-proof" + ending
             return Decision(decision="NAVIGATE", url=href, **defaults)
         if incomplete:
             return Decision(decision="FAIL", text="South Station is unavailable", **defaults)
