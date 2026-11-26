@@ -296,10 +296,9 @@ class AgentRunner(Runner):
             raise ValueError("Source text was not found in this task's authorized observations")
         url, source_step_id, quote = found
         existing = next((e for e in self.memory["evidence"] if e["url"] == url and e["quote"] == quote), None)
-        if existing and text != quote:
-            return {**existing, "summary": text}
         if existing:
-            raise ValueError("This source is already collected. Cite the existing evidence ID in a claim.")
+            return {**existing, "already_collected": True,
+                    **({"summary": text} if text != quote else {})}
         if len(self.memory["evidence"]) >= 40:
             raise ValueError("Evidence budget exhausted")
         item = {"id": f"evidence-{step_id}", "url": url, "quote": quote, "step_id": source_step_id}
@@ -323,6 +322,14 @@ class AgentRunner(Runner):
         research = getattr(self, "research_mode", False)
         if research:
             criteria = self.research_criteria()
+        objective_criteria = list(criteria)
+        claim_checks = {}
+        if research:
+            from .research import repair_exact_citations, claim_verification_criteria
+
+            repair_exact_citations(decision.claims, evidence)
+            claim_checks = claim_verification_criteria(decision.claims, evidence)
+            criteria = [*criteria, *claim_checks]
         capture_criterion = "The captured records come from a relevant source and their observed fields satisfy the requested entity and constraints."
         coverage_criterion = "The quoted count is the full relevant inventory and all requested records have been covered."
         if (not structured and not self.snapshot.get("extraction") and task_text_only(self.objective, self.options)
@@ -349,6 +356,9 @@ class AgentRunner(Runner):
                 "evidence": (self.verification_evidence(evidence, decision.claims) if research else list(evidence.values())),
                 "artifact": artifact_context,
                 **({"instructions": "Check the original objective and each claim against its cited excerpts. "
+                                    "Copy each supplied criterion exactly. For Claim criteria use only the IDs "
+                                    "attached to that claim; mark unmet if they do not support the entire claim. "
+                                    "Do not confuse supported individual claims with full objective coverage. "
                                     "If sources materially disagree about a required fact, report the disagreement "
                                     "and leave that criterion unverified unless the answer explicitly accounts for it."}
                    if research else {}),
@@ -365,15 +375,17 @@ class AgentRunner(Runner):
             Verification,
         )
         checks = verification.checks
-        valid = (
-            verification.complete and len(checks) == len(criteria) and {c.criterion for c in checks} == set(criteria)
-        )
         verification_ids = set(evidence) if not research else {
             row["id"] for row in self.verification_evidence(evidence, decision.claims)
         }
-        valid = valid and all(c.met and c.evidence_ids and set(c.evidence_ids) <= verification_ids for c in checks)
+        from .research import verification_failures
+
+        problems = verification_failures(verification, criteria, verification_ids, claim_checks)
         if research:
-            valid = valid and all(self.research_check_supported(check, verification_ids) for check in checks)
+            problems.extend("Insufficient subject coverage: " + check.criterion[:160]
+                            for check in checks if check.criterion not in claim_checks
+                            and not self.research_check_supported(check, verification_ids))
+        valid = not problems
         if structured:
             proof_ids = {identifier for identifier in evidence if identifier.startswith("capture-")}
             valid = valid and all(
@@ -381,7 +393,15 @@ class AgentRunner(Runner):
             )
         if not valid:
             if research:
-                self.keep_research_partial(verification, criteria, verification_ids)
+                from .research import citation_candidates
+
+                self.keep_research_partial(verification, objective_criteria, verification_ids)
+                self.memory["verification_feedback"] = {
+                    "problems": problems[:12],
+                    "claims": citation_candidates(decision.claims, evidence),
+                    "instruction": "Repair citations using actual source excerpts or gather missing authorized evidence. "
+                                   "Do not repeat an unchanged completion or weaken the objective.",
+                }
                 await self.checkpoint(self.controller)
             if enumeration:
                 capture_check = next((check for check in checks if check.criterion == capture_criterion), None)
@@ -400,7 +420,10 @@ class AgentRunner(Runner):
                                              "missing_criteria": [criterion for criterion in criteria if criterion != capture_criterion]},
                         }
                         await self.checkpoint(self.controller)
-            raise ValueError("Goal verification incomplete: " + verification.explanation[:400])
+            raise ValueError("Goal verification incomplete: " + (
+                "; ".join(problems)[:380] if problems else "Required structured evidence was not verified"
+            ))
+        self.memory.pop("verification_feedback", None)
         supported_ids = {identifier for check in checks for identifier in check.evidence_ids}
         checkpoint_evidence = ([row for row in evidence.values() if row["id"] in supported_ids]
                                if research else self.memory["evidence"])
@@ -1292,7 +1315,10 @@ class AgentRunner(Runner):
         prioritized = list(dict.fromkeys(
             identifier for matrix in dimensions.values() for ids in matrix.values() for identifier in ids[:2]
         ))
-        for identifier in [*prioritized, *evidence]:
+        from .context import retrieve_evidence
+
+        ranked = retrieve_evidence(list(evidence.values()), self.objective, {}, limit=12, exact=True)
+        for identifier in [*prioritized, *[row["id"] for row in ranked], *evidence]:
             if len(selected) >= 12:
                 break
             if identifier in evidence and evidence[identifier] not in selected:
@@ -1377,6 +1403,8 @@ class AgentRunner(Runner):
             "answers": self.memory["answers"][-3:],
             "recent_actions": self.memory["recent_actions"][-6:],
             "summary": self.memory.get("summary", []),
+            **({"verification_feedback": self.memory["verification_feedback"]}
+               if "verification_feedback" in self.memory else {}),
             **({"research_coverage": self.memory["research_coverage"]} if "research_coverage" in self.memory else {}),
         }
 
@@ -1483,7 +1511,7 @@ class AgentRunner(Runner):
             state["research_evidence_required"] = True
             state["research_requirements"] = {
                 "entities": comparison_entities(self.objective, state["plan"]["intent"].get("entities", [])),
-                "criteria": comparison_dimensions(self.objective),
+                "criteria": list(dict.fromkeys([*self.verification_criteria(), *comparison_dimensions(self.objective)])),
             }
         if not state.get("initialized"):
             if not deterministic and needs_model_plan(expected):

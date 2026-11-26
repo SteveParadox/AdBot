@@ -3,7 +3,7 @@ import hashlib
 import re
 from urllib.parse import urlsplit
 
-from .routing import words
+from .routing import semantic_terms, words
 
 
 READ_RESEARCH = r"""(query) => {
@@ -60,6 +60,21 @@ def terms(value):
     return set(words(value)) - STOP
 
 
+_GENERIC_RESEARCH = {"best", "top", "recommended", "recommend", "rank", "ranking", "tool", "tools",
+                     "product", "products", "option", "options", "good", "ai"}
+
+
+def topic_terms(value):
+    tokens = semantic_terms(value) - STOP
+    return tokens - _GENERIC_RESEARCH or tokens
+
+
+def topical_match(criterion, quote):
+    """A conservative discovery hint, not a semantic verification verdict."""
+    wanted = topic_terms(criterion)
+    return bool(wanted) and len(wanted & semantic_terms(quote)) >= min(2, len(wanted))
+
+
 def comparison_entities(objective, declared=()):
     literal = set(words(objective))
     names = [name for name in declared if terms(name) and terms(name) <= literal]
@@ -97,8 +112,9 @@ def ranked_chunks(chunks, objective, title, entities=(), criteria=()):
         if not matched and len(title_entities) == 1:
             matched = title_entities
         hits = target & body
-        score = 3 * len(hits) + len(target & context) + 3 * len(matched)
-        if hits or matched or len(target & context) >= 2:
+        topical_hits = topic_terms(objective) & semantic_terms(quote)
+        score = 3 * len(hits) + 8 * len(topical_hits) + len(target & context) + 3 * len(matched)
+        if hits or matched or topical_hits or len(target & context) >= 2:
             output.append((score, {**chunk, "entities": matched}))
     ranked = [item for _, item in sorted(output, key=lambda pair: pair[0], reverse=True)]
     leaders = []
@@ -121,13 +137,15 @@ def capture_evidence(observation, store, step_id, entities, criteria):
     for chunk in observation.get("research_chunks", ()):
         quote = chunk["quote"]
         key = (url.split("#", 1)[0], quote)
-        relevant = bool(chunk["entities"]) if entities else bool(terms(quote) & terms(" ".join(criteria)))
+        relevant = bool(chunk["entities"]) if entities else any(topical_match(item, quote) for item in criteria)
         if key in seen or quote in quotes or not relevant:
             continue
         digest = hashlib.sha256("\0".join(key).encode()).hexdigest()[:24]
         store.append({"id": f"dom-{digest}", "url": url, "quote": quote, "step_id": step_id,
                       "entities": chunk["entities"], "heading": chunk["heading"],
-                      "criteria_hints": [item for item in criteria if terms(item) & terms(quote)]})
+                      "criteria_hints": [item for item in criteria if (
+                          bool(terms(item) & terms(quote)) if entities else topical_match(item, quote)
+                      )]})
         seen.add(key)
         added += 1
         if added == 4 or len(store) >= 40:
@@ -139,8 +157,10 @@ def coverage(evidence, entities, criteria):
     return {
         "entities": {entity: [row["id"] for row in evidence if entity in row.get("entities", []) or
                               terms(entity) <= terms(row["quote"])] for entity in entities},
-        "criteria": {criterion: [row["id"] for row in evidence if criterion in row.get("criteria_hints", []) or
-                                 terms(criterion) & terms(row["quote"])] for criterion in criteria},
+        "criteria": {criterion: [row["id"] for row in evidence if (
+            criterion in row.get("criteria_hints", []) or bool(terms(criterion) & terms(row["quote"]))
+            if entities else topical_match(criterion, row["quote"])
+        )] for criterion in criteria},
     }
 
 
@@ -154,3 +174,65 @@ def guard_navigation(history, destination, observed_url, evidence_count):
     if target == destination_key(observed_url) or history.get(target) == evidence_count:
         raise ValueError("This research destination was already observed without new evidence. Choose another source.")
     return target
+
+
+
+def repair_exact_citations(claims, evidence):
+    """Repair only uniquely attributable literal excerpts, not paraphrases."""
+    for claim in claims:
+        text = " ".join(claim.text.split())
+        if len(text) < 20:
+            continue
+        if any(text in " ".join(evidence[key]["quote"].split()) for key in claim.evidence_ids if key in evidence):
+            continue
+        candidates = [key for key, row in evidence.items() if text in " ".join(row["quote"].split())]
+        if len(candidates) == 1:
+            claim.evidence_ids = candidates
+
+
+def claim_verification_criteria(claims, evidence):
+    required = {}
+    for index, claim in enumerate(claims, 1):
+        text = " ".join(claim.text.split())
+        if len(claim.evidence_ids) == 1 and any(
+            text == " ".join(evidence[key]["quote"].split())
+            for key in claim.evidence_ids if key in evidence
+        ):
+            continue
+        required[f"Claim {index}: {claim.text}"] = set(claim.evidence_ids)
+    return required
+
+
+def verification_failures(verification, criteria, offered, claim_checks):
+    problems = []
+    checks = verification.checks
+    if not verification.complete:
+        problems.append("Verifier marked completion false")
+    if len(checks) != len(criteria) or {check.criterion for check in checks} != set(criteria):
+        problems.append("Verifier did not return exactly one check per required criterion")
+    for check in checks:
+        label = check.criterion[:160]
+        cited = set(check.evidence_ids)
+        if not check.met:
+            problems.append("Unmet criterion: " + label)
+        if not cited:
+            problems.append("Missing evidence IDs: " + label)
+        elif not cited <= offered:
+            problems.append("Unknown or unoffered evidence IDs: " + label)
+        elif check.criterion in claim_checks and not cited <= claim_checks[check.criterion]:
+            problems.append("Claim citation mismatch: " + label)
+    return problems
+
+
+def citation_candidates(claims, evidence):
+    """Bounded suggestions for a subsequent decision; not entailment judgments."""
+    output = []
+    for claim in claims[:6]:
+        subject = topic_terms(claim.text)
+        ranked = sorted(evidence.values(), key=lambda row: len(subject & semantic_terms(row["quote"])), reverse=True)
+        output.append({
+            "text": claim.text[:350], "cited_ids": claim.evidence_ids,
+            "candidates": [{"id": row["id"], "quote": row["quote"][:450]}
+                           for row in ranked[:2] if subject & semantic_terms(row["quote"])],
+        })
+    return output

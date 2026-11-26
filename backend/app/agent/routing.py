@@ -58,7 +58,10 @@ def requested_operation(objective):
         r"\s*(?:please\s+)?(?:give|show|provide)\s+(?:me\s+)?(?:a\s+|the\s+)?list\b", objective, re.I,
     ):
         return "enumeration"
-    if leading in {"rank", "recommend"}:
+    if leading in {"rank", "recommend"} or (
+        re.match(r"\s*(?:what|which)\s+(?:are|is)\b", objective, re.I)
+        and set(tokens) & {"best", "top", "recommended"}
+    ):
         return "recommendation"
     if (leading == "compare" or (leading == "comparison" and set(tokens) & {"of", "between"})
             or (leading not in _INVENTORY and "versus" in tokens)):
@@ -186,8 +189,7 @@ def select_route(objective, options, has_dataset=False):
                               "A similar category name, mention or related article does not establish membership.")
     if operation == "comparison":
         return ExecutionRoute("comparison", "Gather independent sources for each entity and requested criterion. Identify missing evidence for either side.")
-    if operation == "recommendation" or (re.match(r"\s*(?:what|which)\s+(?:are|is)\b", objective, re.I)
-                                             and terms & {"best", "top", "recommended"}):
+    if operation == "recommendation":
         return ExecutionRoute("research", "Gather relevant options and compare their observed merits against the requested ranking or recommendation criteria.")
     if terms & {"download", "pdf", "document", "retrieve"}:
         return ExecutionRoute("document_retrieval", "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")

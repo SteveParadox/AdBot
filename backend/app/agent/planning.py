@@ -332,7 +332,9 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
         hints = coverage(evidence, entities, criteria)
         by_entity = hints["entities"]
         by_criterion = hints["criteria"]
-        research_ready = bool(evidence) and all(by_entity.values())
+        research_ready = bool(evidence) and all(by_entity.values()) and (
+            bool(entities) or not criteria or any(by_criterion.values())
+        )
         research_ids = set().union(*(map(set, by_entity.values()))) if entities else {row["id"] for row in evidence}
         collect_ready = research_ready and all(
             ids and all(set(ids).intersection(subject_ids) for subject_ids in by_entity.values())

@@ -1,5 +1,6 @@
 ﻿"""Select bounded model context from the durable task and current page."""
-from .routing import words
+from .routing import semantic_terms, words
+from .research import topic_terms
 
 
 _STOP_WORDS = {"the", "and", "for", "find", "list", "show", "all", "with", "from"}
@@ -13,7 +14,9 @@ def retrieve_evidence(evidence, objective, observation, limit=8, *, phase="", ex
     def relevance(item):
         index, source = item
         source_terms = set(words(source.get("quote", "")))
-        return (len(terms & source_terms) + 2 * len(phase_terms & source_terms), source.get("url") == url, index)
+        topical = topic_terms(objective) & semantic_terms(source.get("quote", ""))
+        return (len(topical), len(terms & source_terms), source.get("url") == url,
+                len(phase_terms & source_terms), index)
 
     ranked = sorted(enumerate(evidence), key=relevance, reverse=True)
     selected = []

@@ -39,7 +39,7 @@ def action_key(decision):
                     "option",
                     "capture",
                 )
-            },
+            } | ({"claims": decision.get("claims", [])} if decision.get("decision") == "COMPLETE" else {}),
             sort_keys=True,
         ).encode()
     ).hexdigest()

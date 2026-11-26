@@ -130,3 +130,50 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
         published = {identifier for row in result["result"]["claims"] for identifier in row["evidence_ids"]}
         assert all(set(node["evidence_ids"]) <= published for node in result["planning"]["plan"]["subtasks"])
     print(f"research fixture partial={incomplete} elapsed={time.monotonic() - started:.2f}s decisions={decisions}")
+
+
+
+def test_recommendation_relevance_ignores_generic_tool_overlap():
+    from app.agent.research import topical_match, capture_evidence, coverage
+
+    objective = "what are best tools for Content creation"
+    irrelevant = "Best AI Coding Tools for Developers"
+    relevant = "Research-driven content generation tools assist writers."
+    assert not topical_match(objective, irrelevant)
+    assert topical_match(objective, relevant)
+    store = []
+    observation = {"url": "https://example.test/", "research_chunks": [
+        {"quote": irrelevant, "entities": [], "heading": "Rankings"},
+        {"quote": relevant, "entities": [], "heading": "Writing"},
+    ]}
+    assert capture_evidence(observation, store, 1, [], [objective]) == 1
+    assert coverage(store, [], [objective])["criteria"][objective] == [store[0]["id"]]
+
+
+def test_literal_citation_repair_and_paraphrase_requires_independent_check():
+    from app.agent.contracts import Claim
+    from app.agent.research import repair_exact_citations, claim_verification_criteria, verification_failures
+
+    text = "Atlas creates images from text descriptions."
+    evidence = {"a": {"quote": text}, "b": {"quote": "Generic software market commentary."}}
+    claims = [Claim(text=text, evidence_ids=["b"]),
+              Claim(text="Atlas generates pictures from prompts.", evidence_ids=["b"])]
+    repair_exact_citations(claims, evidence)
+    assert claims[0].evidence_ids == ["a"]
+    assert claims[1].evidence_ids == ["b"]
+    required = claim_verification_criteria(claims, evidence)
+    criterion = next(iter(required))
+    assert required[criterion] == {"b"}
+    verdict = Verification(complete=True, explanation="Supported", checks=[
+        {"criterion": criterion, "met": True, "evidence_ids": ["a"]},
+    ])
+    assert any("citation mismatch" in issue for issue in verification_failures(verdict, [criterion], set(evidence), required))
+    assert verification_failures(verdict, ["Different criterion"], set(evidence), {})
+
+
+def test_completion_retry_fingerprint_changes_when_citations_change():
+    from app.agent.memory import action_key
+
+    before = {"decision": "COMPLETE", "claims": [{"text": "A fact", "evidence_ids": ["wrong"]}]}
+    after = {"decision": "COMPLETE", "claims": [{"text": "A fact", "evidence_ids": ["right"]}]}
+    assert action_key(before) != action_key(after)
