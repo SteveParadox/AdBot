@@ -349,7 +349,7 @@ def dynamic_search_fixture(mode: str):
     # AJAX results or an explicitly attested POST query.
     if mode == "suggestion":
         return """<main><h1>Find software</h1><section role="search">
-        <div contenteditable="true" role="searchbox" aria-label="Search software" aria-controls="suggestions"></div>
+        <div contenteditable="true" role="searchbox" aria-label="Search software" aria-controls="suggestions" style="min-height:24px;width:300px"></div>
         <div id="suggestions" role="listbox"></div></section><div id="results"></div>
         <script>
         const input=document.querySelector('[role=searchbox]');
@@ -362,6 +362,21 @@ def dynamic_search_fixture(mode: str):
         async function load(q){const r=await fetch('/dynamic-search-data?q='+encodeURIComponent(q));document.getElementById('results').innerHTML=await r.text()}
         </script></main>"""
     method = "POST" if mode == "post" else "GET"
+    if mode == "live_nested":
+        return """<main><h1>Find software</h1><section role="search">
+        <input type="search" aria-label="Search software"><div id="results" aria-busy="false"></div>
+        <script>
+        const input=document.querySelector('input'),results=document.getElementById('results');
+        let timer;
+        input.addEventListener('input',()=>{
+          clearTimeout(timer);results.setAttribute('aria-busy','true');
+          timer=setTimeout(async()=>{
+            const r=await fetch('/dynamic-search-data?q='+encodeURIComponent(input.value));
+            results.innerHTML=await r.text();results.setAttribute('aria-busy','false');
+          },2100);
+        });
+        input.addEventListener('keydown',e=>{if(e.key==='Enter') results.innerHTML='<p>Unexpected duplicate submission</p>'});
+        </script></section></main>"""
     return """<main><h1>Find software</h1><section role="search">
     <input type="text" aria-label="Search software"><button type="button">Search</button></section>
     <div id="results" aria-busy="false"></div>
@@ -390,7 +405,7 @@ def dynamic_search_post(data: dict):
 
 
 @pytest.mark.browser
-@pytest.mark.parametrize("mode", ["suggestion", "ajax", "post"])
+@pytest.mark.parametrize("mode", ["suggestion", "ajax", "post", "live_nested"])
 async def test_dynamic_search_variants_capture_rendered_results(client, target, fixture_server, monkeypatch, mode):  # noqa: F811
     monkeypatch.setattr(settings(), "ai_provider", "local")
     registration = {key: target[key] for key in ("name", "allowed_domains", "configuration")}

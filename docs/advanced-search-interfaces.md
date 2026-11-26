@@ -17,3 +17,6 @@ The runtime enforces exact approved URLs, website policy, main-frame association
 ## Testing
 
 Run `pytest -q tests/test_extraction_first_discovery.py tests/test_category_enumeration.py` in the backend, including browser tests. The new fixtures exercise dynamic suggestions with an editable DIV, JavaScript buttons, delayed AJAX rendering and explicitly approved JSON POST. Verify actual rendered records and the independent classification/verification flow. Search completion or an HTTP response is not evidence that the objective is satisfied.
+
+## Review hardening
+The search scope now revalidates the input and exact query after asynchronous waits, re-resolves suggestion/button handles before clicking, excludes download and submitter override controls, and distinguishes nested result content from actual search chrome. Busy indicators and pending main-frame requests prevent a second submission while a debounced search is active. POST approvals require a literal boolean attestation; malformed URL-encoded bodies and duplicate keys are rejected. Expired or aborted scoped requests cannot leave a usable egress grant. Advanced search remains available for eligible queries even when general form input is enabled. The new delayed nested-results fixture is intended to catch false unchanged-page and duplicate-submission regressions.

@@ -310,3 +310,30 @@ def test_formless_search_attempt_keys_are_page_scoped():
     control = {"role": "searchbox", "name": "Search"}
     assert search_attempt_key(control, "buying tools", "https://example.test/a") != search_attempt_key(
         control, "buying tools", "https://example.test/b")
+
+
+def test_post_attestation_is_boolean_and_payload_is_strict_utf8():
+    import pytest
+    from app.agent.search import ApprovedPostSearch, approved_post_payload
+
+    url = "https://example.test/search"
+    for value in (1, "true", "yes", None):
+        with pytest.raises(ValueError):
+            ApprovedPostSearch(url=url, query_field="q", verified_read_only=value)
+    approvals = [ApprovedPostSearch(url=url, query_field="q", verified_read_only=True).model_dump()]
+    assert not approved_post_payload(url, "application/x-www-form-urlencoded", "q=%FF", "\ufffd", approvals)
+    assert not approved_post_payload(url, "application/x-www-form-urlencoded", "q=%", "%", approvals)
+    assert not approved_post_payload(url, "application/x-www-form-urlencoded", "q=x&q=x", "x", approvals)
+    assert not approved_post_payload(url, "application/json", '{"q":"x"}', "x", [])
+
+
+def test_ambiguous_custom_search_is_not_selected():
+    from app.agent.search import search_interface
+    from app.agent.discovery import search_candidate
+
+    element = {"element_id": "custom1", "tag": "div", "type": "", "role": "searchbox",
+               "actionable": True, "ambiguous": True,
+               "search_interface": {"search_semantics": True, "editable": True}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    assert search_interface(element) is None
+    assert search_candidate(page, "List buying tools", Policy(["example.test"]), []) is None

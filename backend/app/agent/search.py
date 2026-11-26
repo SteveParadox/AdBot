@@ -125,7 +125,7 @@ SUGGESTIONS = r"""e => {
  const scope=e.closest('[role=search],search,form');
  if(scope) roots.push(...scope.querySelectorAll('[role=listbox],[role=menu]'));
  const options=[...new Set(roots.flatMap(r=>[...r.querySelectorAll('[role=option],[role=menuitem],a[href]')]))]
-   .filter(n=>visible(n)&&!n.matches(':disabled')).slice(0,24);
+   .filter(n=>visible(n)&&!n.matches(':disabled,[download],input[type=file],input[type=image]')&&!['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a=>n.hasAttribute(a))).slice(0,24);
  return options.map(n=>({label:norm(n.getAttribute('aria-label')||n.innerText).slice(0,180),role:n.getAttribute('role')||n.tagName.toLowerCase()})).filter(n=>n.label);
 }"""
 
@@ -137,7 +137,7 @@ SUGGESTION_TARGET = r"""(e,query) => {
  const scope=e.closest('[role=search],search,form');
  if(scope) roots.push(...scope.querySelectorAll('[role=listbox],[role=menu]'));
  const found=[...new Set(roots.flatMap(r=>[...r.querySelectorAll('[role=option],[role=menuitem],a[href]')]))]
-   .filter(n=>!!n.getClientRects().length&&getComputedStyle(n).visibility==='visible'&&!n.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]')&&!n.matches(':disabled')&&norm(n.getAttribute('aria-label')||n.innerText)===norm(query));
+   .filter(n=>!!n.getClientRects().length&&getComputedStyle(n).visibility==='visible'&&!n.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]')&&!n.matches(':disabled,[download],input[type=file],input[type=image]')&&!['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a=>n.hasAttribute(a))&&norm(n.getAttribute('aria-label')||n.innerText)===norm(query));
  return found.length===1?found[0]:null;
 }"""
 
@@ -342,14 +342,17 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
             if time.monotonic() >= scope["until"]:
                 raise ValueError("Search time budget expired before input")
             engine.dispatch_started = True
-            if decision.input_method == "keyboard":
-                await target.fill("")
-                if binding is not None:
-                    await binding.type(query, timeout=engine.timeout_ms)
+            async def enter_query():
+                if decision.input_method == "keyboard":
+                    await target.fill("", timeout=engine.timeout_ms)
+                    if binding is not None:
+                        await binding.type(query, timeout=engine.timeout_ms)
+                    else:
+                        await locator.press_sequentially(query, timeout=engine.timeout_ms)
                 else:
-                    await locator.press_sequentially(query, timeout=engine.timeout_ms)
-            else:
-                await target.fill(query, timeout=engine.timeout_ms)
+                    await target.fill(query, timeout=engine.timeout_ms)
+
+            await asyncio.wait_for(enter_query(), timeout=max(0.001, scope["until"]-time.monotonic()))
             after, choices = await settle(before, 1.8, inspect_suggestions=True)
             # A debounced search may be busy without any currently pending
             # fetch. Do not submit again while the first action is settling.
@@ -383,11 +386,12 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
                         await target.press("Enter", timeout=min(engine.timeout_ms, max(1, int((scope["until"]-time.monotonic())*1000))))
                         strategy = "enter"
                 after, choices = await settle(before, 3.0, inspect_suggestions=True)
-            final = await read_state() or after
+            final_snapshot = await read_state()
+            final = final_snapshot or after
             content_changed = final["url"] != before["url"] or final["text"] != before["text"]
             # A spinner, selection, URL change or response is only a progress
             # signal. A busy/unfinished response is not yet settled.
-            settled = not pending and not final["busy"]
+            settled = final_snapshot is not None and not pending and not final["busy"]
             return {"interaction": {"changed": content_changed or bool(choices),
                                     "content_changed": content_changed,
                                     "verified": content_changed and settled,
