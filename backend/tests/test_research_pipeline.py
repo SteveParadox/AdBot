@@ -40,7 +40,8 @@ def research_page(fixture_page: str):
     content = (
         '<div role="main"><h2>South Station</h2><dl><dt>Weekday departures</dt><dd>'
         'South Station schedules weekday departures every thirty minutes from its east wing.'
-        '</dd></dl></div>' if fixture_page == "second" else
+        '</dd></dl><p>South Station preserves several century-old heritage photographs in its waiting room.</p>'
+        '</div>' if fixture_page == "second" else
         '<p>Browse the directory to find weekday departures and other general transport information.</p>'
     )
     return content + '<nav><a href="/research-proof/first#top">North Station</a></nav>'
@@ -65,7 +66,9 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
         if kind == "plan":
             return schema.model_validate(payload["seed_plan"])
         if kind == "verify":
-            observed = payload["evidence"]
+            if first == "first" and not incomplete:
+                assert any("heritage" in row["quote"] for row in payload["evidence"])
+            observed = [row for row in payload["evidence"] if "heritage" not in row["quote"]]
             if first == "long":
                 assert any("30 min" in row["quote"] and row["url"].endswith("/dynamic") for row in observed)
             if conflict:
@@ -110,7 +113,7 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
     await execute(*claim())
     result = client.get(f"/api/agent/tasks/{job}").json()
     assert result["status"] == ("failed" if incomplete or conflict else "completed"), result.get("error_message")
-    assert len(result["memory"]["evidence"]) == (1 if incomplete else 3 if conflict else 2)
+    assert len(result["memory"]["evidence"]) == (1 if incomplete else 2 if first == "long" else 3)
     assert result["result"]["verification"]["complete"] is (not incomplete and not conflict)
     if incomplete:
         assert result["result"]["partial"]
@@ -124,4 +127,6 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
     else:
         assert decisions == 1
         assert set(result["memory"]["research_coverage"]["entities"]) == {"North Station", "South Station"}
+        published = {identifier for row in result["result"]["claims"] for identifier in row["evidence_ids"]}
+        assert all(set(node["evidence_ids"]) <= published for node in result["planning"]["plan"]["subtasks"])
     print(f"research fixture partial={incomplete} elapsed={time.monotonic() - started:.2f}s decisions={decisions}")

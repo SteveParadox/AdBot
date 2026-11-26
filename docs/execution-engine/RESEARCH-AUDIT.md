@@ -41,6 +41,10 @@ Audit replay `1fda2af7-f244-48e6-9314-151a5bf2f50f` used two browser actions and
 
 The simulated provider rejection reconstructed the request from an estimated 13,150 to 5,583 input tokens and held 800 tokens for output. Provider request estimates differ from recorded provider usage.
 
+## Regression verification
+
+The targeted Windows suite passed 138 tests covering research, model contracts, provider failover and context windows, planning, failure diagnostics, authorization and directory pagination. Browser fixtures exercised durable evidence before model decisions, a relevant passage following 300 unrelated paragraphs, a script-rendered table, a rejected navigation cycle, missing subjects and a comparison which the simulated verifier leaves incomplete when its sources disagree. After the final attribution change, 12 focused checks passed, including a fixture that retains an irrelevant candidate in the evidence store and excludes it from completed checkpoints and published citations. The simulated verifier covers result handling, while the authorized live replay covers the configured inference providers.
+
 ## Limits
 
 Research still runs within the authorized browser session. A separate HTTP crawler and concurrent independent browsing would require a source-isolation design that shares the current DNS, redirect, rate and permission checks. This audit leaves those integrations out. The DOM scan is bounded and can miss content beyond its scanning limits or content that requires interaction to render. Lexical coverage is a navigation and checkpoint signal. Semantic verification still evaluates cited facts, source relevance and conflicting evidence. Preflight token counts remain estimates for providers with no local tokenizer, and reported usage settles the reservation where available.

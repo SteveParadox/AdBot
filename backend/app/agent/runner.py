@@ -313,6 +313,9 @@ class AgentRunner(Runner):
                 self.keep_research_partial(verification, criteria, verification_ids)
                 await self.checkpoint(self.controller)
             raise ValueError("Goal verification incomplete: " + verification.explanation[:400])
+        supported_ids = {identifier for check in checks for identifier in check.evidence_ids}
+        checkpoint_evidence = ([row for row in evidence.values() if row["id"] in supported_ids]
+                               if research else self.memory["evidence"])
         planning = self.memory.get("planning")
         if planning:
             if planning["specification"]["output_format"] in {"csv", "json"}:
@@ -333,7 +336,7 @@ class AgentRunner(Runner):
             evaluate(
                 planning,
                 {"url": self.controller.page.url},
-                self.memory["evidence"],
+                checkpoint_evidence,
                 dataset_count=await database_call(self.dataset_count),
                 artifact=bool(self.memory.get("export_artifact")),
                 verified=True,
@@ -350,7 +353,6 @@ class AgentRunner(Runner):
             "artifact": self.memory.get("export_artifact"),
         }
         if research:
-            supported_ids = {identifier for check in checks for identifier in check.evidence_ids}
             result["claims"] = [claim.model_dump() for claim in decision.claims if set(claim.evidence_ids) <= supported_ids]
             if not result["claims"]:
                 result["claims"] = [{"text": evidence[identifier]["quote"], "evidence_ids": [identifier]}
@@ -829,15 +831,16 @@ class AgentRunner(Runner):
                     await extract_page(self, controller.page, required=False)
                 from .planning import evaluate
 
-                evaluate(
-                    self.memory["planning"],
-                    after,
-                    self.memory["evidence"],
-                    await database_call(self.dataset_count),
-                    bool(self.memory.get("export_artifact")),
-                    collection_complete=False if directory and not self.memory.get("structured_capture") else None,
-                    source_verified=bool(directory.state.get("source_relevance")) if directory and not self.memory.get("structured_capture") else None,
-                )
+                if decision.decision != "COMPLETE":
+                    evaluate(
+                        self.memory["planning"],
+                        after,
+                        self.memory["evidence"],
+                        await database_call(self.dataset_count),
+                        bool(self.memory.get("export_artifact")),
+                        collection_complete=False if directory and not self.memory.get("structured_capture") else None,
+                        source_verified=bool(directory.state.get("source_relevance")) if directory and not self.memory.get("structured_capture") else None,
+                    )
                 active_id = self.memory["planning"]["active_subtask"]
                 self.memory["planning"]["last_observation"] = {
                     "url": after["url"],
