@@ -81,3 +81,21 @@ def test_budget_reserves_are_bounded_and_finalization_can_use_remaining_tokens()
                                 primary=True, purpose="verify", handoff=True) == (6121, 0, 0)
     assert task_token_allowance(60000, 60001, fallback_reserve=20000,
                                 primary=True, purpose="decide") == (0, 0, 0)
+
+
+def test_compact_page_accepts_controls_without_hrefs():
+    page = compact_page({"url": "https://example.test/"}, "List tools",
+                        elements=[{"element_id": "button1", "role": "button", "name": "Open menu",
+                                   "href": None, "actionable": True}], groups=[])
+    assert page["elements"][0]["element_id"] == "button1"
+
+
+def test_catalog_ranking_prefers_collection_to_keyword_matching_interface():
+    observation = {"url": "https://example.test/", "elements": [
+        {"role": "link", "actionable": True, "name": "Compare Tools", "href": "https://example.test/compare"},
+        {"role": "link", "actionable": True, "name": "Browse software products by use case",
+         "href": "https://example.test/products"},
+    ]}
+    decision = navigation_candidate(observation, "List software buying and comparison tools",
+                                    Policy(["example.test"]), catalog_only=True, minimum=8)
+    assert decision.url == "https://example.test/products"

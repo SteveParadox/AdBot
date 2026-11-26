@@ -27,9 +27,10 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
    const cells = children.length ? children : [row];
    const segments = [];
    if (individual && !row.matches('tr,[role=row]')) {
-     const identity = [...row.querySelectorAll('h2,h3,h4,[role=heading]')].find(safe);
-     const name = text(identity);
-     if (name && name.length<=220) segments.push({value:name,label:'Record heading',truncated:false});
+     const names = [...new Set([...row.querySelectorAll('h2,h3,h4,[role=heading]')].filter(safe).map(text).filter(Boolean))];
+     // Multiple different headings can be a composite region, not one record.
+     // Leave ambiguous identities for normal model-assisted mapping.
+     if (names.length===1 && names[0].length<=220) segments.push({value:names[0],label:'Record heading',truncated:false});
    }
    for (const cell of cells.slice(0,16)) {
      const value = text(cell);

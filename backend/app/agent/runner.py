@@ -517,11 +517,15 @@ class AgentRunner(Runner):
         pending = [row for row in capture["records"].values() if not row.get("classification")]
         size = min(cfg.agent_classification_batch_rows, max(1, (cfg.ai_max_request_chars - 3500) // 3000))
         for offset in range(0, len(pending), size):
-            if capture.get("classification_calls", 0) >= cfg.agent_classification_max_calls:
+            count = (self.memory.get("enumeration_classification_calls", 0)
+                     if getattr(self, "enumeration_mode", False) else capture.get("classification_calls", 0))
+            if count >= cfg.agent_classification_max_calls:
                 raise ValueError("Structured classification reached its configured call budget")
             rows = pending[offset:offset + size]
             payload = classification_request(self.objective, rows)
             capture["classification_calls"] = capture.get("classification_calls", 0) + 1
+            if getattr(self, "enumeration_mode", False):
+                self.memory["enumeration_classification_calls"] = count + 1
             result = await self.ask_model("classify", payload, AssessmentBatch, wait_for_provider=False)
             validate_assessments(payload, result)
             for assessment in result.records:
@@ -910,7 +914,7 @@ class AgentRunner(Runner):
                                 },
                                 Decision,
                                 observation,
-                        )
+                            )
                 if terminal is not None:
                     await self.finish_directory(directory, controller, observation, step_id, number, terminal)
                     return
@@ -1292,7 +1296,10 @@ class AgentRunner(Runner):
             candidate = automatic_capture(
                 observation, structural_groups, self.objective,
                 rejected=self.memory.get("rejected_collection_scopes", []),
-                max_rows=min(48, settings().agent_classification_batch_rows * settings().agent_classification_max_calls),
+                max_rows=min(48, max(0, settings().agent_classification_max_calls -
+                                      self.memory.get("enumeration_classification_calls", 0)) *
+                             min(settings().agent_classification_batch_rows,
+                                 max(1, (settings().ai_max_request_chars - 3500) // 3000))),
             )
             if candidate is not None:
                 return candidate
@@ -1318,6 +1325,13 @@ class AgentRunner(Runner):
                         capture={"group": group["id"], "fields": [{"name": "Name", "position": 1},
                                                                  {"name": "Description", "position": 2}], "identity": 1},
                     )
+        if structural_groups is not None and not self.options.get("allow_form_input"):
+            catalog = navigation_candidate(
+                observation, self.objective, self.policy, excluded=self.discovery_exclusions(),
+                minimum=8, catalog_only=True,
+            )
+            if catalog is not None:
+                return catalog
         for element in observation.get("elements", []):
             href = element.get("href")
             if not href or not element.get("actionable") or element.get("blocked_by_modal"):

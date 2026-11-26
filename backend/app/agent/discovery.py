@@ -31,20 +31,20 @@ def relevance(objective, value):
 
 
 def source_score(objective, element):
-    name = element.get("name", "")
+    name = element.get("name") or ""
     label = set(words(name))
-    href = element.get("href", "")
+    href = element.get("href") or ""
     path = set(words(urlsplit(href).path))
     context = str((element.get("context") or {}).get("heading", ""))
     topical = relevance(objective, name)
     score = 5 * topical + 2 * relevance(objective, context) + relevance(objective, href)
-    score += 3 * bool((label | path) & _CATALOG)
+    score += 8 * bool((label | path) & _CATALOG)
     score += 2 * bool(label & {"tools", "products", "services"})
     score -= 4 * bool(label & _EDITORIAL)
     return score
 
 
-def observed_links(observation, objective, policy, *, excluded=()):
+def observed_links(observation, objective, policy, *, excluded=(), catalog_only=False):
     if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
         return []
     excluded = set(excluded) | {destination_key(observation["url"])}
@@ -61,14 +61,16 @@ def observed_links(observation, objective, policy, *, excluded=()):
             continue
         if urlsplit(href).scheme not in {"http", "https"} or destination_key(href) in excluded:
             continue
+        if catalog_only and not (set(words(element.get("name") or "")) | set(words(urlsplit(href).path))) & _CATALOG:
+            continue
         score = source_score(objective, {**element, "href": href})
         if score > 0 and score > candidates.get(destination_key(href), (0, ""))[0]:
             candidates[destination_key(href)] = (score, href)
     return sorted(candidates.values(), key=lambda item: (-item[0], item[1]))
 
 
-def navigation_candidate(observation, objective, policy, *, excluded=(), minimum=5):
-    ranked = observed_links(observation, objective, policy, excluded=excluded)
+def navigation_candidate(observation, objective, policy, *, excluded=(), minimum=5, catalog_only=False):
+    ranked = observed_links(observation, objective, policy, excluded=excluded, catalog_only=catalog_only)
     if not ranked or ranked[0][0] < minimum:
         return None
     return Decision(decision="NAVIGATE", url=ranked[0][1],
@@ -134,7 +136,10 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
             heading_score = relevance(objective, group.get("label", ""))
             # Unrelated cards remain available to the model, but don't spend a
             # classification batch on them purely because they are repeated.
-            if not relevant and not heading_score:
+            generic_catalog = not concepts(objective) and bool(
+                set(words(group.get("label", ""))) & (_CATALOG | {"tools", "products", "services"})
+            )
+            if not relevant and not heading_score and not generic_catalog:
                 continue
             choices.append((4 * heading_score + 3 * relevant, len(mapped), capture))
             break
@@ -221,7 +226,8 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
 def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=None, handoff=False):
     """Never reserve already spent tokens; preserve a small finalization reserve."""
     remaining = max(0, maximum - spent)
-    final = min(4000, maximum // 10, remaining) if purpose == "decide" else 0
+    final = (min(4000, maximum // 10, remaining // 2) if purpose == "decide" else
+             min(2000, maximum // 20, remaining // 3) if purpose == "classify" else 0)
     available = remaining - final
     fallback = min(fallback_reserve, maximum // 3, available // 3) if primary and not handoff else 0
     return max(0, available - fallback), fallback, final
