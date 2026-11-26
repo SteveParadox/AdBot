@@ -57,7 +57,7 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
  };
  const add = (elements, schemaRoot, location, headings, type) => {
    if (!elements.length || remaining<=0) return;
-   const limit=Math.min(remaining,rows);
+   const limit=Math.min(remaining,rows,individual?40:rows);
    remaining-=Math.min(limit,elements.length);
    const table = schemaRoot.closest('table,[role=table],[role=grid],[role=treegrid]');
    const label = heading(location);
@@ -102,6 +102,28 @@ READ_STRUCTURE = r"""({rows, nodes, individual=false}) => {
  }
  if (individual) {
    const content = document.querySelector('main,[role=main]') || document.body;
+   // Semantic fallback: only a heading's own adjacent visible paragraph.
+   // Never combine the title with descriptions from unrelated regions.
+   const semanticRecords=[];
+   const headings=[...content.querySelectorAll('h2,h3,h4,[role=heading]')].slice(0,Math.min(nodes,160));
+   const semanticLimit=Math.min(remaining,24);
+   if (semanticLimit>=2) for (const h of headings) {
+     if (!safe(h) || h.closest('nav,aside,header,footer,[role=navigation]')) continue;
+     const name=text(h), p=h.nextElementSibling;
+     if (!name || name.length>160 || !p || !p.matches('p,[itemprop=description]') || !safe(p)) continue;
+     const description=text(p);
+     if (description.length<25 || description.length>500 || description===name) continue;
+     if (semanticRecords.some(row=>row.segments[0].value===name)) continue;
+     semanticRecords.push({truncated:false,segments:[
+       {label:'Record heading',value:name,truncated:false},
+       {label:'Description',value:description,truncated:false}
+     ]});
+     if (semanticRecords.length>=semanticLimit) break;
+   }
+   if (semanticRecords.length>=2 && groups.length<12) {
+     groups.unshift({label:heading(content),context:[],kind:'semantic',static_table:false,
+       truncated:true,observed_count:semanticRecords.length,records:semanticRecords});
+   }
    const title = [...content.querySelectorAll('h1,[role=heading][aria-level="1"]')].filter(safe);
    if (title.length===1 && text(title[0])) {
      const label=text(title[0]).slice(0,220);

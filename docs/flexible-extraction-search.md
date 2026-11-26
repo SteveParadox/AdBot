@@ -1,0 +1,7 @@
+# Flexible extraction and autonomous site search
+
+New autonomous read-side tasks can use a visible native GET search input. The separate `allow_search_input` option is enabled by default and can be disabled; it does not authorize general form input, POST submissions, purchases, login fields or downloads. Explicit no-search constraints take precedence. Query words must come from the objective, and live controls, form method, other fields and the authorized destination are checked. Existing persisted tasks without this option are not retroactively granted search permission.
+
+Enumeration attempts automatic structured mapping, including short unlabeled identities and local heading/description regions, then exposes ambiguous observed groups for model-assisted mapping. Semantic classification and independent verification remain required. Step outcomes include mapping diagnostics. A bounded ranked frontier retains previously observed unexplored links, and rejected revisits can be replaced with a different authorized destination. Browser content changes are separate from candidate and evidence progress.
+
+Complex JavaScript-only search widgets and POST search endpoints are not automatically authorized. No site-specific paths or selectors are used. Run the existing enumeration, research and directory tests and `pytest -q tests/test_extraction_first_discovery.py`, then replay the reported objective in a new autonomous task.

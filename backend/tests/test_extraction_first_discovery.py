@@ -128,3 +128,68 @@ def test_automatic_mapping_does_not_shift_unlabeled_fields_across_rows():
     group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": [first, second]}
     page = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
     assert automatic_capture(page, {2: group}, "List buying tools") is None
+
+
+def test_unrelated_generic_catalog_is_not_automatic_destination():
+    from app.agent.discovery import observed_links
+
+    page = {"url": "https://example.test/", "elements": [
+        {"role": "link", "actionable": True, "name": "Browse prompt library", "href": "https://example.test/prompts"},
+        {"role": "link", "actionable": True, "name": "Browse software products", "href": "https://example.test/products"},
+    ]}
+    ranked = observed_links(page, "List software buying and comparison tools", Policy(["example.test"]), catalog_only=True)
+    assert [url for _, url in ranked] == ["https://example.test/products"]
+
+
+def test_autonomous_search_is_separate_from_general_form_permission():
+    from app.agent.discovery import read_search_permission, search_candidate, search_control, search_attempt_key
+    from app.agent.planning import specification
+
+    objective = "List software buying and comparison tools"
+    options = {"mode": "autonomous", "allow_search_input": True, "allow_form_input": False}
+    assert read_search_permission(objective, options, "structured_extraction")
+    assert not read_search_permission("List software tools without searching", options, "structured_extraction")
+    assert not read_search_permission(objective, {**options, "mode": "assisted"}, "structured_extraction")
+    assert not read_search_permission(objective, {**options, "allow_search_input": False}, "structured_extraction")
+    spec = specification(objective, [objective], options, ["example.test"])
+    assert spec["permissions"]["read_search"] and not spec["permissions"]["form_input"]
+    element = {"element_id": "search1", "tag": "input", "type": "search", "role": "searchbox",
+               "actionable": True, "form": {"method": "GET", "search": True, "action": "https://example.test/search"}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    decision = search_candidate(page, objective, Policy(["example.test"]), [])
+    assert decision.decision == "SEARCH" and decision.text == "software buying and comparison tools"
+    assert search_candidate(page, objective, Policy(["example.test"]), [search_attempt_key(element, decision.text)]) is None
+    assert not search_control({**element, "form": {**element["form"], "method": "POST"}})
+    assert not search_control({**element, "type": "password"})
+    assert not search_control({**element, "sensitive": True})
+
+
+def test_frontier_preserves_unexplored_candidates_after_page_transition():
+    from app.agent.discovery import update_frontier, frontier_candidate
+
+    objective = "List buying tools"
+    root = {"url": "https://example.test/", "elements": [
+        {"role": "link", "actionable": True, "name": "Buying tools catalog", "href": "https://example.test/catalog"},
+        {"role": "link", "actionable": True, "name": "Buying tools directory", "href": "https://example.test/directory"},
+    ]}
+    policy = Policy(["example.test"])
+    frontier = update_frontier({}, root, objective, policy, {root["url"]})
+    page = {"url": "https://example.test/catalog", "elements": []}
+    frontier = update_frontier(frontier, page, objective, policy, {root["url"], page["url"]})
+    assert frontier_candidate(frontier, page, policy, {root["url"], page["url"]}).url == "https://example.test/directory"
+
+
+def test_mapping_diagnostics_and_unlabelled_card_fallback():
+    first = record("Atlas", "Compare supplier purchase costs before buying.")
+    second = record("Beacon", "Compare software vendors before buying.")
+    for row in (first, second):
+        row["segments"][0]["label"] = ""
+    group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": [first, second]}
+    observed = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
+    diagnostics = {}
+    assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics)
+    assert diagnostics["strategy"] == "automatic_capture"
+    group["records"][1]["segments"][0]["value"] = "Atlas"
+    assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics) is None
+    assert diagnostics["strategy"] == "model_assisted"
+    assert diagnostics["mapping_rejections"]["no_confident_mapping"] == 1

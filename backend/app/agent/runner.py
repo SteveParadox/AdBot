@@ -23,7 +23,10 @@ from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, collecti
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelContextExceeded, ModelError, ModelProvidersUnavailable
 from .structure import add_capture, classification_request
-from .discovery import automatic_capture, compact_page, navigation_candidate, task_token_allowance, unchanged_scrolls
+from .discovery import (
+    automatic_capture, compact_page, frontier_candidate, navigation_candidate, relevant_group_signatures,
+    search_attempt_key, search_candidate, task_token_allowance, unchanged_scrolls, update_frontier,
+)
 from .research import (
     capture_evidence, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
     terms,
@@ -811,6 +814,8 @@ class AgentRunner(Runner):
             await self.prepare_plan(observation, deterministic=enumeration or directory is not None or (
                 research and len(comparison_entities(self.objective)) >= 2
             ))
+            read_search = bool(self.mode == "autonomous" and (research or enumeration or use_directory)
+                               and self.memory["planning"]["specification"]["permissions"].get("read_search"))
             if research and not reused_observation:
                 self.rank_research(observation)
             if observation["url"] not in self.memory["visited_urls"]:
@@ -822,6 +827,8 @@ class AgentRunner(Runner):
                 )
                 if len(visited) > 100:
                     visited.pop(next(iter(visited)))
+            if research or enumeration or use_directory:
+                self.remember_discovery(observation)
             def record_observation():
                 with transaction() as session:
                     owned_job(session, self.id, self.token)
@@ -880,17 +887,19 @@ class AgentRunner(Runner):
                                              for row in candidate_batch.get("rows", [])[:6]],
                                     "note": "Unverified candidates; capture matching observed records before further navigation.",
                                 }
+                            self.remember_discovery(observation)
                             def update_observation():
                                 with transaction() as session:
                                     owned_job(session, self.id, self.token)
                                     session.get(AgentStep, step_id).observation = observation
                             await database_call(update_observation)
                         if (research or enumeration or use_directory) and not self.options["allow_form_input"]:
-                            if unchanged_scrolls(observation, self.memory["recent_actions"]) >= 2:
-                                decision = navigation_candidate(
-                                    observation, self.objective, self.policy,
-                                    excluded=self.discovery_exclusions(),
-                                )
+                            groups = self.available_groups(observation) if enumeration else []
+                            if not groups and read_search:
+                                decision = search_candidate(observation, self.objective, self.policy,
+                                                            self.memory.get("search_attempts", []))
+                            if decision is None and not groups and unchanged_scrolls(observation, self.memory["recent_actions"]) >= 2:
+                                decision = self.discovery_alternative(observation)
                         plan = self.planning_context()
                         if decision is None:
                             decision = await self.ask_model(
@@ -904,7 +913,10 @@ class AgentRunner(Runner):
                                     "historical_hints": self.hints,
                                     "steps_remaining": self.options["max_steps"] - number,
                                     "form_input_enabled": self.options["allow_form_input"],
+                                    "read_search_enabled": read_search,
                                     "task_plan": plan,
+                                    **({"discovery": self.discovery_context(observation)}
+                                       if research or enumeration or use_directory else {}),
                                     **({"rejected_collection_sources": self.memory.get("rejected_collection_sources", [])[-8:],
                                         "rejected_collection_scopes": self.memory.get("rejected_collection_scopes", [])[-8:],
                                         "verified_partial_record_count": len(self.memory.get("research_partial", {}).get("structured_records", []))}
@@ -925,6 +937,30 @@ class AgentRunner(Runner):
                         raise ValueError(
                             "OBSERVE already returned unchanged content; navigate an observed link, interact with a relevant control, or report the blockage"
                         )
+                if enumeration and decision.decision in {"NAVIGATE", "OPEN_TAB", "CLICK"}:
+                    target_url = decision.url if decision.decision != "CLICK" else next(
+                        (e.get("href") for e in observation["elements"]
+                         if decision.target and e["element_id"] == decision.target.element_id), None)
+                    if target_url:
+                        # A policy-denied action is not silently substituted.
+                        allowed_url = self.policy.check(target_url)
+                        target_key = destination_key(allowed_url)
+                        history = self.memory.get("research_destinations", {})
+                        if (target_key == destination_key(observation["url"])
+                                or target_key in self.memory.get("rejected_collection_sources", [])
+                                or history.get(target_key) == len(self.memory["evidence"])):
+                            alternative = (search_candidate(observation, self.objective, self.policy,
+                                                           self.memory.get("search_attempts", [])) if read_search else None)
+                            alternative = alternative or self.discovery_alternative(observation)
+                            if alternative:
+                                decision = alternative
+                            else:
+                                raise ValueError("No unexplored relevant destination is available; inspect another observed record group or search")
+                        elif read_search and not self.memory.get("structured_capture") and not self.options["allow_form_input"]:
+                            # The page has been assessed and a navigation action was
+                            # selected; a search is a more direct discovery path.
+                            decision = search_candidate(observation, self.objective, self.policy,
+                                                        self.memory.get("search_attempts", [])) or decision
                 # Retain the common planning permission guard below.
                 decision_data = decision.model_dump()
                 key = action_key(decision_data)
@@ -977,6 +1013,7 @@ class AgentRunner(Runner):
                 if (research or enumeration or use_directory) and (
                     decision.decision in {"NAVIGATE", "GO_BACK", "OPEN_TAB", "OBSERVE", "SCROLL",
                                           "EXTRACT", "SUMMARIZE", "CAPTURE_RECORDS", "COMPLETE", "FAIL"}
+                    or (read_search and decision.decision == "SEARCH")
                     or (decision.decision == "CLICK" and decision.target and any(
                         e.get("element_id") == decision.target.element_id and e.get("href") and not e.get("form")
                         for e in observation.get("elements", [])
@@ -986,6 +1023,16 @@ class AgentRunner(Runner):
                     # action remains useful when a model echoes a completed phase.
                     decision.subtask_id = None
                 guard(self.memory["planning"], decision, observation)
+                if read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"]:
+                    element = next(e for e in observation["elements"] if e["element_id"] == decision.target.element_id)
+                    attempt = search_attempt_key(element, decision.text)
+                    attempts = self.memory.setdefault("search_attempts", [])
+                    if attempt in attempts:
+                        raise ValueError("This search query was already attempted; use the observed results or a different search")
+                    if len(attempts) >= 8:
+                        raise ValueError("Read-only search attempt limit reached; inspect the observed sources")
+                    attempts.append(attempt)
+                    await self.checkpoint(controller)
                 if any(
                     f["action_key"] == key and f["fingerprint"] == observation["fingerprint"]
                     for f in self.memory["failures"]
@@ -1050,7 +1097,10 @@ class AgentRunner(Runner):
                             for element in observation.get("elements", [])
                         )
                     )
-                    if read_link:
+                    if read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"]:
+                        outcome = await controller.act(decision, {**self.options, "allow_read_search": True},
+                                                       approved, read_only=True)
+                    elif read_link:
                         outcome = await controller.act(decision, self.options, approved, read_only=True, prefer_navigation=True)
                     else:
                         outcome = (await controller.act(decision, self.options, approved, read_only=True)
@@ -1112,10 +1162,12 @@ class AgentRunner(Runner):
                 outcome["content_changed"] = (interaction.get("content_changed") if deterministic else
                                               after["text"] != observation["text"])
                 if research or enumeration or use_directory:
-                    outcome["information_progress"] = bool(
-                        len(self.memory["evidence"]) > len_before or outcome["content_changed"]
-                        or after.get("record_groups") != observation.get("record_groups")
-                    )
+                    before_groups = set(self.memory.get("discovery_group_signatures", []))
+                    self.remember_discovery(after)
+                    new_groups = set(self.memory.get("discovery_group_signatures", [])) - before_groups
+                    outcome["new_relevant_groups"] = len(new_groups)
+                    outcome["information_progress"] = bool(len(self.memory["evidence"]) > len_before or new_groups)
+                    outcome["discovery"] = self.discovery_context(observation)
                 outcome["page_changed"] = bool(outcome["url_changed"] or outcome["content_changed"] or
                                                after["fingerprint"] != observation["fingerprint"])
                 if isinstance(outcome.get("interaction"), dict):
@@ -1241,6 +1293,7 @@ class AgentRunner(Runner):
                                 "cause": original_error,
                                 "replanning": not ambiguous_write,
                                 "failure_classification": category,
+                                **({"discovery": self.discovery_context(observation)} if enumeration or research or use_directory else {}),
                                 "uncertain_submission": ambiguous_write,
                                 "trace": controller.observer.sanitize(controller.engine.trace.copy()),
                                 "traffic_kind": "automated",
@@ -1263,6 +1316,8 @@ class AgentRunner(Runner):
                     raise RuntimeError(str(exc)) from exc
                 consecutive_failures += 1
                 if consecutive_failures >= settings().agent_max_retries:
+                    if enumeration:
+                        raise RuntimeError("Insufficient qualifying source evidence after bounded discovery; inspect mapping diagnostics and failed actions") from exc
                     raise RuntimeError("Agent recovery budget exhausted; inspect failed steps") from exc
         raise RuntimeError("Agent step budget exhausted before verified completion")
 
@@ -1273,6 +1328,37 @@ class AgentRunner(Runner):
         observation["research_chunks"] = ranked_chunks(
             observation.get("research_chunks", []), self.objective, observation.get("title", ""), entities, criteria,
         )[:12]
+
+    def available_groups(self, observation):
+        from .structure import rejected_group
+
+        return [group for group in observation.get("record_groups", [])
+                if not rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", []))]
+
+    def remember_discovery(self, observation):
+        self.memory["discovery_frontier"] = update_frontier(
+            self.memory.get("discovery_frontier", {}), observation, self.objective, self.policy, self.discovery_exclusions()
+        )
+        previous = self.memory.get("discovery_group_signatures", [])
+        self.memory["discovery_group_signatures"] = list(dict.fromkeys(
+            [*previous, *sorted(relevant_group_signatures(observation, self.objective))]
+        ))[-100:]
+
+    def discovery_alternative(self, observation):
+        return frontier_candidate(self.memory.get("discovery_frontier", {}), observation, self.policy,
+                                  self.discovery_exclusions())
+
+    def discovery_context(self, observation):
+        return {
+            **observation.get("discovery", {}),
+            "unexplored_sources": list(self.memory.get("discovery_frontier", {}).values())[:5],
+            "unexplored_count": len(self.memory.get("discovery_frontier", {})),
+            "evidence_count": len(self.memory["evidence"]),
+            "search_attempts": len(self.memory.get("search_attempts", [])),
+            "instruction": "Assess record groups first. If automatic mapping is uncertain, map observed fields "
+                           "using CAPTURE_RECORDS or extract exact source text. If unsuitable, prefer site search "
+                           "or an unexplored source. A new URL is not qualifying evidence.",
+        }
 
     def discovery_exclusions(self):
         return {destination_key(url) for url in self.memory.get("visited_urls", [])} | set(
@@ -1292,9 +1378,11 @@ class AgentRunner(Runner):
         if capture:
             return None
         if structural_groups and not exhaustive_request(self.objective):
+            diagnostics = observation.setdefault("discovery", {})
             candidate = automatic_capture(
                 observation, structural_groups, self.objective,
                 rejected=self.memory.get("rejected_collection_scopes", []),
+                diagnostics=diagnostics,
                 max_rows=min(48, max(0, settings().agent_classification_max_calls -
                                       self.memory.get("enumeration_classification_calls", 0)) *
                              min(40, settings().agent_classification_batch_rows,
@@ -1324,7 +1412,12 @@ class AgentRunner(Runner):
                         capture={"group": group["id"], "fields": [{"name": "Name", "position": 1},
                                                                  {"name": "Description", "position": 2}], "identity": 1},
                     )
+        if structural_groups is not None and self.available_groups(observation):
+            observation.setdefault("discovery", {})["strategy"] = "model_assisted"
+            return None
         if structural_groups is not None and not self.options.get("allow_form_input"):
+            if self.memory.get("planning", {}).get("specification", {}).get("permissions", {}).get("read_search"):
+                return None
             catalog = navigation_candidate(
                 observation, self.objective, self.policy, excluded=self.discovery_exclusions(),
                 minimum=8, catalog_only=True,
@@ -1447,7 +1540,8 @@ class AgentRunner(Runner):
         if self.options["allow_form_input"] or self.options.get("visual_reasoning"):
             return {**observation, "elements": available, "record_groups": groups}
         return compact_page(observation, self.objective, elements=available, groups=groups,
-                            actions=self.memory.get("recent_actions", []), form_input=False)
+                            actions=self.memory.get("recent_actions", []), form_input=False,
+                            read_search=bool(self.memory.get("planning", {}).get("specification", {}).get("permissions", {}).get("read_search")))
 
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from .contracts import Decision
 from .routing import words, semantic_terms
 from .research import destination_key
-from .structure import RecordCapture, map_group, rejected_group
+from .structure import RecordCapture, group_signature, map_group, rejected_group
 
 _GENERIC = set("a an the list show find collect identify give provide please of for to and or all every best top ai software tool tools product products option options".split())
 _CATALOG = {"catalog", "catalogue", "directory", "marketplace", "listings", "categories", "browse", "library", "inventory"}
@@ -48,6 +48,23 @@ def source_score(objective, element):
     return score
 
 
+def source_eligible(objective, element, *, catalog_only=False):
+    name = element.get("name") or ""
+    path = urlsplit(element.get("href") or "").path
+    label = set(words(name))
+    path_words = set(words(path))
+    family = {"tool", "tools", "product", "products", "software", "app", "apps",
+              "application", "applications", "service", "services"}
+    generic_catalog = bool((label | path_words) & _CATALOG)
+    if catalog_only and (not generic_catalog or label & _EDITORIAL):
+        return False
+    if relevance(objective, name) or relevance(objective, path):
+        return True
+    # A broad product inventory is useful for narrower product queries, but
+    # unrelated libraries are not automatically relevant just because of type.
+    return generic_catalog and bool(set(words(objective)) & family) and bool(label & family) and not bool(label & _EDITORIAL)
+
+
 def observed_links(observation, objective, policy, *, excluded=(), catalog_only=False):
     if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
         return []
@@ -69,7 +86,7 @@ def observed_links(observation, objective, policy, *, excluded=(), catalog_only=
             continue
         if urlsplit(href).scheme not in {"http", "https"} or destination_key(href) in excluded:
             continue
-        if catalog_only and not (set(words(element.get("name") or "")) | set(words(urlsplit(href).path))) & _CATALOG:
+        if not source_eligible(objective, {**element, "href": href}, catalog_only=catalog_only):
             continue
         score = source_score(objective, {**element, "href": href})
         if score > 0 and score > candidates.get(destination_key(href), (0, ""))[0]:
@@ -91,7 +108,7 @@ def _field_label(segment):
     return " ".join(words(segment.get("label", "")))
 
 
-def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=48):
+def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=48, diagnostics=None):
     """Map explicit, coherent repeated identities, not arbitrary page headings.
 
     Validate against full observed rows, not their clipped summaries. Semantic
@@ -103,17 +120,30 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
         return None
     offered = {group["id"] for group in observation.get("record_groups", [])}
     choices = []
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics.update(record_groups=len(offered), candidate_rows=0, mapping_rejections={})
+    def reject(reason):
+        counts = diagnostics["mapping_rejections"]
+        counts[reason] = counts.get(reason, 0) + 1
     for group in groups.values():
-        if (group["id"] not in offered or group.get("kind") not in {"repeated", "row"}
-                or rejected_group(observation["url"], group, rejected)):
+        if group["id"] not in offered:
+            continue
+        if group.get("kind") not in {"repeated", "row", "semantic"} or rejected_group(observation["url"], group, rejected):
+            reject("unsupported_or_rejected_group")
             continue
         rows = group.get("records", [])
+        diagnostics["candidate_rows"] += len(rows)
         if not 2 <= len(rows) <= max_rows:
+            reject("row_count_outside_automatic_budget")
             continue
         example = rows[0].get("segments", [])[:12]
         identities = [index for index, segment in enumerate(example, 1)
                       if _field_label(segment) in _IDENTITY and not segment.get("truncated")]
+        if not identities and len(example) >= 2 and not _field_label(example[0]) and 0 < len(example[0].get("value", "")) <= 160:
+            if all(row.get("segments") and not _field_label(row["segments"][0]) for row in rows):
+                identities = [1]
         if len(identities) != 1:
+            reject("ambiguous_identity")
             continue
         identity = identities[0]
         descriptions = []
@@ -125,6 +155,9 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
                 continue
             label = _field_label(segment)
             descriptions.append((int(label in _DESCRIPTION), len(value), index))
+        if not descriptions:
+            reject("missing_description")
+        matched_mapping = False
         for _, _, position in sorted(descriptions, reverse=True):
             capture = RecordCapture(group=group["id"], identity=identity, fields=[
                 {"name": "Name", "position": identity}, {"name": "Description", "position": position},
@@ -156,12 +189,17 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
                 set(words(group.get("label", ""))) & (_CATALOG | {"tools", "products", "services"})
             )
             if not relevant and not heading_score and not generic_catalog:
+                reject("low_lexical_relevance")
                 continue
-            # Prefer relevance density over a large group with incidental matches.
-            choices.append((4 * heading_score + 6 * relevant / len(mapped), relevant, capture))
+            choices.append((4 * heading_score + 6 * relevant / len(mapped) - (0.5 if group.get("kind") == "semantic" else 0), relevant, capture))
+            matched_mapping = True
             break
+        if descriptions and not matched_mapping:
+            reject("no_confident_mapping")
     if not choices:
+        diagnostics["strategy"] = "model_assisted"
         return None
+    diagnostics["strategy"] = "automatic_capture"
     _, _, capture = max(choices, key=lambda choice: (choice[0], choice[1], -choice[2].group))
     return Decision(decision="CAPTURE_RECORDS", capture=capture,
                     observation="Observed repeated records with distinct names and descriptions",
@@ -243,6 +281,7 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
                 record_groups=[{**group, "examples": group.get("examples", [])[:2]} for group in ranked[:5]],
                 research_chunks=observation.get("research_chunks", [])[:4],
                 unchanged_scrolls=unchanged_scrolls(observation, actions),
+                discovery=observation.get("discovery", {}),
                 note="Record groups and text are observed candidates, not proof of membership. "
                      "Prefer capturing or classifying records to scrolling unchanged content.")
     return page
@@ -287,7 +326,8 @@ def search_query_allowed(objective, query):
 
 
 def search_attempt_key(element, query):
-    return (element.get("form") or {}).get("action", "") + "\n" + " ".join(words(query))
+    action = urlsplit((element.get("form") or {}).get("action", ""))
+    return action._replace(query="", fragment="").geturl() + "\n" + " ".join(words(query))
 
 
 def search_candidate(observation, objective, policy, attempts):
@@ -306,3 +346,38 @@ def search_candidate(observation, objective, policy, attempts):
                         reason="Search for the requested entities before exploring more pages",
                         confidence=0.85, expected_result="Relevant search results to inspect and qualify")
     return None
+
+
+def update_frontier(frontier, observation, objective, policy, excluded):
+    excluded = set(excluded) | {destination_key(observation["url"])}
+    candidates = {key: value for key, value in frontier.items() if key not in excluded}
+    for score, url in observed_links(observation, objective, policy, excluded=excluded):
+        key = destination_key(url)
+        if score > candidates.get(key, {}).get("score", 0):
+            candidates[key] = {"url": url, "score": score, "observed_on": observation["url"]}
+    return dict(sorted(candidates.items(), key=lambda item: (-item[1]["score"], item[0]))[:60])
+
+
+def frontier_candidate(frontier, observation, policy, excluded, *, minimum=5):
+    if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
+        return None
+    excluded = set(excluded) | {destination_key(observation["url"])}
+    for key, item in sorted(frontier.items(), key=lambda pair: (-pair[1]["score"], pair[0])):
+        if key in excluded or item["score"] < minimum:
+            continue
+        try:
+            url = policy.check(item["url"])
+        except ValueError:
+            continue
+        if destination_key(url) != key:
+            continue
+        return Decision(decision="NAVIGATE", url=url, observation="Previously observed authorized unexplored source",
+                        reason="Recover discovery using a ranked unexplored source", confidence=0.75,
+                        expected_result="Inspect fresh source for qualifying evidence")
+    return None
+
+
+def relevant_group_signatures(observation, objective):
+    return {group_signature(group) for group in observation.get("record_groups", [])
+            if relevance(objective, str(group.get("examples", [])))
+            and group.get("observed_count", 0) > 0}
