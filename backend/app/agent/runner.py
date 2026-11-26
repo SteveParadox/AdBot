@@ -146,7 +146,8 @@ class AgentRunner(Runner):
     async def ask_model(self, kind, payload, schema, observation=None, *, wait_for_provider=True, client=None):
         image = (
             settings().artifact_dir / observation["screenshot_path"]
-            if observation and self.options["visual_reasoning"]
+            if observation and observation.get("screenshot_path") and self.options["visual_reasoning"]
+            and settings().vision_available()
             else None
         )
         async def account_async(*args):
