@@ -212,6 +212,7 @@ export default function AgentPanel({
     [vision, setVision] = useState(false),
     [persist, setPersist] = useState(false);
   const [downloads, setDownloads] = useState(false);
+  const [readSearch, setReadSearch] = useState(true);
   const [priority, setPriority] = useState(0);
   const [dependency, setDependency] = useState("");
   const [dataset, setDataset] = useState("");
@@ -225,7 +226,7 @@ export default function AgentPanel({
   });
   const taskOptions = {
     objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
-    max_steps: maxSteps, allow_form_input: formInput,
+    max_steps: maxSteps, allow_form_input: formInput, allow_search_input: readSearch,
     allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
   };
   const config = useQuery({
@@ -289,6 +290,7 @@ export default function AgentPanel({
           visual_reasoning: vision,
           session_persistence: persist,
           allow_form_input: formInput,
+          allow_search_input: readSearch,
           allow_downloads: downloads,
           dataset_id: dataset || null,
           output_format: outputFormat || null,
@@ -464,7 +466,12 @@ export default function AgentPanel({
                 checked={formInput}
                 onChange={(e) => setFormInput(e.target.checked)}
               />
-              Allow form input and search
+              Allow general form input
+            </label>
+            <label>
+              <input type="checkbox" checked={readSearch} disabled={mode !== "autonomous"}
+                onChange={(e) => setReadSearch(e.target.checked)} />
+              Allow read-only site search in autonomous research tasks
             </label>
             <label>
               <input

@@ -204,16 +204,17 @@ def ranked_excerpt(objective, text, *, limit=1400):
     return "\n\n".join(chunk for _, chunk in sorted(selected))
 
 
-def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False):
+def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False, read_search=False):
     """Preserve exact IDs and small, relevant page excerpts for read-side decisions."""
     available = [element for element in elements if element.get("actionable")
                  and element.get("visible") is not False
                  and not element.get("blocked_by_modal") and not element.get("disabled")]
     if not form_input:
         available = [element for element in available
-                     if element.get("role") not in {"textbox", "searchbox", "combobox", "spinbutton", "checkbox",
-                                                    "radio", "switch", "option"} and not element.get("form")]
-    available.sort(key=lambda element: -source_score(objective, element))
+                     if (read_search and search_control(element)) or (
+                         element.get("role") not in {"textbox", "searchbox", "combobox", "spinbutton", "checkbox",
+                                                     "radio", "switch", "option"} and not element.get("form"))]
+    available.sort(key=lambda element: (not (read_search and search_control(element)), -source_score(objective, element)))
     fields = {"element_id", "role", "name", "href", "tag", "type", "actionable", "visible",
               "disabled", "readonly", "form", "focused", "context", "expanded", "selected", "blocked_by_modal"}
     concise = []
@@ -255,3 +256,53 @@ def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=N
     available = remaining - final
     fallback = min(fallback_reserve, maximum // 3, available // 3) if primary and not handoff else 0
     return max(0, available - fallback), fallback, final
+
+
+_READ_INTENTS = {"structured_extraction", "research", "comparison", "search"}
+_NO_SEARCH = re.compile(r"\b(?:do not|must not|never|without|no|don['’]t)\s+(?:use\s+(?:the\s+)?)?(?:search(?:ing|\s+bar)?|forms?|form input|enter(?:ing)?\s+(?:text|data)|submit(?:ting)?)\b", re.I)
+
+
+def read_search_permission(objective, options, intent):
+    return (options.get("mode") == "autonomous" and options.get("allow_search_input") is True
+            and intent in _READ_INTENTS and not _NO_SEARCH.search(objective))
+
+
+def search_control(element):
+    form = element.get("form") or {}
+    return bool(element.get("actionable") and element.get("visible") is not False
+                and not any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))
+                and element.get("tag") == "input" and element.get("type") in {"search", "text"}
+                and element.get("role") in {"searchbox", "textbox"}
+                and form.get("search") and form.get("method") == "GET" and form.get("action"))
+
+
+def objective_query(objective):
+    query = re.sub(r"^\s*(?:please\s+)?(?:list|find|search(?:\s+for)?|look\s+up|show(?:\s+me)?|identify|recommend)\s+(?:all\s+)?", "", objective, flags=re.I)
+    return " ".join(query.split())[:200].strip(" .?!,")
+
+
+def search_query_allowed(objective, query):
+    return bool(query and 0 < len(query) <= 200 and words(query)
+                and set(words(query)) <= set(words(objective)))
+
+
+def search_attempt_key(element, query):
+    return (element.get("form") or {}).get("action", "") + "\n" + " ".join(words(query))
+
+
+def search_candidate(observation, objective, policy, attempts):
+    query = objective_query(objective)
+    if not search_query_allowed(objective, query) or any(d.get("visible") for d in observation.get("dialogs", [])):
+        return None
+    for element in observation.get("elements", []):
+        if not search_control(element) or search_attempt_key(element, query) in attempts:
+            continue
+        try:
+            policy.check(element["form"]["action"])
+        except ValueError:
+            continue
+        return Decision(decision="SEARCH", target={"element_id": element["element_id"]}, text=query,
+                        observation="An authorized GET search field is visible",
+                        reason="Search for the requested entities before exploring more pages",
+                        confidence=0.85, expected_result="Relevant search results to inspect and qualify")
+    return None

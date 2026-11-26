@@ -220,7 +220,14 @@ class Controller:
                     raise ValueError("Read-only selection controls cannot be changed")
             if action in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}:
                 if not options["allow_form_input"]:
-                    raise ValueError("Enable form input when creating the task")
+                    from .discovery import search_control, search_query_allowed
+
+                    if not (read_only and action == "SEARCH" and options.get("allow_read_search")
+                            and search_control(element) and search_query_allowed(self.runner.objective, decision.text)):
+                        raise ValueError("Enable form input when creating the task")
+                    live_metadata = await locator.evaluate(METADATA, timeout=self.engine.timeout_ms)
+                    if not search_control(live_metadata):
+                        raise ValueError("Search form changed before input; reobserve")
                 if element["type"] in {"password", "file"} or any(
                     x in element["name"].lower() for x in ("password", "credit card", "api key", "secret")
                 ):

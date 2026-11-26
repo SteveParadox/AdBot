@@ -415,7 +415,11 @@ class ModelClient:
                 "A category heading, keyword match or article mentioning an entity does not establish membership. "
                 "CAPTURE_RECORDS must map observed fields and unique identities; classify by own purpose, not a related topic. "
                 "Choose new authorized links when repeated scrolling adds no information. Do not repeat unchanged observations. "
-                "Form input is disabled: never choose TYPE, SEARCH, SET_CHECKED or SELECT_OPTION; request permission if necessary. "
+                "General form input is disabled: never choose TYPE, SET_CHECKED or SELECT_OPTION. "
+                "If read_search_enabled is true, SEARCH is allowed only for an observed GET search input using objective words. "
+                "Otherwise do not choose SEARCH. Assess observed record groups before navigation; "
+                "use model-assisted CAPTURE_RECORDS or exact EXTRACT for unstructured evidence. "
+                "If no suitable group exists, prefer site search and unexplored sources. "
                 "Respect modal, disabled and readonly states. Do not download or submit unless explicitly authorized. "
                 "Complete only after required evidence, coverage and artifact phases are satisfied. "
                 "Cite exact stored evidence IDs for each claim; repair any verification feedback. "
@@ -542,7 +546,9 @@ class ModelClient:
                             "CLICK requires target={element_id: an observed control ID}."
                         )
                         if payload.get("form_input_enabled") is False:
-                            hint += " Form input is disabled: do not TYPE or SEARCH. Use relevant observed links, or ASK_USER with text requesting form-input permission if searching is necessary."
+                            hint += (" General form input is disabled. SEARCH is allowed only on an observed GET search field using objective words."
+                                     if payload.get("read_search_enabled") else
+                                     " Form input is disabled: do not TYPE or SEARCH. Use relevant observed links or ASK_USER.")
                         recent = payload.get("session_memory", {}).get("recent_actions", [])
                         if (
                             recent

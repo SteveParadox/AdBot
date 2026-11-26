@@ -154,6 +154,7 @@ class TaskInput(Strict):
     visual_reasoning: bool = False
     session_persistence: bool = False
     allow_form_input: bool = False
+    allow_search_input: bool = True
     allow_downloads: bool = False
     dataset_id: str | None = Field(None, max_length=36)
     output_format: Literal["answer", "json", "csv"] | None = None

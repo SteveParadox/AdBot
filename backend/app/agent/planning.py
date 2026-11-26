@@ -157,15 +157,19 @@ def specification(objective, criteria, options, domains):
                 "quote": objective[:500],
             }
         )
+    from .discovery import read_search_permission
+
+    intent = execution_intent(objective)
     return {
         "objective": objective,
-        "execution_intent": execution_intent(objective),
+        "execution_intent": intent,
         "instruction_clauses": clauses[:32],
         "constraints": constraints[:32],
         "success_criteria": list(criteria),
         "allowed_domains": list(domains),
         "permissions": {
             "form_input": bool(options.get("allow_form_input")),
+            "read_search": read_search_permission(objective, options, intent["category"]),
             "downloads": bool(options.get("allow_downloads")),
         },
         "output_format": requested,
@@ -180,7 +184,8 @@ def specification(objective, criteria, options, domains):
                     options.get("allow_form_input"),
                     options.get("allow_downloads"),
                     requested,
-                ] + ([options["dataset_query"]] if options.get("dataset_query") is not None else []),
+                ] + ([options["dataset_query"]] if options.get("dataset_query") is not None else [])
+                + ([options["allow_search_input"], options.get("mode")] if "allow_search_input" in options else []),
                 sort_keys=True,
             ).encode()
         ).hexdigest(),
@@ -410,7 +415,11 @@ def guard(state, decision, observation):
         decision.decision in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}
         and not state["specification"]["permissions"]["form_input"]
     ):
-        raise PermissionError("Task does not authorize form input")
+        from .discovery import search_control, search_query_allowed
+
+        if not (decision.decision == "SEARCH" and state["specification"]["permissions"].get("read_search")
+                and search_control(target) and search_query_allowed(state["specification"]["objective"], decision.text)):
+            raise PermissionError("Task does not authorize form input")
     if decision.decision == "DOWNLOAD" and not state["specification"]["permissions"]["downloads"]:
         raise PermissionError("Task does not authorize downloads")
     if active:
