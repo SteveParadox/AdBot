@@ -44,7 +44,8 @@ def test_non_exhaustive_mapping_keeps_independently_valid_rows():
     assert map_group(group, capture, preserve_context=True) == {
         "Harbor": ({"Label": "Harbor"}, ["Harbor", "Compares supplier license terms."]),
     }
-    with pytest.raises(ValueError, match="Required fields"):
+    assert map_group({"records": group["records"][:1]}, capture) == {"Harbor": {"Label": "Harbor"}}
+    with pytest.raises(ValueError, match="selected field was clipped"):
         map_group(group, capture)
 
 

@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+import re
 from asyncio import Lock
 from dataclasses import asdict
 from urllib.parse import urlsplit
@@ -240,15 +241,69 @@ class AgentRunner(Runner):
             raise ValueError("Page changed while awaiting review; replanning required")
         return True
 
-    def extract(self, decision, observation, step_id):
-        quote = decision.text.strip()
-        if quote not in observation["text"] and quote not in observation["viewport_text"]:
-            raise ValueError("Evidence must be an exact quote from the current observation")
+    async def extract(self, decision, observation, step_id):
+        text = decision.text.strip()
+        requested = (decision.source_quote or text).strip()
+        if not requested:
+            raise ValueError("Provide source text for the evidence")
+        formatted = re.compile(r"\s+".join(re.escape(word) for word in requested.split()), re.IGNORECASE)
+        query = {word[:6] for word in terms(text) if len(word) > 2}
+        best = (0.0, None)
+
+        def match(source, identifier):
+            nonlocal best
+            if not source.get("url", "").startswith(("http://", "https://")):
+                return None
+            candidates = [source.get("text", ""), source.get("viewport_text", ""), source.get("quote", "")]
+            candidates.extend(chunk["quote"] for chunk in source.get("research_chunks", []))
+            for value in candidates:
+                if requested in (value or ""):
+                    return source["url"], identifier, requested
+                if not value:
+                    continue
+                if hit := formatted.search(value):
+                    return source["url"], identifier, hit.group()
+                if decision.source_quote or len(query) < 2:
+                    continue
+                for excerpt in re.split(r"(?<=[.!?])\s+|(?:\r?\n){2,}", value):
+                    excerpt = excerpt.strip()[:700]
+                    overlap = query & {word[:6] for word in terms(excerpt)}
+                    score = len(overlap) / len(query)
+                    if len(overlap) >= 2 and score >= 0.4 and score > best[0]:
+                        best = score, (source["url"], identifier, excerpt)
+            return None
+
+        found = match(observation, step_id)
+        if not found:
+            found = next((hit for item in reversed(self.memory["evidence"])
+                          if (hit := match(item, item["step_id"]))), None)
+        if not found:
+            def historical_source():
+                with transaction() as session:
+                    owned_job(session, self.id, self.token)
+                    rows = session.execute(
+                        select(AgentStep.id, AgentStep.observation).where(AgentStep.job_id == self.id, AgentStep.id != step_id)
+                        .order_by(AgentStep.number.desc()).execution_options(yield_per=10)
+                    )
+                    for identifier, earlier in rows:
+                        if hit := match(earlier or {}, identifier):
+                            return hit
+                return None
+            found = await database_call(historical_source)
+        found = found or best[1]
+        if not found:
+            raise ValueError("Source text was not found in this task's authorized observations")
+        url, source_step_id, quote = found
+        existing = next((e for e in self.memory["evidence"] if e["url"] == url and e["quote"] == quote), None)
+        if existing and text != quote:
+            return {**existing, "summary": text}
+        if existing:
+            raise ValueError("This source is already collected. Cite the existing evidence ID in a claim.")
         if len(self.memory["evidence"]) >= 40:
             raise ValueError("Evidence budget exhausted")
-        if any(e["url"] == observation["url"] and e["quote"] == quote for e in self.memory["evidence"]):
-            raise ValueError("This quote was already collected; choose new evidence")
-        item = {"id": f"evidence-{step_id}", "url": observation["url"], "quote": quote[:4000], "step_id": step_id}
+        item = {"id": f"evidence-{step_id}", "url": url, "quote": quote, "step_id": source_step_id}
+        if text != quote:
+            item["summary"] = text
         self.memory["evidence"].append(item)
         return item
 
@@ -877,7 +932,7 @@ class AgentRunner(Runner):
                         raise ValueError("The observed source type conflicts with the requested collection")
                     outcome = self.capture_records(decision, observation, controller, step_id)
                 elif decision.decision == "EXTRACT":
-                    outcome = self.extract(decision, observation, step_id)
+                    outcome = await self.extract(decision, observation, step_id)
                 elif decision.decision == "SUMMARIZE":
                     available = {e["id"] for e in self.memory["evidence"]}
                     if not decision.claims or any(k not in available for c in decision.claims for k in c.evidence_ids):

@@ -28,6 +28,7 @@ def action_key(decision):
                     "decision",
                     "target",
                     "text",
+                    "source_quote",
                     "url",
                     "direction",
                     "tab_id",
