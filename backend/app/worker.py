@@ -195,7 +195,9 @@ async def _execute(job_id, token):
                         task = session.get(AgentTask, job_id)
                         directory = task.memory.get("directory", {})
                         captured = task.memory.get("structured_capture")
-                        if captured:
+                        if task.memory.get("research_partial"):
+                            task.result = task.memory["research_partial"]
+                        elif captured and (task.memory.get("execution_route") or {}).get("name") != "enumeration":
                             task.result = {
                                 "strategy": "structured_discovery", "partial": True, "claims": [],
                                 "structured_records": list(captured["records"].values()),

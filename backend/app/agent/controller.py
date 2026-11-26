@@ -64,7 +64,7 @@ class Controller:
         if not self.creating:
             asyncio.create_task(page.close())
 
-    async def observe(self, *, directory=False, structure=False):
+    async def observe(self, *, directory=False, structure=False, research=False):
         self.check_page()
         self.prune_tabs()
         planning = self.memory.get("planning", {})
@@ -74,8 +74,12 @@ class Controller:
         data = await self.observer.observe(
             self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", ""),
             **({"directory": directory} if directory else {}),
-            **({"structure": True} if structure else {}),
+            **({"structure": structure} if structure else {}),
+            **({"research": True} if research else {}),
         )
+        if research or structure == "enumeration":
+            response = self.runner.response_for(self.page)
+            data["http_status"] = response.status if response and response.url == data["url"] else None
         data["tabs"] = [
             {"tab_id": key, "url": tab["page"].url, "purpose": tab["purpose"]} for key, tab in self.tabs.items()
         ]
