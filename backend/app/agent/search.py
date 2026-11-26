@@ -4,6 +4,7 @@ A site owner's attestation is required for POST; HTTP method, names and page
 markup cannot establish absence of side effects. Never infer a POST permit.
 """
 import json
+import re
 from urllib.parse import parse_qsl, urlsplit
 from typing import Literal
 
@@ -17,6 +18,13 @@ class ApprovedPostSearch(Strict):
     url: str = Field(min_length=8, max_length=1800)
     query_field: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
     verified_read_only: Literal[True]
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_attestation(cls, value):
+        if isinstance(value, dict) and value.get("verified_read_only") is not True:
+            raise ValueError("Explicit boolean read-only attestation is required")
+        return value
 
     @model_validator(mode="after")
     def validate_endpoint(self):
@@ -50,11 +58,13 @@ def validate_post_endpoints(endpoints, policy):
 
 def approved_post_payload(url, content_type, body, query, endpoints):
     endpoint = matching_post_endpoint(url, endpoints)
-    if not endpoint or not isinstance(body, str) or len(body.encode()) > 4096:
+    if not endpoint or not isinstance(body, str) or not isinstance(content_type, str):
         return False
     field = endpoint["query_field"]
     mime = content_type.split(";", 1)[0].strip().lower()
     try:
+        if len(body.encode("utf-8")) > 4096:
+            return False
         if mime == "application/json":
             # Keep duplicate keys visible, and distinguish objects from arrays.
             class ObjectPairs(list):
@@ -63,7 +73,10 @@ def approved_post_payload(url, content_type, body, query, endpoints):
             if not isinstance(pairs, ObjectPairs):
                 return False
         elif mime == "application/x-www-form-urlencoded":
-            pairs = parse_qsl(body, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+            if re.search(r"%(?![0-9a-fA-F]{2})", body):
+                return False
+            pairs = parse_qsl(body, keep_blank_values=True, strict_parsing=True, max_num_fields=2,
+                              encoding="utf-8", errors="strict")
         else:
             return False
     except (ValueError, TypeError, UnicodeError):
@@ -73,13 +86,10 @@ def approved_post_payload(url, content_type, body, query, endpoints):
 
 def search_interface(element, endpoints=()):
     """Return a candidate kind, never permission to send arbitrary requests."""
-    import re
-
     if (not element.get("actionable") or element.get("visible") is False
-            or any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))
+            or any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal", "ambiguous"))
             or re.search(r"\b(password|passcode|pin|login|sign[ -]?in|register|credit card|payment|secret|token|email)\b",
                          " ".join(str(element.get(k) or "") for k in ("name", "placeholder")), re.I)):
-
         return None
     tag, role, kind = element.get("tag"), element.get("role"), element.get("type")
     hints = element.get("search_interface") or {}
@@ -154,13 +164,15 @@ SAFE_FORM = r"""e => {
 
 SEARCH_STATE = r"""() => {
  const scope=document.querySelector('main,[role=main]')||document.body;
+ // A search landmark may also contain the result list. Ignore actual
+ // input/chrome, not the whole landmark or form.
  const parts=[];
  const walker=document.createTreeWalker(scope,NodeFilter.SHOW_TEXT);
  let n,count=0,length=0;
  while((n=walker.nextNode())&&count++<2500&&length<18000){
    const e=n.parentElement;
    if(!e||!e.getClientRects().length||getComputedStyle(e).visibility!=='visible'||
-      e.closest('script,style,template,[hidden],[aria-hidden=true],form,search,[role=search],[role=listbox],[role=menu],[role=status],[role=progressbar],[contenteditable=true]')) continue;
+      e.closest('script,style,template,[hidden],[inert],[aria-hidden=true],input,textarea,button,label,[role=button],[role=listbox],[role=menu],[role=status],[role=progressbar],[contenteditable=true]')) continue;
    const text=n.textContent.trim();
    if(text){parts.push(text);length+=text.length;}
  }
@@ -187,6 +199,27 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
     live = await target.evaluate(METADATA)
     if search_interface(live, endpoints) != kind or live.get("form") != element.get("form"):
         raise ValueError("Search control changed since observation")
+    initial_form = live.get("form") or {}
+    initial_destination = (initial_form.get("method"), initial_form.get("action"))
+
+    async def validate_input(*, filled=False):
+        if not await target.evaluate("e=>e.isConnected"):
+            raise ValueError("Search control detached; reobserve")
+        current = await target.evaluate(METADATA)
+        form = current.get("form") or {}
+        if (search_interface(current, endpoints) != kind
+                or (form.get("method"), form.get("action")) != initial_destination
+                or not await target.evaluate(SAFE_FORM)):
+            raise ValueError("Search control or form changed; reobserve")
+        if filled and not await target.evaluate(
+            "(e,q)=>(e.isContentEditable?e.textContent:e.value)===q", query
+        ):
+            raise ValueError("Search input no longer contains the intended query; reobserve")
+        if kind == "approved_post" and await target.evaluate("e=>e.name||''") != matching_post_endpoint(
+            form["action"], endpoints
+        )["query_field"]:
+            raise ValueError("Native POST search parameter changed; reobserve")
+        return current
     if not await target.evaluate(SAFE_FORM):
         raise ValueError("Search form contains unrelated fields or ambiguous submission controls")
     if live.get("form"):
@@ -207,6 +240,11 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
 
     def on_request(request):
         if request.resource_type in {"xhr", "fetch", "document"}:
+            try:
+                if request.frame != page.main_frame:
+                    return
+            except BrowserError:
+                return
             pending.add(request)
             network["requests"] += 1
 
@@ -251,7 +289,8 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
         return latest or before, choices
 
     async def click_scoped(script, arg=None):
-        if not await target.evaluate("e=>e.isConnected"):
+        await validate_input(filled=True)
+        if time.monotonic() >= scope["until"]:
             return False
         handle = await target.evaluate_handle(script, arg) if arg is not None else await target.evaluate_handle(script)
         try:
@@ -267,12 +306,24 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
             form = metadata.get("form")
             if form and (not live.get("form") or any(form[k] != live["form"][k] for k in ("action", "method"))):
                 return False
-            if not await target.evaluate(SAFE_FORM):
-                return False
-            if not await control.evaluate("e=>e.isConnected") or not await target.evaluate("e=>e.isConnected"):
-                return False
-            await control.click(timeout=engine.timeout_ms)
-            return True
+            await validate_input(filled=True)
+            # An asynchronous policy check must not authorize a replaced or
+            # relabelled suggestion/button. Resolve the same unique control again.
+            fresh = await target.evaluate_handle(script, arg) if arg is not None else await target.evaluate_handle(script)
+            try:
+                if fresh.as_element() is None or not await control.evaluate(
+                    "(e,other)=>e.isConnected&&e===other", fresh
+                ):
+                    return False
+                latest = await control.evaluate(METADATA)
+                if any(latest.get(k) != metadata.get(k) for k in ("href", "role", "form", "name", "actionable", "sensitive", "blocked_by_modal")):
+                    return False
+                if time.monotonic() >= scope["until"]:
+                    return False
+                await control.click(timeout=min(engine.timeout_ms, max(1, int((scope["until"]-time.monotonic())*1000))))
+                return True
+            finally:
+                await fresh.dispose()
         finally:
             await handle.dispose()
 
@@ -287,6 +338,9 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
     try:
         with engine.phase("search", interface=kind):
             await engine.actionable(locator)
+            await validate_input()
+            if time.monotonic() >= scope["until"]:
+                raise ValueError("Search time budget expired before input")
             engine.dispatch_started = True
             if decision.input_method == "keyboard":
                 await target.fill("")
@@ -297,49 +351,51 @@ async def execute_scoped_search(controller, decision, locator, element, binding,
             else:
                 await target.fill(query, timeout=engine.timeout_ms)
             after, choices = await settle(before, 1.8, inspect_suggestions=True)
+            # A debounced search may be busy without any currently pending
+            # fetch. Do not submit again while the first action is settling.
+            if pending or after["busy"]:
+                after, choices = await settle(before, 3.0, inspect_suggestions=True)
             changed = after["url"] != before["url"] or after["text"] != before["text"]
             if after["url"] != before["url"]:
                 strategy = "live_navigation"
+            elif pending or after["busy"]:
+                strategy = "pending_results"
+            elif changed and (kind.startswith("scripted") or network["finished"]):
+                strategy = "live_results"
             elif choices:
                 if await click_scoped(SUGGESTION_TARGET, query):
                     strategy = "exact_suggestion"
-                    after, _ = await settle(before, 3.0)
+                    after, choices = await settle(before, 3.0, inspect_suggestions=True)
                 else:
                     strategy = "suggestions_observed"
-            elif changed and (kind.startswith("scripted") or network["finished"]):
-                strategy = "live_results"
-            elif pending:
-                strategy = "pending_results"
-                after, choices = await settle(before, 3.0, inspect_suggestions=True)
-                if choices and after["url"] == before["url"] and await click_scoped(SUGGESTION_TARGET, query):
-                    strategy = "exact_suggestion"
-                    after, choices = await settle(before, 2.0, inspect_suggestions=True)
-            elif time.monotonic() < scope["until"] and await target.evaluate("e=>e.isConnected"):
-                current = await target.evaluate(METADATA)
-                if search_interface(current, endpoints) != kind or not await target.evaluate(SAFE_FORM):
-                    raise ValueError("Search control changed before submission")
+            elif time.monotonic() < scope["until"]:
+                current = await validate_input(filled=True)
                 if current.get("form"):
-                    if current["form"]["action"] != live["form"]["action"] or current["form"]["method"] != live["form"]["method"]:
-                        raise ValueError("Search form destination changed before submission")
                     await controller.runner.permitted(current["form"]["action"])
+                await validate_input(filled=True)
                 if kind.startswith("scripted") and await click_scoped(SEARCH_BUTTON):
                     strategy = "search_button"
-                else:
-                    # Revalidate the bound input after any asynchronous wait.
-                    if not await target.evaluate("e=>e.isConnected") or not await target.evaluate(SAFE_FORM):
-                        raise ValueError("Search control detached or form changed before submission")
-                    await target.press("Enter", timeout=engine.timeout_ms)
-                    strategy = "enter"
+                elif time.monotonic() < scope["until"]:
+                    # Never let Enter implicitly pick an unrelated active option.
+                    if await suggestions() or current.get("active_descendant"):
+                        strategy = "suggestions_observed"
+                    else:
+                        await target.press("Enter", timeout=min(engine.timeout_ms, max(1, int((scope["until"]-time.monotonic())*1000))))
+                        strategy = "enter"
                 after, choices = await settle(before, 3.0, inspect_suggestions=True)
             final = await read_state() or after
             content_changed = final["url"] != before["url"] or final["text"] != before["text"]
+            # A spinner, selection, URL change or response is only a progress
+            # signal. A busy/unfinished response is not yet settled.
+            settled = not pending and not final["busy"]
             return {"interaction": {"changed": content_changed or bool(choices),
                                     "content_changed": content_changed,
-                                    "verified": content_changed,
-                                    "verification": "Observed search content change, not evidence of task completion",
+                                    "verified": content_changed and settled,
+                                    "verification": "Observed settled search content change, not evidence of task completion",
                                     "search": {"interface": kind, "strategy": strategy,
                                                "suggestions": choices[:12], "requests": network["requests"],
                                                "responses": network["finished"], "pending": len(pending),
+                                               "settled": settled,
                                                "approved_posts": scope["approved"], "blocked_posts": scope["blocked"]}}}
     finally:
         page.remove_listener("request", on_request)

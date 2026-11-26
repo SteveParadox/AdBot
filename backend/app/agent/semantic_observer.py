@@ -357,6 +357,8 @@ class Observer:
         current = await handle.evaluate(METADATA)
         role, name, _ = native_semantics(await locator.aria_snapshot(timeout=1500), current)
         keys = ("disabled", "readonly", "href", "form", "expanded", "checked", "selected", "value", "blocked_by_modal")
+        if decision.decision == "SEARCH":
+            keys = (*keys, "search_interface", "controls", "active_descendant")
         if role != element["role"] or name != element["name"] or any(current[k] != element[k] for k in keys):
             raise ValueError("Target changed since observation; reobserve")
         if not current["actionable"]:

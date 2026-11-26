@@ -25,7 +25,7 @@ from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, Mode
 from .structure import add_capture, classification_request
 from .discovery import (
     MAX_SEARCH_ATTEMPTS, automatic_capture, compact_page, frontier_candidate, navigation_candidate, relevant_group_signatures,
-    search_attempt_key, search_candidate, task_token_allowance, unchanged_scrolls, update_frontier,
+    search_attempt_key, search_candidate, search_control, search_query_allowed, task_token_allowance, unchanged_scrolls, update_frontier,
 )
 from .research import (
     capture_evidence, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
@@ -854,6 +854,7 @@ class AgentRunner(Runner):
                 await self.save_research_observation(observation, step_id, controller)
             decision = None
             deterministic = False
+            scoped_search = False
             semantic_key = None
             prevented = False
             rejected_source = False
@@ -1034,8 +1035,11 @@ class AgentRunner(Runner):
                     # action remains useful when a model echoes a completed phase.
                     decision.subtask_id = None
                 guard(self.memory["planning"], decision, observation)
-                if read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"]:
-                    element = next(e for e in observation["elements"] if e["element_id"] == decision.target.element_id)
+                if read_search and decision.decision == "SEARCH":
+                    element = next((e for e in observation["elements"] if e["element_id"] == decision.target.element_id), {})
+                    scoped_search = (search_control(element, approved_posts)
+                                     and search_query_allowed(self.objective, decision.text))
+                if scoped_search:
                     attempt = search_attempt_key(element, decision.text, observation["url"])
                     attempts = self.memory.setdefault("search_attempts", [])
                     if attempt in attempts:
@@ -1108,7 +1112,7 @@ class AgentRunner(Runner):
                             for element in observation.get("elements", [])
                         )
                     )
-                    if read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"]:
+                    if scoped_search:
                         outcome = await controller.act(decision, {**self.options, "allow_read_search": True,
                                                                   "approved_post_search": approved_posts},
                                                        approved, read_only=True)
@@ -1271,7 +1275,7 @@ class AgentRunner(Runner):
                     controller.engine.dispatch_started
                     and decision
                     and decision.decision in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
-                    and not (read_search and decision.decision == "SEARCH" and not self.options["allow_form_input"])
+                    and not scoped_search
                 )
                 original_error = controller.observer.safe_text(str(exc))[:500]
                 if ambiguous_write:

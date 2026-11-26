@@ -151,6 +151,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 "role",
                 "name",
                 "description",
+                "placeholder",
                 "type",
                 "tag",
                 "href",

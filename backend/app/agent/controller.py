@@ -118,6 +118,7 @@ class Controller:
 
     async def route(self, route):
         request = route.request
+        issued_grant = None
         try:
             self.runner.policy.check(request.url, navigation=request.is_navigation_request())
             if request.method not in {"GET", "HEAD"}:
@@ -133,9 +134,15 @@ class Controller:
                         scope["blocked"] += 1
                         raise PolicyError("Request is outside the approved search-only POST scope")
                     self.runner.policy.check(request.url)
+                    if request.is_navigation_request():
+                        await self.runner.permitted(request.url)
+                    if (self.search_scope is not scope or time.monotonic() >= scope["until"]
+                            or scope["remaining"] <= 0 or self.egress_grant is not None):
+                        raise PolicyError("Search request authorization expired or was consumed")
                     scope["remaining"] -= 1
                     scope["approved"] += 1
-                    self.egress_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
+                    issued_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
+                    self.egress_grant = issued_grant
                 else:
                     permit = self.mutation
                     actual = urlsplit(request.url)
@@ -151,10 +158,12 @@ class Controller:
                         raise PolicyError("This request requires an active click submission")
                     self.egress_grant = (request.method, request.url, time.monotonic() + 5)
                     self.mutation = None
-            if request.is_navigation_request():
+            if request.is_navigation_request() and issued_grant is None:
                 await self.runner.permitted(request.url)
             await route.continue_()
         except Exception:
+            if issued_grant is not None and self.egress_grant is issued_grant:
+                self.egress_grant = None
             await route.abort("blockedbyclient")
 
     def allow_proxy_method(self, method, url):
