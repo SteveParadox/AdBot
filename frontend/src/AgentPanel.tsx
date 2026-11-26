@@ -531,12 +531,16 @@ export default function AgentPanel({
   );
 }
 
-export function AgentThinking({ status }: { status: string }) {
-  if (status !== "running") return null;
+export function AgentTaskActivity({ status }: { status?: Job["status"] }) {
+  const label = status === undefined ? "Loading agent task…" : status === "running" ? "Thinking…" : null;
   return (
-    <p role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <LoaderCircle size={16} className="spin" aria-hidden="true" />
-      Thinking…
+    <p className="agent-task-activity" role="status">
+      {label && (
+        <>
+          <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          <span>{label}</span>
+        </>
+      )}
     </p>
   );
 }
@@ -604,14 +608,9 @@ function AgentDetail({
         {task.error.message}
       </p>
     );
-  if (!task.data) return <p role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" /> Loading agent task…</p>;
   const t = task.data;
-  return (
+  const details = t && (
     <>
-      <Button variant="ghost" onClick={back}>
-        <ArrowLeft size={15} />
-        All agent tasks
-      </Button>
       <section className="panel form-panel">
         <div className="panel-heading">
           <div>
@@ -660,7 +659,6 @@ function AgentDetail({
           </span>
           {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
         </div>
-        <AgentThinking status={t.status} />
         {t.execution && t.execution.strategy !== "general" && (
           <p className="hint">Strategy {t.execution.strategy.replaceAll("_", " ")}</p>
         )}
@@ -871,6 +869,17 @@ function AgentDetail({
           </pre>
         </details>
       </section>
+    </>
+  );
+
+  return (
+    <>
+      <Button variant="ghost" onClick={back}>
+        <ArrowLeft size={15} />
+        All agent tasks
+      </Button>
+      <AgentTaskActivity status={t?.status} />
+      {details}
     </>
   );
 }

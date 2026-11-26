@@ -1,16 +1,23 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AgentThinking } from "./AgentPanel";
+import { AgentTaskActivity } from "./AgentPanel";
 
-describe("AgentThinking", () => {
-  it("shows an accessible animated indicator while running", () => {
-    const html = renderToStaticMarkup(<AgentThinking status="running" />);
-    expect(html).toContain("Thinking…");
+describe("AgentTaskActivity", () => {
+  it.each([
+    [undefined, "Loading agent task…"],
+    ["running", "Thinking…"],
+  ])("renders the activity for %s with a decorative spinner", (status, label) => {
+    const html = renderToStaticMarkup(<AgentTaskActivity status={status} />);
+    expect(html).toContain(label);
     expect(html).toContain('role="status"');
-    expect(html).toContain('class="lucide lucide-loader-circle spin"');
+    expect(html).toMatch(/<svg[^>]*class="[^"]*\bspin\b[^"]*"[^>]*aria-hidden="true"/);
   });
 
-  it.each(["queued", "paused", "completed", "failed", "cancelled", "waiting_for_review"])("hides for %s", (status) => {
-    expect(renderToStaticMarkup(<AgentThinking status={status} />)).toBe("");
-  });
+  it.each(["queued", "paused", "waiting_user", "completed", "failed", "cancelled"])(
+    "keeps the status region empty for %s",
+    (status) => {
+      const html = renderToStaticMarkup(<AgentTaskActivity status={status} />);
+      expect(html).toMatch(/<p[^>]*role="status"><\/p>/);
+    },
+  );
 });
