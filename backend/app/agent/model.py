@@ -510,6 +510,10 @@ class ModelClient:
                 endpoint = base.rstrip("/") + "/chat/completions"
                 provider_body = {**body, "model": model}
                 provider_name = provider_names[provider_index]
+                if image_path and not cfg.supports_vision(provider_name, model, native=native):
+                    # Fallback providers may be text-only; do not forward screenshots to them.
+                    provider_body["messages"] = [{"role": "system", "content": system},
+                                                 {"role": "user", "content": request_text}]
                 strict_output = (
                     provider_name in {"groq", "groq_secondary", "openrouter"} and "/gpt-oss-" in model
                 ) or (provider_name == "nvidia" and model.startswith("nvidia/nemotron-3.5-lightning-"))
@@ -521,9 +525,9 @@ class ModelClient:
                     provider_body["chat_template_kwargs"] = {"enable_thinking": cfg.nvidia_thinking_enabled}
                 if not native and "/gpt-oss-" in model:
                     if provider_names[provider_index] == "openrouter":
-                        provider_body["reasoning"] = {"effort": cfg.ai_reasoning_effort}
+                        provider_body["reasoning"] = {"effort": cfg.reasoning_effort_for(kind)}
                     else:
-                        provider_body["reasoning_effort"] = cfg.ai_reasoning_effort
+                        provider_body["reasoning_effort"] = cfg.reasoning_effort_for(kind)
                 if native:
                     origin = urlsplit(base)
                     endpoint = f"{origin.scheme}://{origin.netloc}/api/chat"
