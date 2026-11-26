@@ -111,7 +111,8 @@ async def test_listing_rejects_a_misleading_source_and_publishes_qualified_recor
                     classification, evidence = "match", excerpts.index("SideNote") + 1
                 else:
                     classification = "match" if any("purchase supplier" in excerpt for excerpt in excerpts) else "excluded"
-                    evidence = 1
+                    evidence = next((i for i, excerpt in enumerate(excerpts, 1)
+                                     if "purchase supplier" in excerpt), 1)
                 records.append({"id": row["id"], "classification": classification, "evidence": evidence})
             return AssessmentBatch(records=records)
         if kind == "verify":
@@ -128,7 +129,7 @@ async def test_listing_rejects_a_misleading_source_and_publishes_qualified_recor
         page = payload["current_page"]
         defaults = {"observation": "Observed candidate group", "reason": "Inspect the record descriptions",
                     "confidence": 1, "expected_result": "Sources for category qualification"}
-        if payload["rejected_collection_sources"] and page["url"].endswith("/related" + suffix):
+        if (payload["rejected_collection_sources"] or payload.get("rejected_collection_scopes")) and page["url"].endswith("/related" + suffix):
             return Decision(decision="NAVIGATE", url=next(e["href"] for e in page["elements"]
                             if (e.get("href") or "").endswith("/catalog" + suffix)), **defaults)
         group = next(group for group in page["record_groups"]
@@ -242,3 +243,47 @@ def test_rejected_group_identity_does_not_hide_other_groups_with_same_heading():
     scopes = [[url, "Tools", group_signature(first)]]
     assert rejected_group(url, first, scopes)
     assert not rejected_group(url, second, scopes)
+
+
+@fixture.app.get("/extraction-first-fixture", response_class=HTMLResponse)
+def extraction_first_fixture():
+    return ("<main><h1>Buyer tools catalog</h1><div>"
+            "<article><h2>Atlas</h2><p>Compare software licensing costs before buying supplier products.</p></article>"
+            "<article><h2>Beacon</h2><p>Compare software purchase options and vendor contracts before buying.</p></article>"
+            "</div></main>")
+
+
+@pytest.mark.browser
+async def test_extraction_first_listing_uses_capture_and_verification_without_navigation_model(client, target, fixture_server, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings(), "ai_provider", "local")
+    registration = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
+    registration.update(base_url="http://127.0.0.1:8765/extraction-first-fixture", authorized=True)
+    registration["configuration"].update(screenshots=False, max_duration_seconds=120)
+    assert client.patch("/api/websites/" + target["id"], json=registration).status_code == 200
+    job = client.post("/api/agent/tasks", json={"website_id": target["id"],
+                      "objective": "List software buying and comparison tools", "max_steps": 5}).json()["id"]
+    purposes = []
+
+    async def respond(self, kind, payload, schema, *_args, **_kwargs):
+        purposes.append(kind)
+        if kind == "classify":
+            return AssessmentBatch(records=[
+                {"id": row["id"], "classification": "match",
+                 "evidence": next(i for i, quote in enumerate(row["excerpts"], 1)
+                                  if "before buying" in quote)}
+                for row in payload["records"]
+            ])
+        assert kind == "verify"
+        assert set(payload["captured_records"]["records"]) == {"Atlas", "Beacon"}
+        cited = [row["id"] for row in payload["evidence"] if row["id"].startswith("capture-")]
+        return Verification(complete=True, explanation="Both records support software purchasing decisions",
+                            checks=[{"criterion": criterion, "met": True, "evidence_ids": cited}
+                                    for criterion in payload["success_criteria"]])
+
+    monkeypatch.setattr(ModelClient, "request", respond)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + job).json()
+    assert result["status"] == "completed", result.get("error_message")
+    assert {row["fields"]["Name"] for row in result["result"]["structured_records"]} == {"Atlas", "Beacon"}
+    assert "decide" not in purposes
+    assert purposes.count("verify") == 1

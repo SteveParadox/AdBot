@@ -344,3 +344,33 @@ async def test_runner_rejects_expired_budget_before_request():
     runner.deadline = time.time() - 1
     with pytest.raises(ModelDeadlineExceeded, match="before model request"):
         await runner.ask_model("decide", {}, Reply)
+
+
+async def test_budget_retry_reduces_reserved_and_transmitted_decision_output(providers, monkeypatch):
+    from app.agent.model import ModelBudgetExceeded
+
+    original = httpx.AsyncClient
+    requests, reservations = [], []
+    allowance = None
+
+    async def respond(request):
+        requests.append(json.loads(request.content))
+        return successful()
+
+    def account(prompt, completion, latency, reserve, reservation=None):
+        nonlocal allowance
+        if reserve:
+            reservations.append((prompt, completion))
+            if allowance is None:
+                allowance = prompt + 1024
+                raise ModelBudgetExceeded("Fixture budget", available_tokens=allowance)
+            assert prompt + completion <= allowance
+            return (prompt, completion)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    payload = {"objective": "List tools", "form_input_enabled": False,
+               "execution_route": {"name": "enumeration"}}
+    result = await ModelClient().request("decide", payload, Reply, account)
+    assert result.status == "ok"
+    assert len(requests) == 1 and len(reservations) == 2
+    assert requests[0]["max_tokens"] == reservations[-1][1] < reservations[0][1]

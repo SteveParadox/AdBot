@@ -23,6 +23,7 @@ from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, collecti
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelContextExceeded, ModelError, ModelProvidersUnavailable
 from .structure import add_capture, classification_request
+from .discovery import automatic_capture, compact_page, navigation_candidate, task_token_allowance, unchanged_scrolls
 from .research import (
     capture_evidence, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
     terms,
@@ -90,16 +91,20 @@ class AgentRunner(Runner):
         task = session.get(AgentTask, self.id)
         if reserve:
             provider_index = (reservation or {}).get("provider_index", 0)
-            task_budget = self.options["max_tokens"]
-            if provider_index == 0 and len(settings().model_providers()) > 1:
-                task_budget -= min(settings().agent_fallback_tokens, task_budget // 3)
-            if task.prompt_tokens + task.completion_tokens + prompt + completion > task_budget:
-                remaining = self.options["max_tokens"] - task.prompt_tokens - task.completion_tokens
-                held = self.options["max_tokens"] - task_budget
+            maximum = self.options["max_tokens"]
+            spent = task.prompt_tokens + task.completion_tokens
+            available, held, final = task_token_allowance(
+                maximum, spent, fallback_reserve=settings().agent_fallback_tokens,
+                primary=provider_index == 0 and len(settings().model_providers()) > 1,
+                purpose=(reservation or {}).get("purpose"),
+                handoff=bool(getattr(getattr(self, "model", None), "fallback_active", False)
+                             or getattr(self, "fallback_notified", 0)),
+            )
+            if prompt + completion > available:
                 raise ModelBudgetExceeded(
                     f"Model token budget exhausted before request: {prompt} estimated input + {completion} reserved output, "
-                    f"{max(0, remaining)} remaining, {held} held for fallback",
-                    available_tokens=max(0, remaining - held),
+                    f"{max(0, maximum - spent)} remaining, {held} held for fallback, {final} held for finalization",
+                    available_tokens=available,
                 )
             if getattr(self, "fallback_notified", 0) != provider_index:
                 cfg = settings()
@@ -142,6 +147,8 @@ class AgentRunner(Runner):
             else None
         )
         async def account_async(*args):
+            if len(args) >= 5 and args[3] and isinstance(args[4], dict):
+                args = (*args[:4], {**args[4], "purpose": kind})
             if client is not None:
                 async with self.classification_account_lock:
                     return await database_call(self.account, *args)
@@ -344,7 +351,8 @@ class AgentRunner(Runner):
             if structured.get("restrict_to_objective"):
                 await self.classify_structured(structured)
             if enumeration and not any(row.get("classification") == "match" for row in structured["records"].values()):
-                self.reject_enumeration_source(structured)
+                # An unrelated group does not invalidate the whole source.
+                self.reject_enumeration_source(structured, reject_url=False)
                 await self.checkpoint(self.controller)
                 raise ValueError("This source yielded no qualifying records. Explore a different observed source.")
         qualified = self.enumeration_records(structured) if enumeration else {}
@@ -433,7 +441,7 @@ class AgentRunner(Runner):
                     "instruction": "Continue discovery using a different observed record group or authorized source. "
                                    "Previously verified records are retained; do not recapture the rejected group.",
                 }
-                self.reject_enumeration_source(structured, reject_url=bool(capture_check and not capture_check.met))
+                self.reject_enumeration_source(structured, reject_url=False)
                 await self.checkpoint(self.controller)
             raise ValueError("Goal verification incomplete: " + (
                 "; ".join(problems)[:380] if problems else "Required structured evidence was not verified"
@@ -508,13 +516,17 @@ class AgentRunner(Runner):
 
         cfg = settings()
         pending = [row for row in capture["records"].values() if not row.get("classification")]
-        size = min(cfg.agent_classification_batch_rows, max(1, (cfg.ai_max_request_chars - 3500) // 3000))
+        size = min(40, cfg.agent_classification_batch_rows, max(1, (cfg.ai_max_request_chars - 3500) // 3000))
         for offset in range(0, len(pending), size):
-            if capture.get("classification_calls", 0) >= cfg.agent_classification_max_calls:
+            count = (self.memory.get("enumeration_classification_calls", 0)
+                     if getattr(self, "enumeration_mode", False) else capture.get("classification_calls", 0))
+            if count >= cfg.agent_classification_max_calls:
                 raise ValueError("Structured classification reached its configured call budget")
             rows = pending[offset:offset + size]
             payload = classification_request(self.objective, rows)
             capture["classification_calls"] = capture.get("classification_calls", 0) + 1
+            if getattr(self, "enumeration_mode", False):
+                self.memory["enumeration_classification_calls"] = count + 1
             result = await self.ask_model("classify", payload, AssessmentBatch, wait_for_provider=False)
             validate_assessments(payload, result)
             for assessment in result.records:
@@ -853,7 +865,7 @@ class AgentRunner(Runner):
                     if research:
                         decision = self.research_decision(observation)
                     if enumeration:
-                        decision = self.enumeration_decision(observation)
+                        decision = self.enumeration_decision(observation, controller.observer.structural_groups)
                     if terminal is None and decision is None:
                         if use_directory:
                             # Retain bounded candidate excerpts from the read-only
@@ -873,30 +885,37 @@ class AgentRunner(Runner):
                                     owned_job(session, self.id, self.token)
                                     session.get(AgentStep, step_id).observation = observation
                             await database_call(update_observation)
+                        if (research or enumeration or use_directory) and not self.options["allow_form_input"]:
+                            if unchanged_scrolls(observation, self.memory["recent_actions"]) >= 2:
+                                decision = navigation_candidate(
+                                    observation, self.objective, self.policy,
+                                    excluded=self.discovery_exclusions(),
+                                )
                         plan = self.planning_context()
-                        decision = await self.ask_model(
-                            "decide",
-                            {
-                                "objective": self.objective,
-                                "success_criteria": self.options["success_criteria"],
-                                "current_page": self.research_model_page(observation) if research or enumeration else observation,
-                                "session_memory": self.context_memory(observation, plan),
-                                "execution_route": {"name": route.name, "guidance": route.guidance},
-                                "historical_hints": self.hints,
-                                "steps_remaining": self.options["max_steps"] - number,
-                                "form_input_enabled": self.options["allow_form_input"],
-                                "task_plan": plan,
-                                **({"rejected_collection_sources": self.memory.get("rejected_collection_sources", [])[-8:],
-                                    "rejected_collection_scopes": self.memory.get("rejected_collection_scopes", [])[-8:],
-                                    "verified_partial_record_count": len(self.memory.get("research_partial", {}).get("structured_records", []))}
-                                   if enumeration else {}),
-                                **({"captured_record_count": len(self.memory["structured_capture"]["records"]),
-                                    "expected_record_count": self.memory["structured_capture"]["expected_count"]}
-                                   if "structured_capture" in self.memory else {}),
-                            },
-                            Decision,
-                            observation,
-                        )
+                        if decision is None:
+                            decision = await self.ask_model(
+                                "decide",
+                                {
+                                    "objective": self.objective,
+                                    "success_criteria": self.options["success_criteria"],
+                                    "current_page": self.research_model_page(observation) if research or enumeration or use_directory else observation,
+                                    "session_memory": self.context_memory(observation, plan),
+                                    "execution_route": {"name": route.name, "guidance": route.guidance},
+                                    "historical_hints": self.hints,
+                                    "steps_remaining": self.options["max_steps"] - number,
+                                    "form_input_enabled": self.options["allow_form_input"],
+                                    "task_plan": plan,
+                                    **({"rejected_collection_sources": self.memory.get("rejected_collection_sources", [])[-8:],
+                                        "rejected_collection_scopes": self.memory.get("rejected_collection_scopes", [])[-8:],
+                                        "verified_partial_record_count": len(self.memory.get("research_partial", {}).get("structured_records", []))}
+                                       if enumeration else {}),
+                                    **({"captured_record_count": len(self.memory["structured_capture"]["records"]),
+                                        "expected_record_count": self.memory["structured_capture"]["expected_count"]}
+                                       if "structured_capture" in self.memory else {}),
+                                },
+                                Decision,
+                                observation,
+                            )
                 if terminal is not None:
                     await self.finish_directory(directory, controller, observation, step_id, number, terminal)
                     return
@@ -906,6 +925,7 @@ class AgentRunner(Runner):
                         raise ValueError(
                             "OBSERVE already returned unchanged content; navigate an observed link, interact with a relevant control, or report the blockage"
                         )
+                # Retain the common planning permission guard below.
                 decision_data = decision.model_dump()
                 key = action_key(decision_data)
                 if enumeration:
@@ -1023,8 +1043,18 @@ class AgentRunner(Runner):
                     self.memory["summary"] = [c.model_dump() for c in decision.claims]
                     outcome = {"summary": self.memory["summary"]}
                 else:
-                    outcome = (await controller.act(decision, self.options, approved, read_only=True)
-                               if deterministic else await controller.act(decision, self.options, approved))
+                    read_link = (research or enumeration) and self.mode == "autonomous" and not self.options["allow_form_input"] and (
+                        decision.decision == "CLICK" and decision.target and any(
+                            element.get("element_id") == decision.target.element_id
+                            and element.get("role") == "link" and element.get("href") and not element.get("form")
+                            for element in observation.get("elements", [])
+                        )
+                    )
+                    if read_link:
+                        outcome = await controller.act(decision, self.options, approved, read_only=True, prefer_navigation=True)
+                    else:
+                        outcome = (await controller.act(decision, self.options, approved, read_only=True)
+                                   if deterministic else await controller.act(decision, self.options, approved))
                 # COMPLETE has no browser side effect; the current observation
                 # already grounds its evidence. Do not add a fallible browser read.
                 no_browser_action = decision.decision in {"COMPLETE", "CAPTURE_RECORDS", "EXTRACT", "SUMMARIZE"}
@@ -1081,6 +1111,11 @@ class AgentRunner(Runner):
                 interaction = outcome.get("interaction") or {}
                 outcome["content_changed"] = (interaction.get("content_changed") if deterministic else
                                               after["text"] != observation["text"])
+                if research or enumeration or use_directory:
+                    outcome["information_progress"] = bool(
+                        len(self.memory["evidence"]) > len_before or outcome["content_changed"]
+                        or after.get("record_groups") != observation.get("record_groups")
+                    )
                 outcome["page_changed"] = bool(outcome["url_changed"] or outcome["content_changed"] or
                                                after["fingerprint"] != observation["fingerprint"])
                 if isinstance(outcome.get("interaction"), dict):
@@ -1239,7 +1274,12 @@ class AgentRunner(Runner):
             observation.get("research_chunks", []), self.objective, observation.get("title", ""), entities, criteria,
         )[:12]
 
-    def enumeration_decision(self, observation):
+    def discovery_exclusions(self):
+        return {destination_key(url) for url in self.memory.get("visited_urls", [])} | set(
+            self.memory.get("rejected_collection_sources", [])
+        )
+
+    def enumeration_decision(self, observation, structural_groups=None):
         capture = self.memory.get("structured_capture")
         if capture and not capture.get("exhaustive"):
             evidence = next((row for row in reversed(self.memory["evidence"]) if row["id"].startswith("capture-")), None)
@@ -1251,6 +1291,17 @@ class AgentRunner(Runner):
                                 claims=[{"text": "Observed candidate records", "evidence_ids": [evidence["id"]]}])
         if capture:
             return None
+        if structural_groups and not exhaustive_request(self.objective):
+            candidate = automatic_capture(
+                observation, structural_groups, self.objective,
+                rejected=self.memory.get("rejected_collection_scopes", []),
+                max_rows=min(48, max(0, settings().agent_classification_max_calls -
+                                      self.memory.get("enumeration_classification_calls", 0)) *
+                             min(40, settings().agent_classification_batch_rows,
+                                 max(1, (settings().ai_max_request_chars - 3500) // 3000))),
+            )
+            if candidate is not None:
+                return candidate
         entity = "semantic:" + " ".join(words(self.objective))
         recognized = bool(collection_kinds(entity))
         destinations = set()
@@ -1273,6 +1324,13 @@ class AgentRunner(Runner):
                         capture={"group": group["id"], "fields": [{"name": "Name", "position": 1},
                                                                  {"name": "Description", "position": 2}], "identity": 1},
                     )
+        if structural_groups is not None and not self.options.get("allow_form_input"):
+            catalog = navigation_candidate(
+                observation, self.objective, self.policy, excluded=self.discovery_exclusions(),
+                minimum=8, catalog_only=True,
+            )
+            if catalog is not None:
+                return catalog
         for element in observation.get("elements", []):
             href = element.get("href")
             if not href or not element.get("actionable") or element.get("blocked_by_modal"):
@@ -1370,16 +1428,26 @@ class AgentRunner(Runner):
     def research_model_page(self, observation):
         history = self.memory.get("research_destinations", {})
         count = len(self.memory["evidence"])
-        available = [element for element in observation["elements"] if not element.get("href")
-                     or (history.get(destination_key(element["href"])) != count
-                         and destination_key(element["href"]) not in self.memory.get("rejected_collection_sources", []))]
-        page = {**observation, "text": "", "viewport_text": "", "elements": available}
+        def available_control(element):
+            if not element.get("href"):
+                return True
+            try:
+                key = destination_key(element["href"])
+            except ValueError:
+                return False
+            return (history.get(key) != count and key not in self.memory.get("rejected_collection_sources", []))
+
+        available = [element for element in observation["elements"] if available_control(element)]
+        groups = observation.get("record_groups", [])
         if getattr(self, "enumeration_mode", False):
             from .structure import rejected_group
 
-            page["record_groups"] = [group for group in observation.get("record_groups", [])
-                                     if not rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", []))]
-        return page
+            groups = [group for group in groups
+                      if not rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", []))]
+        if self.options["allow_form_input"] or self.options.get("visual_reasoning"):
+            return {**observation, "elements": available, "record_groups": groups}
+        return compact_page(observation, self.objective, elements=available, groups=groups,
+                            actions=self.memory.get("recent_actions", []), form_input=False)
 
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
