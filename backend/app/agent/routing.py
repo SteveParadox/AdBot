@@ -196,7 +196,9 @@ def select_route(objective, options, has_dataset=False):
         return ExecutionRoute("document_retrieval", "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")
     if terms & {"fill", "submit", "register"}:
         return ExecutionRoute("form_interaction", "Resolve the visible input and honor form permissions and approval gates. Verify the observed outcome.")
-    if terms & {"research", "summarize", "explain", "verify", "cite", "find", "search"}:
+    if terms & {"research", "summarize", "explain", "verify", "cite", "find", "search"} or re.search(
+        r"\blook\s+up\b", objective, re.I
+    ):
         return ExecutionRoute("research", "Find relevant evidence, distinguish direct observations from inference, and cite each supported answer.")
     if terms & {"navigate", "open", "visit"}:
         return ExecutionRoute("navigation", "Prefer a uniquely relevant observed link and verify the destination.")

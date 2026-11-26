@@ -133,16 +133,31 @@ class Controller:
                                                          request.post_data, scope["query"], scope["endpoints"])):
                         scope["blocked"] += 1
                         raise PolicyError("Request is outside the approved search-only POST scope")
-                    self.runner.policy.check(request.url)
-                    if request.is_navigation_request():
-                        await self.runner.permitted(request.url)
+                    await self.runner.permitted(request.url)
                     if (self.search_scope is not scope or time.monotonic() >= scope["until"]
                             or scope["remaining"] <= 0 or self.egress_grant is not None):
                         raise PolicyError("Search request authorization expired or was consumed")
                     scope["remaining"] -= 1
                     scope["approved"] += 1
-                    issued_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
-                    self.egress_grant = issued_grant
+                    # The forward proxy only sees individual HTTP requests. HTTPS
+                    # goes through CONNECT, so it must not reserve an HTTP grant.
+                    if urlsplit(request.url).scheme == "http":
+                        issued_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
+                        self.egress_grant = issued_grant
+                    # Playwright routes the first request in a redirect chain.
+                    # Fetch through the browser context's proxy without following
+                    # redirects, and never hand a redirect back to the browser.
+                    response = await route.fetch(
+                        max_redirects=0, timeout=max(1, int((scope["until"] - time.monotonic()) * 1000))
+                    )
+                    try:
+                        if 300 <= response.status < 400 and response.headers.get("location"):
+                            scope["blocked"] += 1
+                            raise PolicyError("Redirects are blocked for approved POST search")
+                        await route.fulfill(response=response)
+                    finally:
+                        await response.dispose()
+                    return
                 else:
                     permit = self.mutation
                     actual = urlsplit(request.url)
@@ -158,13 +173,14 @@ class Controller:
                         raise PolicyError("This request requires an active click submission")
                     self.egress_grant = (request.method, request.url, time.monotonic() + 5)
                     self.mutation = None
-            if request.is_navigation_request() and issued_grant is None:
+            if request.is_navigation_request():
                 await self.runner.permitted(request.url)
             await route.continue_()
         except Exception:
+            await route.abort("blockedbyclient")
+        finally:
             if issued_grant is not None and self.egress_grant is issued_grant:
                 self.egress_grant = None
-            await route.abort("blockedbyclient")
 
     def allow_proxy_method(self, method, url):
         grant = self.egress_grant

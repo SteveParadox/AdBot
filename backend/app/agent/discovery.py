@@ -325,17 +325,6 @@ def search_control(element, approved_posts=()):
     return search_interface(element, approved_posts) is not None
 
 
-def valid_search_action(value):
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        parsed = urlsplit(value)
-        return bool(parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username
-                    and not parsed.password and not parsed.fragment)
-    except ValueError:
-        return False
-
-
 def objective_query(objective):
     query = re.sub(r"^\s*(?:please\s+)?(?:list|find|search(?:\s+for)?|look\s+up|show(?:\s+me)?|identify|recommend)\s+(?:all\s+)?", "", objective, flags=re.I)
     normalized = " ".join(query.split()).strip(" .?!,")

@@ -26,6 +26,7 @@ from test_browser import fixture_server  # noqa: F401
     ("Compare Cedar and Juniper on availability", "comparison", "comparison"),
     ("Rank options by total cost", "research", "research"),
     ("Recommend an option for a small team", "research", "research"),
+    ("Look up pricing for Atlas", "research", "search"),
     ("Research the origin of this instrument", "research", "research"),
 ])
 def test_operation_is_separate_from_subject(objective, route, intent):

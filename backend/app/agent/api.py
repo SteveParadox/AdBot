@@ -131,16 +131,24 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
         if request_values.get(optional) is None:
             request_values.pop(optional, None)
     digest = hashlib.sha256(json.dumps(request_values, sort_keys=True).encode()).hexdigest()
+    accepted_digests = {digest}
+    if data.allow_search_input and not data.approved_post_search:
+        legacy_values = {k: v for k, v in request_values.items()
+                         if k not in {"allow_search_input", "approved_post_search"}}
+        accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
     try:
         with transaction() as session:
             website = owned(session, Website, data.website_id, owner)
-            validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             if idempotency_key:
                 previous = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
                 if previous:
-                    if previous.job_type != "agent" or previous.payload_hash != digest:
+                    if previous.job_type != "agent" or previous.payload_hash not in accepted_digests:
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
+            try:
+                validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
             from .planning import specification, initial_plan
             from .routing import directory_intent
 
@@ -179,7 +187,7 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
     except IntegrityError:
         with Session() as session:
             old = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
-            if old and old.job_type == "agent" and old.payload_hash == digest:
+            if old and old.job_type == "agent" and old.payload_hash in accepted_digests:
                 return task_output(old, session.get(AgentTask, old.id))
         raise HTTPException(409, "Concurrent task creation conflict; retry with the same key") from None
 

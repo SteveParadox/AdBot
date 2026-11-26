@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -108,6 +109,31 @@ def test_task_api_provider_gating_and_ownership(client, target, agent_config):
     assert client.post("/api/agent/tasks", json=body, headers=headers).status_code == 409
     agent_config.ai_provider = "disabled"
     assert client.post("/api/agent/tasks", json=body).status_code == 503
+
+
+def test_legacy_agent_idempotency_key_is_replayed(client, target, agent_config):
+    headers = {"Idempotency-Key": "old-agent-task"}
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    task_id = client.post("/api/agent/tasks", json=body, headers=headers).json()["id"]
+    old_payload = TaskInput(**body).model_dump(
+        exclude={"priority", "depends_on", "allow_search_input", "approved_post_search",
+                 "dataset_id", "dataset_query", "output_format"}
+    )
+    with transaction() as session:
+        session.get(Job, task_id).payload_hash = hashlib.sha256(
+            json.dumps(old_payload, sort_keys=True).encode()
+        ).hexdigest()
+    assert client.post("/api/agent/tasks", json=body, headers=headers).json()["id"] == task_id
+    changed = {**body, "allow_search_input": False}
+    assert client.post("/api/agent/tasks", json=changed, headers=headers).status_code == 409
+
+
+def test_post_search_approval_validation_has_consistent_status(client, target, agent_config):
+    body = {"website_id": target["id"], "objective": "Find current AI documentation.",
+            "approved_post_search": [{"url": "https://example.test/search", "query_field": "q",
+                                      "verified_read_only": True}]}
+    for endpoint in ("preview", "tasks"):
+        assert client.post(f"/api/agent/{endpoint}", json=body).status_code == 422
 
 
 def test_encrypted_sessions_and_memory_isolation(client, target, agent_config, monkeypatch):
