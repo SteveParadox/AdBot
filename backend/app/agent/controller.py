@@ -25,6 +25,7 @@ class Controller:
         self.memory = memory
         self.mutation = None
         self.egress_grant = None
+        self.search_scope = None
         self.creating = False
         self.crashed_pages = set()
         context.on("page", self.popup)
@@ -117,28 +118,69 @@ class Controller:
 
     async def route(self, route):
         request = route.request
+        issued_grant = None
         try:
             self.runner.policy.check(request.url, navigation=request.is_navigation_request())
             if request.method not in {"GET", "HEAD"}:
-                permit = self.mutation
-                actual = urlsplit(request.url)
-                if (
-                    not permit
-                    or time.monotonic() > permit["until"]
-                    or (permit["method"] is not None and request.method != permit["method"])
-                    or (
-                        permit["destination"] is not None
-                        and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                scope = getattr(self, "search_scope", None)
+                if scope is not None:
+                    from .search import approved_post_payload
+
+                    if (request.method != "POST" or time.monotonic() >= scope["until"]
+                            or request.redirected_from is not None or request.frame != scope["page"].main_frame
+                            or scope["remaining"] <= 0 or self.egress_grant is not None
+                            or not approved_post_payload(request.url, request.headers.get("content-type", ""),
+                                                         request.post_data, scope["query"], scope["endpoints"])):
+                        scope["blocked"] += 1
+                        raise PolicyError("Request is outside the approved search-only POST scope")
+                    await self.runner.permitted(request.url)
+                    if (self.search_scope is not scope or time.monotonic() >= scope["until"]
+                            or scope["remaining"] <= 0 or self.egress_grant is not None):
+                        raise PolicyError("Search request authorization expired or was consumed")
+                    scope["remaining"] -= 1
+                    scope["approved"] += 1
+                    # The forward proxy only sees individual HTTP requests. HTTPS
+                    # goes through CONNECT, so it must not reserve an HTTP grant.
+                    if urlsplit(request.url).scheme == "http":
+                        issued_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
+                        self.egress_grant = issued_grant
+                    # Playwright routes the first request in a redirect chain.
+                    # Fetch through the browser context's proxy without following
+                    # redirects, and never hand a redirect back to the browser.
+                    response = await route.fetch(
+                        max_redirects=0, timeout=max(1, int((scope["until"] - time.monotonic()) * 1000))
                     )
-                ):
-                    raise PolicyError("This request requires an active click submission")
-                self.egress_grant = (request.method, request.url, time.monotonic() + 5)
-                self.mutation = None
+                    try:
+                        if 300 <= response.status < 400 and response.headers.get("location"):
+                            scope["blocked"] += 1
+                            raise PolicyError("Redirects are blocked for approved POST search")
+                        await route.fulfill(response=response)
+                    finally:
+                        await response.dispose()
+                    return
+                else:
+                    permit = self.mutation
+                    actual = urlsplit(request.url)
+                    if (
+                        not permit
+                        or time.monotonic() > permit["until"]
+                        or (permit["method"] is not None and request.method != permit["method"])
+                        or (
+                            permit["destination"] is not None
+                            and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                        )
+                    ):
+                        raise PolicyError("This request requires an active click submission")
+                    self.egress_grant = (request.method, request.url, time.monotonic() + 5)
+                    self.mutation = None
             if request.is_navigation_request():
                 await self.runner.permitted(request.url)
             await route.continue_()
         except Exception:
             await route.abort("blockedbyclient")
+        finally:
+            if issued_grant is not None and self.egress_grant is issued_grant:
+                self.egress_grant = None
 
     def allow_proxy_method(self, method, url):
         grant = self.egress_grant
@@ -218,6 +260,15 @@ class Controller:
                     raise ValueError("Enable form input before changing a selection control")
                 if element["readonly"]:
                     raise ValueError("Read-only selection controls cannot be changed")
+            if action == "SEARCH" and read_only and options.get("allow_read_search"):
+                from .search import execute_scoped_search
+
+                result = await execute_scoped_search(self, decision, locator, element, binding, options)
+                if self.page.url != before_url:
+                    self.runner.policy.check(self.page.url)
+                    await self.runner.visit(self.page, self.page.url, navigate=False)
+                    self.tabs[self.active]["history"].append(self.page.url)
+                return result
             if action in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}:
                 if not options["allow_form_input"]:
                     raise ValueError("Enable form input when creating the task")

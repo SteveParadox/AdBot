@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from .contracts import Decision
 from .routing import words, semantic_terms
 from .research import destination_key
-from .structure import RecordCapture, map_group, rejected_group
+from .structure import RecordCapture, group_signature, map_group, rejected_group
 
 _GENERIC = set("a an the list show find collect identify give provide please of for to and or all every best top ai software tool tools product products option options".split())
 _CATALOG = {"catalog", "catalogue", "directory", "marketplace", "listings", "categories", "browse", "library", "inventory"}
@@ -48,6 +48,25 @@ def source_score(objective, element):
     return score
 
 
+def source_eligible(objective, element, *, catalog_only=False):
+    name = element.get("name") or ""
+    path = urlsplit(element.get("href") or "").path
+    label = set(words(name))
+    path_words = set(words(path))
+    family = {"tool", "tools", "product", "products", "software", "app", "apps",
+              "application", "applications", "service", "services"}
+    generic_catalog = bool((label | path_words) & _CATALOG)
+    if catalog_only and (not generic_catalog or label & _EDITORIAL):
+        return False
+    if relevance(objective, name) or relevance(objective, path):
+        return True
+    # A broad product inventory is useful for narrower product queries, but
+    # unrelated libraries are not automatically relevant just because of type.
+    broad_words = family | _CATALOG | {"all", "view", "see", "explore", "open", "our", "the", "by", "use", "case", "cases", "ai", "of", "and"}
+    return (generic_catalog and bool(set(words(objective)) & family) and bool(label & family)
+            and not (label - broad_words))
+
+
 def observed_links(observation, objective, policy, *, excluded=(), catalog_only=False):
     if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
         return []
@@ -69,7 +88,7 @@ def observed_links(observation, objective, policy, *, excluded=(), catalog_only=
             continue
         if urlsplit(href).scheme not in {"http", "https"} or destination_key(href) in excluded:
             continue
-        if catalog_only and not (set(words(element.get("name") or "")) | set(words(urlsplit(href).path))) & _CATALOG:
+        if not source_eligible(objective, {**element, "href": href}, catalog_only=catalog_only):
             continue
         score = source_score(objective, {**element, "href": href})
         if score > 0 and score > candidates.get(destination_key(href), (0, ""))[0]:
@@ -91,7 +110,7 @@ def _field_label(segment):
     return " ".join(words(segment.get("label", "")))
 
 
-def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=48):
+def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=48, diagnostics=None):
     """Map explicit, coherent repeated identities, not arbitrary page headings.
 
     Validate against full observed rows, not their clipped summaries. Semantic
@@ -103,17 +122,30 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
         return None
     offered = {group["id"] for group in observation.get("record_groups", [])}
     choices = []
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics.update(record_groups=len(offered), candidate_rows=0, mapping_rejections={})
+    def reject(reason):
+        counts = diagnostics["mapping_rejections"]
+        counts[reason] = counts.get(reason, 0) + 1
     for group in groups.values():
-        if (group["id"] not in offered or group.get("kind") not in {"repeated", "row"}
-                or rejected_group(observation["url"], group, rejected)):
+        if group["id"] not in offered:
+            continue
+        if group.get("kind") not in {"repeated", "row", "semantic"} or rejected_group(observation["url"], group, rejected):
+            reject("unsupported_or_rejected_group")
             continue
         rows = group.get("records", [])
+        diagnostics["candidate_rows"] += len(rows)
         if not 2 <= len(rows) <= max_rows:
+            reject("row_count_outside_automatic_budget")
             continue
         example = rows[0].get("segments", [])[:12]
         identities = [index for index, segment in enumerate(example, 1)
                       if _field_label(segment) in _IDENTITY and not segment.get("truncated")]
+        if not identities and len(example) >= 2 and not _field_label(example[0]) and 0 < len(example[0].get("value", "")) <= 160:
+            if all(row.get("segments") and not _field_label(row["segments"][0]) for row in rows):
+                identities = [1]
         if len(identities) != 1:
+            reject("ambiguous_identity")
             continue
         identity = identities[0]
         descriptions = []
@@ -125,6 +157,9 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
                 continue
             label = _field_label(segment)
             descriptions.append((int(label in _DESCRIPTION), len(value), index))
+        if not descriptions:
+            reject("missing_description")
+        matched_mapping = False
         for _, _, position in sorted(descriptions, reverse=True):
             capture = RecordCapture(group=group["id"], identity=identity, fields=[
                 {"name": "Name", "position": identity}, {"name": "Description", "position": position},
@@ -136,6 +171,9 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
             except ValueError:
                 continue
             if len(strict) != len(rows) or set(strict) != set(mapped):
+                continue
+            if len({" ".join(name.casefold().split()) for name in mapped}) != len(mapped):
+                reject("duplicate_identity")
                 continue
             if not _field_label(example[position - 1]) and any(
                 len(row.get("segments", [])) < position
@@ -156,12 +194,17 @@ def automatic_capture(observation, groups, objective, *, rejected=(), max_rows=4
                 set(words(group.get("label", ""))) & (_CATALOG | {"tools", "products", "services"})
             )
             if not relevant and not heading_score and not generic_catalog:
+                reject("low_lexical_relevance")
                 continue
-            # Prefer relevance density over a large group with incidental matches.
-            choices.append((4 * heading_score + 6 * relevant / len(mapped), relevant, capture))
+            choices.append((4 * heading_score + 6 * relevant / len(mapped) - (0.5 if group.get("kind") == "semantic" else 0), relevant, capture))
+            matched_mapping = True
             break
+        if descriptions and not matched_mapping:
+            reject("no_confident_mapping")
     if not choices:
+        diagnostics["strategy"] = "model_assisted"
         return None
+    diagnostics["strategy"] = "automatic_capture"
     _, _, capture = max(choices, key=lambda choice: (choice[0], choice[1], -choice[2].group))
     return Decision(decision="CAPTURE_RECORDS", capture=capture,
                     observation="Observed repeated records with distinct names and descriptions",
@@ -175,8 +218,8 @@ def unchanged_scrolls(observation, actions):
         outcome = action.get("outcome")
         if (action.get("action") not in {"SCROLL", "SCROLL_BACK"} or not isinstance(outcome, dict)
                 or outcome.get("after_url") != observation.get("url")
-                or outcome.get("record_groups_changed") or outcome.get("content_changed")
-                or outcome.get("information_progress")):
+                or outcome.get("information_progress", bool(outcome.get("record_groups_changed")
+                                                            or outcome.get("content_changed")))):
             break
         count += 1
     return count
@@ -204,18 +247,20 @@ def ranked_excerpt(objective, text, *, limit=1400):
     return "\n\n".join(chunk for _, chunk in sorted(selected))
 
 
-def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False):
+def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False, read_search=False, approved_posts=()):
     """Preserve exact IDs and small, relevant page excerpts for read-side decisions."""
     available = [element for element in elements if element.get("actionable")
                  and element.get("visible") is not False
                  and not element.get("blocked_by_modal") and not element.get("disabled")]
     if not form_input:
         available = [element for element in available
-                     if element.get("role") not in {"textbox", "searchbox", "combobox", "spinbutton", "checkbox",
-                                                    "radio", "switch", "option"} and not element.get("form")]
-    available.sort(key=lambda element: -source_score(objective, element))
+                     if (read_search and search_control(element, approved_posts)) or (
+                         element.get("role") not in {"textbox", "searchbox", "combobox", "spinbutton", "checkbox",
+                                                     "radio", "switch", "option"} and not element.get("form"))]
+    available.sort(key=lambda element: (not (read_search and search_control(element, approved_posts)), -source_score(objective, element)))
     fields = {"element_id", "role", "name", "href", "tag", "type", "actionable", "visible",
-              "disabled", "readonly", "form", "focused", "context", "expanded", "selected", "blocked_by_modal"}
+              "disabled", "readonly", "form", "focused", "context", "expanded", "selected", "blocked_by_modal",
+              "search_interface", "controls", "active_descendant", "placeholder", "ambiguous", "sensitive"}
     concise = []
     for element in available[:18]:
         row = {key: value for key, value in element.items() if key in fields}
@@ -242,6 +287,7 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
                 record_groups=[{**group, "examples": group.get("examples", [])[:2]} for group in ranked[:5]],
                 research_chunks=observation.get("research_chunks", [])[:4],
                 unchanged_scrolls=unchanged_scrolls(observation, actions),
+                discovery=observation.get("discovery", {}),
                 note="Record groups and text are observed candidates, not proof of membership. "
                      "Prefer capturing or classifying records to scrolling unchanged content.")
     return page
@@ -255,3 +301,101 @@ def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=N
     available = remaining - final
     fallback = min(fallback_reserve, maximum // 3, available // 3) if primary and not handoff else 0
     return max(0, available - fallback), fallback, final
+
+
+_READ_INTENTS = {"structured_extraction", "research", "comparison", "search"}
+_NO_SEARCH = re.compile(
+    r"\b(?:do\s+not|must\s+not|never|without|no|don['’]t|avoid)\s+"
+    r"(?:(?:use|using|perform|performing|fill|filling)\s+)?(?:(?:the|a|any|site|website|read.only)\s+)*"
+    r"(?:search(?:es|ing|\s+bars?)?|forms?|form input|enter(?:ing)?\s+(?:text|data)|submit(?:ting)?|submissions?)\b",
+    re.I,
+)
+MAX_SEARCH_ATTEMPTS = 8
+
+
+def read_search_permission(objective, options, intent, criteria=()):
+    return (options.get("mode") == "autonomous" and options.get("allow_search_input") is True
+            and intent in _READ_INTENTS
+            and not any(_NO_SEARCH.search(text) for text in [objective, *criteria]))
+
+
+def search_control(element, approved_posts=()):
+    from .search import search_interface
+
+    return search_interface(element, approved_posts) is not None
+
+
+def objective_query(objective):
+    query = re.sub(r"^\s*(?:please\s+)?(?:list|find|search(?:\s+for)?|look\s+up|show(?:\s+me)?|identify|recommend)\s+(?:all\s+)?", "", objective, flags=re.I)
+    normalized = " ".join(query.split()).strip(" .?!,")
+    if len(normalized) > 200:
+        normalized = normalized[:201].rsplit(" ", 1)[0]
+    return normalized if len(normalized) <= 200 else ""
+
+
+def search_query_allowed(objective, query):
+    return bool(isinstance(query, str) and 0 < len(query) <= 200 and words(query)
+                and set(words(query)) <= set(words(objective)))
+
+
+def search_attempt_key(element, query, page_url=""):
+    form = element.get("form") or {}
+    action = urlsplit(form.get("action") or page_url)
+    identity = "" if form else ":" + str(element.get("name") or element.get("role") or "search")[:120].casefold()
+    return action._replace(query="", fragment="").geturl() + identity + "\n" + " ".join(words(query))
+
+
+def search_candidate(observation, objective, policy, attempts, approved_posts=()):
+    query = objective_query(objective)
+    if (len(attempts) >= MAX_SEARCH_ATTEMPTS or not search_query_allowed(objective, query)
+            or any(d.get("visible") for d in observation.get("dialogs", []))):
+        return None
+    for element in observation.get("elements", []):
+        if not search_control(element, approved_posts):
+            continue
+        try:
+            policy.check((element.get("form") or {}).get("action") or observation["url"])
+            if search_attempt_key(element, query, observation["url"]) in attempts:
+                continue
+        except ValueError:
+            continue
+        return Decision(decision="SEARCH", target={"element_id": element["element_id"]}, text=query,
+                        observation="An eligible observed site search field is visible",
+                        reason="Search for the requested entities before exploring more pages",
+                        confidence=0.85, expected_result="Relevant search results to inspect and qualify")
+    return None
+
+
+def update_frontier(frontier, observation, objective, policy, excluded):
+    excluded = set(excluded) | {destination_key(observation["url"])}
+    candidates = {key: value for key, value in frontier.items() if key not in excluded}
+    for score, url in observed_links(observation, objective, policy, excluded=excluded):
+        key = destination_key(url)
+        if score > candidates.get(key, {}).get("score", 0):
+            candidates[key] = {"url": url, "score": score, "observed_on": observation["url"]}
+    return dict(sorted(candidates.items(), key=lambda item: (-item[1]["score"], item[0]))[:60])
+
+
+def frontier_candidate(frontier, observation, policy, excluded, *, minimum=5):
+    if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
+        return None
+    excluded = set(excluded) | {destination_key(observation["url"])}
+    for key, item in sorted(frontier.items(), key=lambda pair: (-pair[1]["score"], pair[0])):
+        if key in excluded or item["score"] < minimum:
+            continue
+        try:
+            url = policy.check(item["url"])
+        except ValueError:
+            continue
+        if destination_key(url) != key:
+            continue
+        return Decision(decision="NAVIGATE", url=url, observation="Previously observed authorized unexplored source",
+                        reason="Recover discovery using a ranked unexplored source", confidence=0.75,
+                        expected_result="Inspect fresh source for qualifying evidence")
+    return None
+
+
+def relevant_group_signatures(observation, objective):
+    return {group_signature(group) for group in observation.get("record_groups", [])
+            if relevance(objective, str(group.get("examples", [])))
+            and group.get("observed_count", 0) > 0}

@@ -144,6 +144,9 @@ class Observer:
                 not e["focused"],
                 not e["actionable"],
                 bool(directory) and not pagination_element(e),
+                not (bool(research or structure or directory) and e.get("role") in {"searchbox", "textbox", "combobox"}
+                     and (e.get("search_interface", {}).get("search_semantics")
+                          or e.get("form", {}) and e["form"].get("search"))),
                 -relevance,
                 not e["in_view"],
                 e["role"] == "link",
@@ -242,7 +245,7 @@ class Observer:
 
             groups = clean(structural_groups)
             self.structural_groups = {group["id"]: group for group in groups}
-            data["record_groups"] = summarize_structure(groups)
+            data["record_groups"] = summarize_structure(groups, goal if structure == "enumeration" else None)
         data["accessibility"] = "\n".join(
             f"- {e['role']} {json.dumps(e['name'])}" for e in data["elements"] if e["visible"]
         )[:6000]
@@ -354,6 +357,8 @@ class Observer:
         current = await handle.evaluate(METADATA)
         role, name, _ = native_semantics(await locator.aria_snapshot(timeout=1500), current)
         keys = ("disabled", "readonly", "href", "form", "expanded", "checked", "selected", "value", "blocked_by_modal")
+        if decision.decision == "SEARCH":
+            keys = (*keys, "search_interface", "controls", "active_descendant")
         if role != element["role"] or name != element["name"] or any(current[k] != element[k] for k in keys):
             raise ValueError("Target changed since observation; reobserve")
         if not current["actionable"]:

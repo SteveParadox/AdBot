@@ -4,6 +4,7 @@ from pydantic import Field, model_validator
 
 from ..schemas import Strict
 from .structure import RecordCapture
+from .search import ApprovedPostSearch
 
 
 class Target(Strict):
@@ -154,6 +155,8 @@ class TaskInput(Strict):
     visual_reasoning: bool = False
     session_persistence: bool = False
     allow_form_input: bool = False
+    allow_search_input: bool = True
+    approved_post_search: list[ApprovedPostSearch] = Field(default_factory=list, max_length=8)
     allow_downloads: bool = False
     dataset_id: str | None = Field(None, max_length=36)
     output_format: Literal["answer", "json", "csv"] | None = None

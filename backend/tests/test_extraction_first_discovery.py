@@ -128,3 +128,212 @@ def test_automatic_mapping_does_not_shift_unlabeled_fields_across_rows():
     group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": [first, second]}
     page = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
     assert automatic_capture(page, {2: group}, "List buying tools") is None
+
+
+def test_unrelated_generic_catalog_is_not_automatic_destination():
+    from app.agent.discovery import observed_links
+
+    page = {"url": "https://example.test/", "elements": [
+        {"role": "link", "actionable": True, "name": "Browse prompt library", "href": "https://example.test/prompts"},
+        {"role": "link", "actionable": True, "name": "Browse software products", "href": "https://example.test/products"},
+    ]}
+    ranked = observed_links(page, "List software buying and comparison tools", Policy(["example.test"]), catalog_only=True)
+    assert [url for _, url in ranked] == ["https://example.test/products"]
+
+
+def test_autonomous_search_is_separate_from_general_form_permission():
+    from app.agent.discovery import read_search_permission, search_candidate, search_control, search_attempt_key
+    from app.agent.planning import specification
+
+    objective = "List software buying and comparison tools"
+    options = {"mode": "autonomous", "allow_search_input": True, "allow_form_input": False}
+    assert read_search_permission(objective, options, "structured_extraction")
+    assert not read_search_permission("List software tools without searching", options, "structured_extraction")
+    assert not read_search_permission(objective, {**options, "mode": "assisted"}, "structured_extraction")
+    assert not read_search_permission(objective, {**options, "allow_search_input": False}, "structured_extraction")
+    spec = specification(objective, [objective], options, ["example.test"])
+    assert spec["permissions"]["read_search"] and not spec["permissions"]["form_input"]
+    element = {"element_id": "search1", "tag": "input", "type": "search", "role": "searchbox",
+               "actionable": True, "form": {"method": "GET", "search": True, "action": "https://example.test/search"}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    decision = search_candidate(page, objective, Policy(["example.test"]), [])
+    assert decision.decision == "SEARCH" and decision.text == "software buying and comparison tools"
+    assert search_candidate(page, objective, Policy(["example.test"]), [search_attempt_key(element, decision.text)]) is None
+    assert not search_control({**element, "form": {**element["form"], "method": "POST"}})
+    assert not search_control({**element, "type": "password"})
+    assert not search_control({**element, "sensitive": True})
+
+
+def test_frontier_preserves_unexplored_candidates_after_page_transition():
+    from app.agent.discovery import update_frontier, frontier_candidate
+
+    objective = "List buying tools"
+    root = {"url": "https://example.test/", "elements": [
+        {"role": "link", "actionable": True, "name": "Buying tools catalog", "href": "https://example.test/catalog"},
+        {"role": "link", "actionable": True, "name": "Buying tools directory", "href": "https://example.test/directory"},
+    ]}
+    policy = Policy(["example.test"])
+    frontier = update_frontier({}, root, objective, policy, {root["url"]})
+    page = {"url": "https://example.test/catalog", "elements": []}
+    frontier = update_frontier(frontier, page, objective, policy, {root["url"], page["url"]})
+    assert frontier_candidate(frontier, page, policy, {root["url"], page["url"]}).url == "https://example.test/directory"
+
+
+def test_mapping_diagnostics_and_unlabelled_card_fallback():
+    first = record("Atlas", "Compare supplier purchase costs before buying.")
+    second = record("Beacon", "Compare software vendors before buying.")
+    for row in (first, second):
+        row["segments"][0]["label"] = ""
+    group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": [first, second]}
+    observed = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
+    diagnostics = {}
+    assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics)
+    assert diagnostics["strategy"] == "automatic_capture"
+    group["records"][1]["segments"][0]["value"] = "Atlas"
+    assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics) is None
+    assert diagnostics["strategy"] == "model_assisted"
+    assert diagnostics["mapping_rejections"]["no_confident_mapping"] == 1
+
+
+def test_search_opt_out_respects_criteria_and_legacy_permissions():
+    from app.agent.planning import specification
+
+    objective = "List software comparison tools"
+    options = {"mode": "autonomous", "allow_search_input": True, "allow_form_input": False}
+    for constraint in ("Do not use any search bars", "Avoid using the website search", "Never submit forms"):
+        assert not specification(objective, [objective, constraint], options, ["example.test"])["permissions"]["read_search"]
+    legacy = specification(objective, [objective], {"mode": "autonomous"}, ["example.test"])
+    assert legacy["permissions"] == {"form_input": False, "downloads": False}
+
+
+def test_search_rejects_invalid_endpoints_and_exhausted_attempts():
+    from app.agent.discovery import MAX_SEARCH_ATTEMPTS, search_candidate, search_control
+
+    element = {"element_id": "search1", "tag": "input", "type": "search", "role": "searchbox",
+               "actionable": True, "form": {"method": "GET", "search": True, "action": "https://example.test/search"}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    policy = Policy(["example.test"])
+    assert search_candidate(page, "List buying tools", policy, [])
+    assert search_candidate(page, "List buying tools", policy, list(range(MAX_SEARCH_ATTEMPTS))) is None
+    for url in ("https://[invalid", "https://user:pass@example.test/search", "javascript:alert(1)",
+                "https://example.test/search#form"):
+        candidate = {**element, "form": {**element["form"], "action": url}}
+        assert not search_control(candidate)
+        assert search_candidate({**page, "elements": [candidate]}, "List buying tools", policy, []) is None
+    external = {**element, "form": {**element["form"], "action": "https://outside.test/search"}}
+    assert search_candidate({**page, "elements": [external]}, "List buying tools", policy, []) is None
+
+
+def test_unproductive_content_changes_do_not_reset_information_progress():
+    page = {"url": "https://example.test/catalog"}
+    action = {"action": "SCROLL", "outcome": {"after_url": page["url"], "page_changed": True,
+                "content_changed": True, "record_groups_changed": True, "information_progress": False}}
+    assert unchanged_scrolls(page, [action, action]) == 2
+
+
+def test_automatic_capture_rejects_case_variant_duplicate_names():
+    rows = [record("Atlas", "Compare supplier purchase costs before buying."),
+            record("ATLAS", "Compare software vendors before buying.")]
+    group = {"id": 2, "kind": "repeated", "label": "Buyer catalog", "records": rows}
+    observed = {"url": "https://example.test/", "record_groups": [{"id": 2}]}
+    diagnostics = {}
+    assert automatic_capture(observed, {2: group}, "List buying tools", diagnostics=diagnostics) is None
+    assert diagnostics["mapping_rejections"]["duplicate_identity"] == 1
+
+
+def test_relevant_structure_is_not_hidden_behind_unrelated_groups():
+    from app.agent.structure import summarize_structure
+
+    def group(identifier, records):
+        return {"id": identifier, "kind": "repeated", "label": "Catalog", "context": [],
+                "observed_count": len(records), "truncated": False, "static_table": False, "records": records}
+
+    groups = [group(i, [record("News", "Latest releases from the publishing team.")]) for i in range(1, 9)]
+    groups.append(group(9, [record("Atlas", "Compare supplier costs before buying software.")]))
+    assert 9 not in {item["id"] for item in summarize_structure(groups)}
+    assert summarize_structure(groups, "List buying tools")[0]["id"] == 9
+
+
+def test_scripted_search_control_recognizes_nonstandard_editable_without_form():
+    from app.agent.search import search_interface
+    from app.agent.discovery import search_candidate
+
+    element = {"element_id": "custom1", "tag": "div", "type": "", "role": "searchbox",
+               "actionable": True, "search_interface": {"search_semantics": True, "editable": True}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    assert search_interface(element) == "scripted"
+    assert search_candidate(page, "List buying tools", Policy(["example.test"]), []).target.element_id == "custom1"
+    assert search_interface({**element, "name": "Password search"}) is None
+    assert search_interface({**element, "role": "textbox", "search_interface": {"editable": True}}) is None
+    assert search_interface({**element, "readonly": True}) is None
+
+
+def test_approved_post_search_is_exact_and_query_only():
+    from app.agent.search import ApprovedPostSearch, approved_post_payload, search_interface
+
+    endpoint = ApprovedPostSearch(url="https://example.test/api/search", query_field="q",
+                                  verified_read_only=True).model_dump()
+    endpoints = [endpoint]
+    url, query = endpoint["url"], "buying tools"
+    assert approved_post_payload(url, "application/json", '{"q":"buying tools"}', query, endpoints)
+    assert approved_post_payload(url, "application/x-www-form-urlencoded; charset=utf-8", "q=buying+tools", query, endpoints)
+    for body in ('{"q":"buying tools","delete":true}', '{"q":"buying tools","q":"different"}',
+                 '{"q":{"value":"buying tools"}}', '[["q","buying tools"]]', '{"q":"different"}'):
+        assert not approved_post_payload(url, "application/json", body, query, endpoints)
+    assert not approved_post_payload(url + "?admin=1", "application/json", '{"q":"buying tools"}', query, endpoints)
+    assert not approved_post_payload("https://outside.test/api/search", "application/json", '{"q":"buying tools"}', query, endpoints)
+    assert not approved_post_payload(url, "application/json", '{"q":"buying tools"}', query, [])
+    element = {"tag": "input", "type": "search", "role": "searchbox", "actionable": True,
+               "form": {"method": "POST", "action": url, "search": True}}
+    assert search_interface(element, endpoints) == "approved_post"
+    assert search_interface(element) is None
+
+
+def test_post_search_approval_requires_attestation_and_allowed_domain():
+    import pytest
+    from app.agent.search import ApprovedPostSearch, validate_post_endpoints
+
+    for url in ("https://example.test/*", "https://example.test/api/search?x=1",
+                "https://example.test/api/search#fragment", "https://user:pw@example.test/search"):
+        with pytest.raises(ValueError):
+            ApprovedPostSearch(url=url, query_field="q", verified_read_only=True)
+    with pytest.raises(ValueError):
+        ApprovedPostSearch(url="https://example.test/search", query_field="q", verified_read_only=False)
+    with pytest.raises(ValueError):
+        validate_post_endpoints([{"url": "https://outside.test/search", "query_field": "q",
+                                  "verified_read_only": True}], Policy(["example.test"]))
+
+
+def test_formless_search_attempt_keys_are_page_scoped():
+    from app.agent.discovery import search_attempt_key
+
+    control = {"role": "searchbox", "name": "Search"}
+    assert search_attempt_key(control, "buying tools", "https://example.test/a") != search_attempt_key(
+        control, "buying tools", "https://example.test/b")
+
+
+def test_post_attestation_is_boolean_and_payload_is_strict_utf8():
+    import pytest
+    from app.agent.search import ApprovedPostSearch, approved_post_payload
+
+    url = "https://example.test/search"
+    for value in (1, "true", "yes", None):
+        with pytest.raises(ValueError):
+            ApprovedPostSearch(url=url, query_field="q", verified_read_only=value)
+    approvals = [ApprovedPostSearch(url=url, query_field="q", verified_read_only=True).model_dump()]
+    assert not approved_post_payload(url, "application/x-www-form-urlencoded", "q=%FF", "\ufffd", approvals)
+    assert not approved_post_payload(url, "application/x-www-form-urlencoded", "q=%", "%", approvals)
+    assert not approved_post_payload(url, "application/x-www-form-urlencoded", "q=x&q=x", "x", approvals)
+    assert not approved_post_payload(url, "application/json", '{"q":"x"}', "x", [])
+
+
+def test_ambiguous_custom_search_is_not_selected():
+    from app.agent.search import search_interface
+    from app.agent.discovery import search_candidate
+
+    element = {"element_id": "custom1", "tag": "div", "type": "", "role": "searchbox",
+               "actionable": True, "ambiguous": True,
+               "search_interface": {"search_semantics": True, "editable": True}}
+    page = {"url": "https://example.test/", "elements": [element]}
+    assert search_interface(element) is None
+    assert search_candidate(page, "List buying tools", Policy(["example.test"]), []) is None

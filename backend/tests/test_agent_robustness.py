@@ -2,6 +2,7 @@
 import asyncio
 import threading
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +16,7 @@ from app.browser import BrowserCrashed
 from app.db import AgentMemory, AgentStep, Job, Lease, transaction
 from app.failures import diagnose
 from app.jobs import claim, recover_expired
+from app.security import Policy
 from app.worker import execute
 import test_agent as agent_fixtures
 from test_agent import new_task, set_url
@@ -26,6 +28,38 @@ agent_servers = agent_fixtures.agent_servers
 def decision(action, **kwargs):
     return Decision(observation="Observed page", decision=action, reason="Regression check",
                     confidence=1, expected_result="Expected state", **kwargs)
+
+
+async def test_scoped_https_post_blocks_redirect_and_leaves_no_stale_grant():
+    url = "https://example.test/api/search"
+    frame = object()
+    scope = {"until": asyncio.get_running_loop().time() + 10, "remaining": 2, "approved": 0, "blocked": 0,
+             "page": SimpleNamespace(main_frame=frame), "query": "catalog",
+             "endpoints": [{"url": url, "query_field": "q", "verified_read_only": True}]}
+    runner = SimpleNamespace(cfg={"navigation_timeout_ms": 3000}, policy=Policy(["example.test"]),
+                             permitted=AsyncMock(return_value=url))
+    context = SimpleNamespace(on=lambda *args: None)
+    page = SimpleNamespace(on=lambda *args: None, main_frame=frame)
+    controller = Controller(runner, context, page, {})
+    controller.search_scope = scope
+    request = SimpleNamespace(method="POST", url=url, is_navigation_request=lambda: False,
+                              redirected_from=None, frame=frame, headers={"content-type": "application/json"},
+                              post_data='{"q":"catalog"}')
+    redirect = SimpleNamespace(status=307, headers={"location": "/elsewhere"}, dispose=AsyncMock())
+    result = SimpleNamespace(status=200, headers={}, dispose=AsyncMock())
+    route = SimpleNamespace(request=request, fetch=AsyncMock(side_effect=[redirect, result]),
+                            fulfill=AsyncMock(), abort=AsyncMock())
+    await controller.route(route)
+    route.abort.assert_awaited_once_with("blockedbyclient")
+    route.fulfill.assert_not_awaited()
+    assert scope["blocked"] == 1
+    assert controller.egress_grant is None
+    await controller.route(route)
+    route.fulfill.assert_awaited_once_with(response=result)
+    assert all(call.kwargs["max_redirects"] == 0 for call in route.fetch.await_args_list)
+    redirect.dispose.assert_awaited_once()
+    result.dispose.assert_awaited_once()
+    assert controller.egress_grant is None
 
 
 async def test_duplicate_dispatch_launches_only_one_runner(client, target, monkeypatch):

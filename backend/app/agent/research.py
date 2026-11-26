@@ -134,7 +134,7 @@ def ranked_chunks(chunks, objective, title, entities=(), criteria=()):
 def capture_evidence(observation, store, step_id, entities, criteria):
     if len(store) >= 40:
         return 0
-    if observation.get("http_status", 200) is not None and observation["http_status"] >= 400:
+    if (observation.get("http_status") or 0) >= 400:
         return 0
     url = observation["url"]
     seen = {(source["url"].split("#", 1)[0], source["quote"]) for source in store}
