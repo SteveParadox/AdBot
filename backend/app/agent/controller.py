@@ -64,7 +64,7 @@ class Controller:
         if not self.creating:
             asyncio.create_task(page.close())
 
-    async def observe(self, *, directory=False):
+    async def observe(self, *, directory=False, structure=False):
         self.check_page()
         self.prune_tabs()
         planning = self.memory.get("planning", {})
@@ -74,6 +74,7 @@ class Controller:
         data = await self.observer.observe(
             self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", ""),
             **({"directory": directory} if directory else {}),
+            **({"structure": True} if structure else {}),
         )
         data["tabs"] = [
             {"tab_id": key, "url": tab["page"].url, "purpose": tab["purpose"]} for key, tab in self.tabs.items()

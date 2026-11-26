@@ -27,6 +27,7 @@ def task_for(session, identifier, owner):
 def task_output(job, task):
     elapsed = max(0, (job.completed_at or time.time()) - job.started_at) if job.started_at else 0
     directory = task.memory.get("directory") or {}
+    structured = task.memory.get("structured_capture") or {}
     records = directory.get("records", {})
     route = task.memory.get("execution_route") or {}
     entity = route.get("entity") or directory.get("entity") or ""
@@ -59,19 +60,22 @@ def task_output(job, task):
         "model_latency_ms": task.model_latency_ms,
         "planning": planning,
         "execution": {
-            "strategy": route.get(
+            "strategy": "structured_discovery" if structured else route.get(
                 "name", (task.memory.get("planning") or {}).get("route")
                 or ("directory_collection" if directory.get("pages") else "general"),
             ),
             "entity": entity or None,
             "collection_kind": directory.get("collection_kind"),
-            "collection_url": directory.get("collection_url"),
-            "unique_records": len(records),
-            "matched_records": sum(row.get("classification") == "match" for row in records.values()),
-            "advertised_total": directory["totals"][0] if len(directory.get("totals", [])) == 1 else None,
+            "collection_url": structured.get("source_url") or directory.get("collection_url"),
+            "unique_records": len(structured["records"]) if structured else len(records),
+            "matched_records": (len(result.get("structured_records", [])) if structured and verification.get("complete") else
+                                sum(row.get("classification") == "match" for row in records.values())),
+            "advertised_total": (structured["expected_count"] if structured else
+                                 directory["totals"][0] if len(directory.get("totals", [])) == 1 else None),
             "directory_pages": len(directory.get("pages", [])),
             "recovery_actions": directory.get("recovery_actions", 0),
-            "classification_calls": directory.get("classification_calls", 0),
+            "classification_calls": (structured.get("classification_calls", 0) if structured else
+                                     directory.get("classification_calls", 0)),
             "prevented_repetitions": task.memory.get("prevented_repetitions", 0) + directory.get("repeated_pages", 0),
             "evidence_count": (len(task.result.get("evidence", [])) if task.result else
                                len(task.memory.get("evidence", [])) + sum(row.get("classification") == "match" for row in records.values())),

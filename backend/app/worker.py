@@ -194,7 +194,15 @@ async def _execute(job_id, token):
                     if kind == "agent" and job.status in {"failed", "cancelled"}:
                         task = session.get(AgentTask, job_id)
                         directory = task.memory.get("directory", {})
-                        if directory.get("entity") or directory.get("pages"):
+                        captured = task.memory.get("structured_capture")
+                        if captured:
+                            task.result = {
+                                "strategy": "structured_discovery", "partial": True, "claims": [],
+                                "structured_records": list(captured["records"].values()),
+                                "evidence": task.memory.get("evidence", []),
+                                "verification": {"complete": False, "explanation": error or "Structured discovery stopped before verification"},
+                            }
+                        elif directory.get("entity") or directory.get("pages"):
                             from .agent.directory import directory_result
                             task.result = directory_result(directory, error or "Directory collection stopped before verification")
                             emit(session, job_id, "agent_partial_result", "Directory evidence preserved",

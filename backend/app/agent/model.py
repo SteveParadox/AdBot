@@ -225,6 +225,9 @@ def bounded_request_text(system, kind, payload, schema, max_chars):
         current_page["viewport_text"] = _clip(current_page.get("viewport_text"), 1200)
         current_page["headings"] = current_page.get("headings", [])[:8]
         current_page["elements"] = current_page.get("elements", [])[:20]
+        current_page["record_groups"] = [
+            {**group, "examples": group["examples"][:1]} for group in current_page.get("record_groups", [])[:4]
+        ]
     if isinstance(memory,dict):
         memory.pop("visited_urls",None)
         memory["recent_actions"] = memory.get("recent_actions",[])[-1:]
@@ -310,6 +313,11 @@ class ModelClient:
             "Every final claim needs existing evidence_ids. Successful form actions need observed confirmation text. "
             "Follow task_plan dependencies and preserve its literal constraints. Read active_subtask before choosing a tool. "
             "EXTRACT_DATASET captures records using the configured schema; EXPORT_DATASET creates the requested artifact after data exists. "
+            "Use CAPTURE_RECORDS for a relevant observed record_group. Map objective fields to one-based example positions, "
+            "and select a unique observed identity position. Copy an exact group context for an explicit exhaustive total. "
+            "Set restrict_to_objective when the objective requests a semantic subset and keep fields needed to classify it. "
+            "Use normal observed navigation, pagination, filtering or scroll to find additional records. Never use a competing entity type. "
+            "During verification, check all captured records against the original objective, the coverage count and the source context. "
             "Do not COMPLETE while required dataset or export phases remain pending. "
             "During verification, check supplied artifact records against all requested output constraints; source quotations alone do not establish that an exported dataset satisfies them. "
             "If blocked, ASK_USER or FAIL instead of claiming completion. "

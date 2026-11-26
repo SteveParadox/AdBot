@@ -41,6 +41,7 @@ class Observer:
         self.generation = 0
         self.secrets = []
         self.directory_cache = None
+        self.structural_groups = {}
 
     def safe_text(self, text):
         for secret in self.secrets:
@@ -56,7 +57,7 @@ class Observer:
             return {k: self.sanitize(v) for k, v in value.items()}
         return value
 
-    async def observe(self, page, tab_id, goal="", _retry=0, *, directory=False):
+    async def observe(self, page, tab_id, goal="", _retry=0, *, directory=False, structure=False):
         start = time.perf_counter()
         await asyncio.gather(*(h.dispose() for h in self.bindings.values()), return_exceptions=True)
         self.bindings, self.registry, self.private_targets = {}, {}, {}
@@ -79,6 +80,13 @@ class Observer:
             self.generation += 1
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
+        if structure:
+            from ..config import settings
+            from .structure import READ_STRUCTURE
+
+            structural_groups = await page.evaluate(READ_STRUCTURE, {
+                "rows": min(250, settings().agent_collection_batch_rows), "nodes": 1000,
+            })
         directory_cache_hit = False
         if directory:
             from ..config import settings
@@ -200,11 +208,11 @@ class Observer:
         if not coherent:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
             if _retry < 1:
-                return await self.observe(page, tab_id, goal, _retry=1, directory=directory)
+                return await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure)
             raise ValueError("Page changed repeatedly during semantic observation; no coherent evidence available")
         if len(inspected) < len(candidates) and _retry < 1:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
-            retried = await self.observe(page, tab_id, goal, _retry=1, directory=directory)
+            retried = await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure)
             retried["observation_metrics"]["read_attempts"] = 2
             retried["observation_metrics"]["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
             return retried
@@ -220,6 +228,13 @@ class Observer:
             ).encode()
         ).hexdigest()
         data = clean(data)
+        self.structural_groups = {}
+        if structure and not any(dialog.get("visible") for dialog in data.get("dialogs", [])):
+            from .structure import summarize_structure
+
+            groups = clean(structural_groups)
+            self.structural_groups = {group["id"]: group for group in groups}
+            data["record_groups"] = summarize_structure(groups)
         data["accessibility"] = "\n".join(
             f"- {e['role']} {json.dumps(e['name'])}" for e in data["elements"] if e["visible"]
         )[:6000]

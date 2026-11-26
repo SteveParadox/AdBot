@@ -38,6 +38,7 @@ type Task = Job & {
     partial?: boolean;
     claims?: Claim[];
     evidence?: Evidence[];
+    structured_records?: { fields: Record<string, string>; source_url: string; step_id: number }[];
     verification?: { complete: boolean; explanation: string; dimensions?: Record<string, boolean>; historical_unverified?: boolean };
   };
   pending_step_id: number | null;
@@ -140,6 +141,20 @@ export function BrowserPreview({ capture, token, status, directory }: {
   if (capture) return <PreviewImage key={capture} capture={capture} token={token} />;
   return <Empty text={finished(status) ? "No browser capture was recorded for this run." :
     directory ? "The browser preview is captured when collection finishes." : "Waiting for a browser capture."} />;
+}
+
+function StructuredRecords({ records }: { records: NonNullable<Task["result"]["structured_records"]> }) {
+  const columns = Object.keys(records[0].fields);
+  return <div className="table-wrap">
+    <table>
+      <caption>Captured records</caption>
+      <thead><tr>{columns.map((column) => <th key={column} scope="col">{column}</th>)}<th scope="col">Source</th></tr></thead>
+      <tbody>{records.map((record, index) => <tr key={`${record.step_id}-${index}`}>
+        {columns.map((column) => <td key={column}>{record.fields[column]}</td>)}
+        <td className="url">{record.source_url}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
 }
 
 function PreviewImage({ capture, token }: { capture: string; token: string }) {
@@ -842,7 +857,8 @@ function AgentDetail({
               <li key={name}>{name.replaceAll("_", " ")} · {passed ? "Verified" : "Unverified"}</li>
             )}
           </ul>}
-          {t.result.partial && t.result.claims.length === 0 && <p>No verified matches were collected.</p>}
+          {!!t.result.structured_records?.length && <StructuredRecords records={t.result.structured_records} />}
+          {t.result.partial && t.result.claims.length === 0 && !t.result.structured_records?.length && <p>No verified matches were collected.</p>}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
               <p>{claim.text}</p>

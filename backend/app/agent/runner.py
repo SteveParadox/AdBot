@@ -15,11 +15,12 @@ from ..db import AgentStep, AgentTask, emit, transaction
 from ..jobs import owned_job
 from .contracts import Decision, Verification
 from .controller import Controller
-from .directory import DirectoryCollection, directory_result
-from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, exhaustive_request, inventory_route,
+from .directory import DirectoryCollection, directory_result, matching_collection
+from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, collection_kinds, exhaustive_request, inventory_route,
                       select_route, task_text_only)
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelError, ModelProvidersUnavailable
+from .structure import add_capture, classification_request
 
 
 class AgentRunner(Runner):
@@ -253,23 +254,43 @@ class AgentRunner(Runner):
         if any(key not in evidence for claim in decision.claims for key in claim.evidence_ids):
             raise ValueError("Completion cites missing or unobserved evidence")
         artifact_context = await database_call(self.artifact_verification_context)
+        structured = self.memory.get("structured_capture")
+        criteria = self.verification_criteria()
+        capture_criterion = "The captured records come from a relevant source and their observed fields satisfy the requested entity and constraints."
+        coverage_criterion = "The quoted count is the full relevant inventory and all requested records have been covered."
+        if (not structured and not self.snapshot.get("extraction") and task_text_only(self.objective, self.options)
+                and exhaustive_request(self.objective)):
+            raise ValueError("Exhaustive inventory completion requires coverage from an observed collection")
+        if structured:
+            criteria = list(dict.fromkeys([*criteria, capture_criterion]))
+            if structured["exhaustive"]:
+                if structured["expected_count"] != len(structured["records"]):
+                    raise ValueError("Exhaustive coverage of the relevant record group could not be verified")
+                criteria = [*criteria, coverage_criterion]
+            if structured.get("restrict_to_objective"):
+                await self.classify_structured(structured)
         verification = await self.ask_model(
             "verify",
             {
                 "objective": self.objective,
-                "success_criteria": self.verification_criteria(),
+                "success_criteria": criteria,
                 "claims": [c.model_dump() for c in decision.claims],
                 "evidence": list(evidence.values()),
                 "artifact": artifact_context,
+                **({"captured_records": structured} if structured else {}),
             },
             Verification,
         )
         checks = verification.checks
-        criteria = self.verification_criteria()
         valid = (
             verification.complete and len(checks) == len(criteria) and {c.criterion for c in checks} == set(criteria)
         )
         valid = valid and all(c.met and c.evidence_ids and all(e in evidence for e in c.evidence_ids) for c in checks)
+        if structured:
+            proof_ids = {identifier for identifier in evidence if identifier.startswith("capture-")}
+            valid = valid and all(
+                proof_ids.intersection(c.evidence_ids) for c in checks if c.criterion in {capture_criterion, coverage_criterion}
+            )
         if not valid:
             raise ValueError("Goal verification incomplete: " + verification.explanation[:400])
         planning = self.memory.get("planning")
@@ -308,9 +329,60 @@ class AgentRunner(Runner):
             "planning": self.memory.get("planning"),
             "artifact": self.memory.get("export_artifact"),
         }
+        if structured:
+            result["structured_records"] = [record for record in structured["records"].values()
+                                            if record.get("classification", "match") == "match"]
         # Publication belongs to worker finalization, after the final checkpoint
         # and browser cleanup succeed. Verification alone is not completion.
         return result
+
+    async def classify_structured(self, capture):
+        from .classification import AssessmentBatch, validate_assessments
+
+        cfg = settings()
+        pending = [row for row in capture["records"].values() if not row.get("classification")]
+        size = min(cfg.agent_classification_batch_rows, max(1, (cfg.ai_max_request_chars - 3500) // 3000))
+        for offset in range(0, len(pending), size):
+            if capture.get("classification_calls", 0) >= cfg.agent_classification_max_calls:
+                raise ValueError("Structured classification reached its configured call budget")
+            rows = pending[offset:offset + size]
+            payload = classification_request(self.objective, rows)
+            capture["classification_calls"] = capture.get("classification_calls", 0) + 1
+            result = await self.ask_model("classify", payload, AssessmentBatch, wait_for_provider=False)
+            validate_assessments(payload, result)
+            for assessment in result.records:
+                row = rows[assessment.id - 1]
+                row["classification"] = assessment.classification
+                if assessment.evidence:
+                    row["classification_evidence"] = payload["records"][assessment.id - 1]["excerpts"][assessment.evidence - 1]
+            await self.checkpoint(self.controller)
+        if any(row["classification"] == "unknown" for row in capture["records"].values()):
+            raise ValueError("Some records could not be classified against the requested entity")
+
+    def capture_records(self, decision, observation, controller, step_id):
+        capture = decision.capture
+        group = controller.observer.structural_groups.get(capture.group)
+        if group is None or not any(summary["id"] == capture.group for summary in observation.get("record_groups", [])):
+            raise ValueError("The selected record group was not offered in this observation")
+        if len(self.memory["evidence"]) >= 40:
+            raise ValueError("Evidence budget exhausted")
+        self.policy.check(observation["url"])
+        cfg = settings()
+        state = add_capture(
+            self.memory.get("structured_capture", {}), group, capture, observation, step_id,
+            max_rows=cfg.agent_collection_max_rows, max_bytes=cfg.agent_collection_max_bytes,
+            exhaustive=exhaustive_request(self.objective),
+        )
+        record_evidence = {
+            "id": f"capture-{step_id}", "url": observation["url"], "step_id": step_id,
+            "quote": "\n".join((group["label"], *group["context"], *(
+                " | ".join(segment["value"] for segment in row["segments"]) for row in group["records"]
+            )))[:4000],
+        }
+        self.memory["structured_capture"] = state
+        self.memory["planning"]["route"] = "structured_discovery"
+        self.memory["evidence"].append(record_evidence)
+        return {"records": len(state["records"]), "expected_count": state["expected_count"], **record_evidence}
 
     async def restore_tabs(self, controller):
         previous_tabs = self.memory.get("tabs", [])
@@ -501,6 +573,7 @@ class AgentRunner(Runner):
         directory = DirectoryCollection(route.entity, self.memory.setdefault("directory", {}),
                                         max_rows=cfg.agent_collection_max_rows, max_bytes=cfg.agent_collection_max_bytes) if route.entity else None
         collection_mode = route.entity
+        use_structure = not self.snapshot.get("extraction") and cfg.ai_provider != "disabled"
         def read_start():
             with transaction() as session:
                 start = session.scalar(
@@ -514,8 +587,10 @@ class AgentRunner(Runner):
             await self.gate.wait()
             controller.engine.trace = []
             controller.engine.dispatch_started = False
+            use_directory = directory is not None and not self.memory.get("structured_capture")
             with controller.engine.phase("inspection"):
-                observation = await controller.observe(directory=collection_mode) if directory else await controller.observe()
+                observation = (await controller.observe(directory=collection_mode) if use_directory else
+                               await controller.observe(**({"structure": True} if use_structure else {})))
             await self.prepare_plan(observation, deterministic=directory is not None)
             if observation["url"] not in self.memory["visited_urls"]:
                 self.memory["visited_urls"].append(observation["url"])
@@ -542,19 +617,25 @@ class AgentRunner(Runner):
             deterministic = False
             semantic_key = None
             prevented = False
+            rejected_source = False
             len_before = len(self.memory["evidence"])
             try:
                 with controller.engine.phase("decision"):
                     terminal = None
-                    if directory:
+                    if use_directory:
+                        batch = observation.get("directory")
+                        rejected_source = bool(
+                            batch and batch.get("kind") not in {None, "results", "entries", "items"}
+                            and collection_kinds(directory.entity) and not matching_collection(directory.entity, batch)
+                        )
                         decision, terminal = directory.advance(observation, step_id, self.policy)
                         deterministic = decision is not None or terminal is not None
                         if directory.state["pages"]:
                             await self.checkpoint(controller)
                     if terminal is None and decision is None:
-                        if directory:
+                        if use_directory:
                             # Keep the directory intent for a later observed page reached by the general strategy.
-                            observation = await controller.observe()
+                            observation = await controller.observe(**({"structure": True} if use_structure else {}))
                             def update_observation():
                                 with transaction() as session:
                                     owned_job(session, self.id, self.token)
@@ -573,6 +654,9 @@ class AgentRunner(Runner):
                                 "steps_remaining": self.options["max_steps"] - number,
                                 "form_input_enabled": self.options["allow_form_input"],
                                 "task_plan": plan,
+                                **({"captured_record_count": len(self.memory["structured_capture"]["records"]),
+                                    "expected_record_count": self.memory["structured_capture"]["expected_count"]}
+                                   if "structured_capture" in self.memory else {}),
                             },
                             Decision,
                             observation,
@@ -639,9 +723,13 @@ class AgentRunner(Runner):
                 elif decision.decision == "FAIL":
                     raise RuntimeError("Agent reported task blocked: " + decision.text)
                 elif decision.decision == "COMPLETE":
-                    if directory:
+                    if directory and (directory.state["pages"] or not self.memory.get("structured_capture")):
                         raise ValueError("Exhaustive completion requires verified coverage of the requested collection")
                     outcome = await self.complete(decision)
+                elif decision.decision == "CAPTURE_RECORDS":
+                    if rejected_source:
+                        raise ValueError("The observed source type conflicts with the requested collection")
+                    outcome = self.capture_records(decision, observation, controller, step_id)
                 elif decision.decision == "EXTRACT":
                     outcome = self.extract(decision, observation, step_id)
                 elif decision.decision == "SUMMARIZE":
@@ -655,7 +743,8 @@ class AgentRunner(Runner):
                                if deterministic else await controller.act(decision, self.options, approved))
                 # COMPLETE has no browser side effect; the current observation
                 # already grounds its evidence. Do not add a fallible browser read.
-                after = observation if decision.decision == "COMPLETE" or deterministic else await controller.observe()
+                after = (observation if decision.decision in {"COMPLETE", "CAPTURE_RECORDS"} or deterministic
+                         else await controller.observe())
                 if (
                     self.snapshot.get("extraction")
                     and decision.decision != "EXTRACT_DATASET"
@@ -672,8 +761,8 @@ class AgentRunner(Runner):
                     self.memory["evidence"],
                     await database_call(self.dataset_count),
                     bool(self.memory.get("export_artifact")),
-                    collection_complete=False if directory else None,
-                    source_verified=bool(directory.state.get("source_relevance")) if directory else None,
+                    collection_complete=False if directory and not self.memory.get("structured_capture") else None,
+                    source_verified=bool(directory.state.get("source_relevance")) if directory and not self.memory.get("structured_capture") else None,
                 )
                 active_id = self.memory["planning"]["active_subtask"]
                 self.memory["planning"]["last_observation"] = {
@@ -943,7 +1032,7 @@ class AgentRunner(Runner):
             raise ValueError("Durable task constraints no longer match the authorized task")
         route = self.memory.get("execution_route")
         if route:
-            state["route"] = route["name"]
+            state["route"] = "structured_discovery" if self.memory.get("structured_capture") else route["name"]
             if route.get("entity"):
                 state["plan"]["intent"]["entities"] = [route["entity"].removeprefix("semantic:")]
         if not state.get("initialized"):

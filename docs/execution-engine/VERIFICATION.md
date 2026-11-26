@@ -2,6 +2,10 @@
 
 ## Semantic source selection and independent catalog comparison
 
+The separate structural-discovery suite drives the normal task API, Chromium worker and result API across eight local sites with unrelated layouts. The fixtures cover retail inventory, vacancies, a prompt library, news, a financial grid, documentation, a restaurant menu and a laboratory queue. The model contract is simulated for these reproducible browser tests. Scenarios include reordered multilingual fields, missing counts, competing preview sources, JavaScript pagination, scroll-driven rendering and a semantic subset. Failure cases preserve captured records when a competing source is irrelevant, an exhaustive result is incomplete, or a verifier invents a citation.
+
+A separate configured-provider check received two synthetic German railway-board groups and selected the current departures with the correct identity field using `CAPTURE_RECORDS`. It used 3,917 tokens including provider failover. That check covered the live model decision contract. The browser fixtures cover execution and result publication.
+
 The original prompt task completed after reading the wrong catalog, 119 tools, and returning four software products. With typed source verification, the first corrected run collected all 142 prompts and stayed partial with 58 unresolved classifications. It used 29,685 tokens. Grounded topic prefiltering reduced the final prompt run to 2,470 tokens and two model calls with no unresolved prompts.
 
 | Objective | Verified catalog coverage | Independently checked matches | Elapsed | Tokens |
