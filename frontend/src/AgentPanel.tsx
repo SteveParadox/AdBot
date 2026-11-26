@@ -209,9 +209,9 @@ export default function AgentPanel({
   const [formInput, setFormInput] = useState(false),
     [authorized, setAuthorized] = useState(false),
     [memory, setMemory] = useState(true),
-    [vision, setVision] = useState(false),
-    [persist, setPersist] = useState(false);
-  const [downloads, setDownloads] = useState(false);
+    [vision, setVision] = useState(true),
+    [persist, setPersist] = useState(true);
+  const [downloads, setDownloads] = useState(true);
   const [readSearch, setReadSearch] = useState(true);
   const [postSearchUrl, setPostSearchUrl] = useState("");
   const [postSearchField, setPostSearchField] = useState("q");
@@ -293,8 +293,8 @@ export default function AgentPanel({
           max_steps: Math.min(maxSteps, config.data?.max_steps || 500),
           max_tokens: config.data?.max_tokens || 60000,
           memory_enabled: memory,
-          visual_reasoning: vision,
-          session_persistence: persist,
+          visual_reasoning: vision && Boolean(config.data?.visual_reasoning),
+          session_persistence: persist && Boolean(config.data?.session_persistence),
           allow_form_input: formInput,
           allow_search_input: readSearch,
           approved_post_search: approvedPostSearch,
@@ -501,11 +501,11 @@ export default function AgentPanel({
             <label>
               <input
                 type="checkbox"
-                checked={vision}
+                checked={vision && Boolean(config.data?.visual_reasoning)}
                 disabled={!config.data?.visual_reasoning}
                 onChange={(e) => setVision(e.target.checked)}
               />
-              Vision-capable model
+              Visual reasoning (when a compatible model is configured)
             </label>
             <label>
               <input
@@ -518,11 +518,11 @@ export default function AgentPanel({
             <label>
               <input
                 type="checkbox"
-                checked={persist}
+                checked={persist && Boolean(config.data?.session_persistence)}
                 disabled={!config.data?.session_persistence}
                 onChange={(e) => setPersist(e.target.checked)}
               />
-              Encrypted browser session
+              Encrypted browser session (when a key is configured)
             </label>
           </div>
           {!website && (
