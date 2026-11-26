@@ -302,3 +302,32 @@ async def test_initial_agent_tab_dismisses_each_dialog_once(client, target, agen
     await runner.run()
     assert results == [False]
     assert dismissed == ["Continue?"]
+@pytest.mark.asyncio
+async def test_extract_accepts_a_paraphrase_supported_by_an_earlier_observation(client, target, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings(), "ai_provider", "local")
+    payload = {"website_id": target["id"], "objective": "Find the service hours"}
+    job = client.post("/api/agent/tasks", json=payload).json()["id"]
+    other = client.post("/api/agent/tasks", json=payload).json()["id"]
+    runner = AgentRunner(*claim())
+    assert runner.id == job
+    quote = "The service opens\nat 08:00 on weekdays."
+    old_url = "http://127.0.0.1:8765/hours"
+    with transaction() as session:
+        earlier = AgentStep(job_id=job, number=1, observation={"url": old_url, "text": quote})
+        private = AgentStep(job_id=other, number=1, observation={"url": old_url, "text": "Other task evidence."})
+        session.add_all([earlier, private])
+        session.flush()
+        source_id = earlier.id
+    page = {"url": "http://127.0.0.1:8765/locations", "text": "Locations", "viewport_text": ""}
+    action = Decision(decision="EXTRACT", observation="Earlier source", reason="Capture hours", confidence=1,
+                      expected_result="Source-backed hours", text="Weekday service starts at 8 am.",
+                      source_quote="THE SERVICE OPENS AT 08:00 ON WEEKDAYS.")
+    evidence = await runner.extract(action, page, 9000)
+    assert evidence["url"] == old_url and evidence["step_id"] == source_id
+    assert evidence["quote"] == quote and evidence["summary"] == action.text
+    inferred = await runner.extract(action.model_copy(update={"source_quote": None}), page, 9002)
+    assert inferred["id"] == evidence["id"] and inferred["quote"] == quote
+    with pytest.raises(ValueError, match="not found"):
+        await runner.extract(action.model_copy(update={"source_quote": "Other task evidence."}), page, 9001)

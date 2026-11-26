@@ -155,11 +155,9 @@ def map_group(group, capture, *, preserve_context=False):
         raise ValueError("The proposed mapping referred to an unobserved position")
     for row in group["records"]:
         segments = row["segments"]
-        if row["truncated"] and not preserve_context:
-            raise ValueError("Required fields could not be mapped for every observed row")
         def value_at(position):
-            label = example[position - 1]["label"]
-            matching = ([segment for segment in segments if segment["label"] == label] if label else
+            label = " ".join(example[position - 1]["label"].casefold().split())
+            matching = ([segment for segment in segments if " ".join(segment["label"].casefold().split()) == label] if label else
                         segments[position - 1:position])
             if len(matching) != 1:
                 raise ValueError("An observed field has no unambiguous mapping across the selected rows")

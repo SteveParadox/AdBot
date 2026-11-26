@@ -53,8 +53,10 @@ class Decision(Strict):
     text: str | None = Field(
         None,
         max_length=4000,
-        description="REQUIRED for EXTRACT: the exact visible quote. Also required for TYPE, SEARCH, ASK_USER and FAIL. Omit for other actions.",
+        description="For EXTRACT, an excerpt or paraphrase about observed content. Supply source_quote when known. Also required for TYPE, SEARCH, ASK_USER and FAIL.",
     )
+    source_quote: str | None = Field(None, min_length=1, max_length=4000,
+                                     description="For EXTRACT paraphrases, observed source text supporting the paraphrase.")
     tab_id: str | None = Field(None, max_length=36)
     reason: str = Field(min_length=1, max_length=1000)
     confidence: float = Field(ge=0, le=1)
@@ -94,6 +96,8 @@ class Decision(Strict):
 
     @model_validator(mode="after")
     def parameters(self):
+        if self.source_quote is not None and self.decision != "EXTRACT":
+            raise ValueError("source_quote is only supported for EXTRACT")
         if (self.decision == "CAPTURE_RECORDS") != (self.capture is not None):
             raise ValueError("Only CAPTURE_RECORDS accepts an observed group and field mapping")
         if (
