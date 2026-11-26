@@ -347,6 +347,8 @@ class AgentRunner(Runner):
                 self.reject_enumeration_source(structured)
                 await self.checkpoint(self.controller)
                 raise ValueError("This source yielded no qualifying records. Explore a different observed source.")
+        if len(criteria) > 60:
+            raise ValueError("Too many verification checks; consolidate related claims without dropping required criteria")
         verification = await self.ask_model(
             "verify",
             {
@@ -424,6 +426,13 @@ class AgentRunner(Runner):
                 "; ".join(problems)[:380] if problems else "Required structured evidence was not verified"
             ))
         self.memory.pop("verification_feedback", None)
+        if research and claim_checks:
+            # Publish only citations independently confirmed for each paraphrase.
+            by_criterion = {check.criterion: check for check in checks}
+            for index, claim in enumerate(decision.claims, 1):
+                criterion = f"Claim {index}: {claim.text}"
+                if criterion in claim_checks:
+                    claim.evidence_ids = list(dict.fromkeys(by_criterion[criterion].evidence_ids))
         supported_ids = {identifier for check in checks for identifier in check.evidence_ids}
         checkpoint_evidence = ([row for row in evidence.values() if row["id"] in supported_ids]
                                if research else self.memory["evidence"])

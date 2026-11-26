@@ -141,6 +141,7 @@ def test_recommendation_relevance_ignores_generic_tool_overlap():
     relevant = "Research-driven content generation tools assist writers."
     assert not topical_match(objective, irrelevant)
     assert topical_match(objective, relevant)
+    assert topical_match(objective, "Perplexity supports research-driven content production.")
     store = []
     observation = {"url": "https://example.test/", "research_chunks": [
         {"quote": irrelevant, "entities": [], "heading": "Rankings"},
@@ -177,3 +178,19 @@ def test_completion_retry_fingerprint_changes_when_citations_change():
     before = {"decision": "COMPLETE", "claims": [{"text": "A fact", "evidence_ids": ["wrong"]}]}
     after = {"decision": "COMPLETE", "claims": [{"text": "A fact", "evidence_ids": ["right"]}]}
     assert action_key(before) != action_key(after)
+
+
+
+async def test_duplicate_research_extraction_returns_existing_evidence():
+    from app.agent.runner import AgentRunner
+
+    runner = object.__new__(AgentRunner)
+    quote = "Atlas generates illustrations from text."
+    url = "https://example.test/tools"
+    runner.memory = {"evidence": [{"id": "dom-original", "url": url, "quote": quote, "step_id": 1}]}
+    decision = Decision(observation="Read the source", reason="Reuse observed evidence",
+                        decision="EXTRACT", text=quote, confidence=1, expected_result="Existing evidence")
+    outcome = await runner.extract(decision, {"url": url, "text": quote}, 2)
+    assert outcome["already_collected"] is True
+    assert outcome["id"] == "dom-original"
+    assert len(runner.memory["evidence"]) == 1

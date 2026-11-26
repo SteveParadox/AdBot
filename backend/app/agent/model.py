@@ -211,6 +211,12 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
         if reduced:
             memory.pop("summary", None)
             memory.pop("research_coverage", None)
+            feedback = memory.get("verification_feedback")
+            if isinstance(feedback, dict):
+                feedback["problems"] = feedback.get("problems", [])[:3]
+                feedback["claims"] = feedback.get("claims", [])[:2]
+                for claim in feedback["claims"]:
+                    claim["candidates"] = claim.get("candidates", [])[:1]
         memory["visited_urls"] = [_clip(url, 400) for url in memory.get("visited_urls", [])[-10:]]
         memory["evidence"] = [
             item

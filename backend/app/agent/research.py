@@ -64,15 +64,21 @@ _GENERIC_RESEARCH = {"best", "top", "recommended", "recommend", "rank", "ranking
                      "product", "products", "option", "options", "good", "ai"}
 
 
+def research_terms(value):
+    aliases = {"production": "generate", "produce": "generate", "producing": "generate",
+               "produces": "generate", "produced": "generate"}
+    return {aliases.get(term, term) for term in semantic_terms(value)}
+
+
 def topic_terms(value):
-    tokens = semantic_terms(value) - STOP
+    tokens = research_terms(value) - STOP
     return tokens - _GENERIC_RESEARCH or tokens
 
 
 def topical_match(criterion, quote):
     """A conservative discovery hint, not a semantic verification verdict."""
     wanted = topic_terms(criterion)
-    return bool(wanted) and len(wanted & semantic_terms(quote)) >= min(2, len(wanted))
+    return bool(wanted) and len(wanted & research_terms(quote)) >= min(2, len(wanted))
 
 
 def comparison_entities(objective, declared=()):
@@ -112,7 +118,7 @@ def ranked_chunks(chunks, objective, title, entities=(), criteria=()):
         if not matched and len(title_entities) == 1:
             matched = title_entities
         hits = target & body
-        topical_hits = topic_terms(objective) & semantic_terms(quote)
+        topical_hits = topic_terms(objective) & research_terms(quote)
         score = 3 * len(hits) + 8 * len(topical_hits) + len(target & context) + 3 * len(matched)
         if hits or matched or topical_hits or len(target & context) >= 2:
             output.append((score, {**chunk, "entities": matched}))
