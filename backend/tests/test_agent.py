@@ -843,3 +843,89 @@ def test_step_limit_defaults_and_validation(client, target, agent_config, monkey
             Settings(_env_file=None, agent_max_steps=limit)
     monkeypatch.setattr(agent_config, "agent_max_steps", 100)
     assert client.post("/api/agent/tasks", json={**body, "max_steps": 500}).json()["options"]["max_steps"] == 100
+
+def test_new_task_capability_defaults_and_explicit_opt_out(client, target, agent_config, monkeypatch):
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
+    monkeypatch.setattr(agent_config, "ai_vision_models", "local:fixture-model-not-live-llm")
+    monkeypatch.setattr(agent_config, "ai_ollama_native", False)
+    monkeypatch.setattr(agent_config, "browser_session_persistence", True)
+    monkeypatch.setattr(agent_config, "session_encryption_key", SecretStr(Fernet.generate_key().decode()))
+    config = client.get("/api/agent/config").json()
+    assert config["visual_reasoning"] is True
+    assert config["session_persistence"] is True
+    task = new_task(client, target)
+    assert all(task["options"][key] is True for key in (
+        "visual_reasoning", "session_persistence", "allow_downloads"
+    ))
+    opted_out = new_task(client, target, visual_reasoning=False, session_persistence=False, allow_downloads=False)
+    assert all(opted_out["options"][key] is False for key in (
+        "visual_reasoning", "session_persistence", "allow_downloads"
+    ))
+
+
+def test_unavailable_capabilities_are_not_granted(client, target, agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
+    monkeypatch.setattr(agent_config, "ai_vision_models", "")
+    monkeypatch.setattr(agent_config, "browser_session_persistence", False)
+    task = new_task(client, target)
+    assert task["options"]["visual_reasoning"] is False
+    assert task["options"]["session_persistence"] is False
+    assert task["options"]["allow_downloads"] is True
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    for flag in ("visual_reasoning", "session_persistence"):
+        for endpoint in ("preview", "tasks"):
+            result = client.post(f"/api/agent/{endpoint}", json={**body, flag: True})
+            assert result.status_code == 422, result.text
+
+
+def test_vision_model_compatibility_and_adaptive_reasoning(agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
+    monkeypatch.setattr(agent_config, "ai_vision_models", "local:fixture-model-not-live-llm")
+    monkeypatch.setattr(agent_config, "ai_ollama_native", False)
+    assert agent_config.vision_available()
+    assert not agent_config.supports_vision("local", "text-only")
+    assert not agent_config.supports_vision("local", "fixture-model-not-live-llm", native=True)
+    monkeypatch.setattr(agent_config, "ai_ollama_native", True)
+    assert not agent_config.vision_available()
+    monkeypatch.setattr(agent_config, "ai_reasoning_effort", "auto")
+    assert agent_config.reasoning_effort_for("plan") == "high"
+    assert agent_config.reasoning_effort_for("verify") == "high"
+    assert agent_config.reasoning_effort_for("decide") == "medium"
+    assert agent_config.reasoning_effort_for("classify") == "low"
+    monkeypatch.setattr(agent_config, "ai_reasoning_effort", "low")
+    assert agent_config.reasoning_effort_for("verify") == "low"
+
+
+def test_session_persistence_auto_requires_valid_key():
+    from app.config import Settings
+
+    kwargs = {"_env_file": None, "api_keys": "x" * 40, "ai_provider": "disabled",
+              "browser_session_persistence": None}
+    assert Settings(**kwargs, session_encryption_key="").browser_session_persistence is False
+    assert Settings(**kwargs, session_encryption_key=Fernet.generate_key().decode()).browser_session_persistence is True
+    with pytest.raises(ValidationError, match="valid ADBOT_SESSION_ENCRYPTION_KEY"):
+        Settings(**kwargs, session_encryption_key="invalid")
+    with pytest.raises(ValidationError, match="valid ADBOT_SESSION_ENCRYPTION_KEY"):
+        Settings(**{**kwargs, "browser_session_persistence": True}, session_encryption_key="")
+    assert Settings(**{**kwargs, "browser_session_persistence": False},
+                    session_encryption_key=Fernet.generate_key().decode()).browser_session_persistence is False
+
+
+def test_old_capability_defaults_idempotency_replay(client, target, agent_config):
+    headers = {"Idempotency-Key": "old-capability-defaults"}
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    task_id = client.post("/api/agent/tasks", json=body, headers=headers).json()["id"]
+    old = TaskInput(**body).model_dump(exclude={
+        "priority", "depends_on", "dataset_id", "dataset_query", "output_format"
+    })
+    old.update(visual_reasoning=False, session_persistence=False, allow_downloads=False)
+    with transaction() as session:
+        session.get(Job, task_id).payload_hash = hashlib.sha256(
+            json.dumps(old, sort_keys=True).encode()
+        ).hexdigest()
+    assert client.post("/api/agent/tasks", json=body, headers=headers).json()["id"] == task_id
+    assert client.post("/api/agent/tasks", json={**body, "allow_downloads": True},
+                       headers=headers).status_code == 409
+
