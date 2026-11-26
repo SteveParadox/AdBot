@@ -368,7 +368,9 @@ class AgentRunner(Runner):
                 **({"instructions": "Verify each supplied candidate from its observed fields and classification evidence. "
                                     "A detail page may directly document a qualifying record. A request with no explicit count "
                                     "or exhaustive requirement can be answered with the qualifying records found. Assess the tool's "
-                                    "own function and preserve any scope or category constraints in the original objective."}
+                                    "own function and preserve any scope or category constraints in the original objective. "
+                                    "For accumulated records, cite every capture evidence ID that supports the accepted records. "
+                                    "Do not assume one source represents a complete or exhaustive catalog."}
                    if enumeration else {}),
                 **({"captured_records": {
                     **structured, "records": qualified,
@@ -540,8 +542,11 @@ class AgentRunner(Runner):
             raise ValueError("The selected record group was not offered in this observation")
         if getattr(self, "enumeration_mode", False) and (observation.get("http_status") or 0) >= 400:
             raise ValueError("A failed response cannot establish a qualifying collection")
-        if getattr(self, "enumeration_mode", False) and [observation["url"], group["label"]] in self.memory.get("rejected_collection_scopes", []):
-            raise ValueError("This observed collection was rejected. Choose a different source or record group.")
+        if getattr(self, "enumeration_mode", False):
+            from .structure import rejected_group
+
+            if rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", [])):
+                raise ValueError("This observed collection was rejected. Choose a different source or record group.")
         if len(self.memory["evidence"]) >= 40:
             raise ValueError("Evidence budget exhausted")
         self.policy.check(observation["url"])
@@ -1252,8 +1257,10 @@ class AgentRunner(Runner):
         direct = set()
         subject = {word[:6] for word in words(self.objective) if word not in {"list", "and", "for", "of", "the"}}
         if not any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
+            from .structure import rejected_group
+
             groups = [group for group in observation.get("record_groups", [])
-                      if [observation["url"], group["label"]] not in self.memory.get("rejected_collection_scopes", [])]
+                      if not rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", []))]
             repeated = any(group["kind"] != "detail" and group.get("observed_count", 0) >= 2
                            for group in groups)
             for group in groups:
@@ -1298,9 +1305,9 @@ class AgentRunner(Runner):
                 rejected.append(url)
             del rejected[:-100]
         groups = self.memory.setdefault("rejected_collection_scopes", [])
-        scope = [collection["source_url"], collection["scope"][2]]
-        if scope not in groups:
-            groups.append(scope)
+        for scope in collection.get("observed_scopes") or [[collection["source_url"], collection["scope"][2]]]:
+            if scope not in groups:
+                groups.append(scope)
         del groups[:-100]
         self.memory.pop("structured_capture", None)
         self.memory.pop("enumeration_verified_capture", None)
@@ -1312,7 +1319,11 @@ class AgentRunner(Runner):
         from .structure import merge_qualified_records
 
         previous = [] if collection.get("exhaustive") else self.memory.get("research_partial", {}).get("structured_records", [])
-        return merge_qualified_records(previous, collection["records"].values())
+        records = merge_qualified_records(previous, collection["records"].values())
+        cfg = settings()
+        if len(records) > cfg.agent_collection_max_rows or len(json.dumps(records, ensure_ascii=False).encode()) > cfg.agent_collection_max_bytes:
+            raise ValueError("Accumulated verified collection exceeds its resource budget")
+        return records
 
     def research_decision(self, observation):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
@@ -1364,8 +1375,10 @@ class AgentRunner(Runner):
                          and destination_key(element["href"]) not in self.memory.get("rejected_collection_sources", []))]
         page = {**observation, "text": "", "viewport_text": "", "elements": available}
         if getattr(self, "enumeration_mode", False):
+            from .structure import rejected_group
+
             page["record_groups"] = [group for group in observation.get("record_groups", [])
-                                     if [observation["url"], group["label"]] not in self.memory.get("rejected_collection_scopes", [])]
+                                     if not rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", []))]
         return page
 
     def research_criteria(self):

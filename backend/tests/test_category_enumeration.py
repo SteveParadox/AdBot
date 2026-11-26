@@ -230,3 +230,15 @@ def test_listing_prefers_record_groups_to_generic_detail_heading():
         "record_groups": [{"id": 1, "kind": "detail", "label": "Compare tools side by side"},
                           {"id": 2, "kind": "repeated", "label": "Tools", "observed_count": 4}]})
     assert result is None
+
+
+
+def test_rejected_group_identity_does_not_hide_other_groups_with_same_heading():
+    from app.agent.structure import group_signature, rejected_group
+
+    url = "https://example.test/catalog"
+    first = {"kind": "repeated", "label": "Tools", "examples": [[{"label": "Name", "value": "Atlas"}]]}
+    second = {"kind": "repeated", "label": "Tools", "examples": [[{"label": "Name", "value": "Beacon"}]]}
+    scopes = [[url, "Tools", group_signature(first)]]
+    assert rejected_group(url, first, scopes)
+    assert not rejected_group(url, second, scopes)

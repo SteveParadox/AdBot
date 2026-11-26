@@ -1,4 +1,5 @@
 """Bounded structural observations and evidence-backed field mapping."""
+import hashlib
 import json
 import re
 from urllib.parse import urlsplit
@@ -152,6 +153,22 @@ class RecordCapture(Strict):
         return self
 
 
+def group_signature(group):
+    """Identity of a visible candidate group, independent of transient group IDs."""
+    if group.get("signature"):
+        return group["signature"]
+    examples = group.get("examples")
+    if examples is None:
+        examples = [[{"label": segment["label"][:80], "value": segment["value"][:100]}
+                     for segment in row["segments"][:12]] for row in group.get("records", [])[:2]]
+    data = [group.get("kind"), group.get("label"), examples]
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def rejected_group(url, group, scopes):
+    return [url, group["label"]] in scopes or [url, group["label"], group_signature(group)] in scopes
+
+
 def summarize_structure(groups):
     selected = groups[:6]
     detail = next((group for group in groups if group["kind"] == "detail"), None)
@@ -159,6 +176,7 @@ def summarize_structure(groups):
         selected = [*selected[:5], detail]
     return [
         {**{key: group[key] for key in ("id", "label", "context", "kind", "observed_count", "truncated", "static_table")},
+         "signature": group_signature(group),
          "examples": [
              [{"label": segment["label"][:80], "value": segment["value"][:100]} for segment in row["segments"][:12]]
              for row in group["records"][:2]
@@ -245,6 +263,12 @@ def add_capture(previous, group, capture, observation, step_id, *, max_rows, max
         "classification_calls": previous.get("classification_calls", 0),
         "records": records,
     }
+    if enumeration:
+        scopes = list(previous.get("observed_scopes", []))
+        observed = [observation["url"], group["label"], group_signature(group)]
+        if observed not in scopes:
+            scopes.append(observed)
+        state["observed_scopes"] = scopes
     if len(records) > max_rows or len(json.dumps(state, ensure_ascii=False).encode()) > max_bytes:
         raise ValueError("The structured collection exceeds its resource budget")
     return state
