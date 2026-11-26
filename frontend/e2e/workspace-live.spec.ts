@@ -10,6 +10,7 @@ test("all workspace pages stay responsive against the real API", async ({page, r
   await page.getByLabel("Workspace API key").fill("e2e-local-key-000000000000000000000000");
   await page.getByRole("button", {name:"Connect workspace"}).click();
   await expect(page.getByRole("heading", {name:"A clearer view of your web."})).toBeVisible();
+  await expect(page.getByText("API connected", {exact:true})).toBeVisible();
   await expect(page.locator(".shell > aside")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(page.locator("html")).toHaveCSS("background-color", "rgb(246, 247, 251)");
   await expect(page.locator("h1")).toHaveCSS("font-weight", "500");
@@ -21,7 +22,7 @@ test("all workspace pages stay responsive against the real API", async ({page, r
       const button = navigation.getByRole("button", {name:new RegExp(`^${section}(?: [0-9]+)?$`)});
       await button.click();
       await expect(button).toHaveAttribute("aria-current", "page");
-      await page.waitForLoadState("networkidle");
+      await expect(page.getByRole("main").getByText(`${section} workspace`, {exact:true})).toBeAttached();
       if (section === "AI Agent") {
         await expect(page.getByLabel("Natural-language objective", {exact:true})).toBeVisible();
         await expect(page.getByLabel("Agent priority (-10 to 10)", {exact:true})).not.toBeVisible();
