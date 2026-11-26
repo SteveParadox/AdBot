@@ -20,6 +20,10 @@ METADATA = r"""e => {
  const visible=!!(r.width&&r.height)&&s.visibility!=='hidden'&&s.display!=='none'&&!e.closest('[hidden],[aria-hidden=true]');
  const bool=a=> e.hasAttribute(a)?e.getAttribute(a)==='true':null;
  const form=e.form||e.closest('form');
+ const searchScope=e.closest('search,[role=search]');
+ const searchName=[fallback_name,e.getAttribute('placeholder'),e.getAttribute('name')].filter(Boolean).join(' ');
+ const searchSemantics=role==='searchbox'||type==='search'||!!searchScope||
+   (/\b(search|find|lookup|look up|query)\b/i.test(searchName)&&! /\b(password|login|register|email|payment|address)\b/i.test(searchName));
  const landmark=e.closest('dialog,[role=dialog],[role=alertdialog],form,section[aria-label],section[aria-labelledby],[role=region],article,nav,main');
  const heading=landmark?.querySelector('h1,h2,h3,h4,[role=heading]');
  const context=landmark?{tag:landmark.tagName.toLowerCase(),id:landmark.id||null,role:landmark.getAttribute('role')||({form:'form',dialog:'dialog',nav:'navigation',main:'main',article:'article'}[landmark.tagName.toLowerCase()])||'region',name:text((landmark.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>document.getElementById(id)?.textContent||'').join(' ')||landmark.getAttribute('aria-label')),heading:text(heading?.textContent)}:null;
@@ -37,7 +41,8 @@ METADATA = r"""e => {
  required:!!e.required||e.getAttribute('aria-required')==='true',invalid:e.getAttribute('aria-invalid')==='true'||!!(e.willValidate&&!e.validity.valid),validation_message:sensitive?'':text(e.validationMessage),value,
  controls:refs('aria-controls'),labelledby:refs('aria-labelledby'),describedby:refs('aria-describedby'),active_descendant:e.getAttribute('aria-activedescendant'),busy:bool('aria-busy'),live:e.getAttribute('aria-live')||(['status','alert'].includes(role)?role:null),
  href:tag==='a'?e.href:null,rel:tag==='a'?(e.getAttribute('rel')||''):'',dom_id:e.id||null,test_id:e.getAttribute('data-testid'),context,
- form:form?{method:(form.method||'get').toUpperCase(),action:form.action||location.href,search:!!(form.querySelector('input[type=search]')||form.getAttribute('role')==='search'),name:text(form.getAttribute('aria-label')||form.name),invalid_count:[...form.elements].filter(x=>x.willValidate&&!x.validity.valid).length}:null,
+ search_interface:{search_semantics:searchSemantics,editable:!!e.isContentEditable,scope:!!searchScope},
+ form:form?{method:(form.method||'get').toUpperCase(),action:form.action||location.href,search:!!(form.querySelector('input[type=search]')||form.getAttribute('role')==='search'||searchSemantics),name:text(form.getAttribute('aria-label')||form.name),invalid_count:[...form.elements].filter(x=>x.willValidate&&!x.validity.valid).length}:null,
  safe:e.dataset.adbotSafe==='true',in_view:r.top<innerHeight&&r.bottom>0&&r.left<innerWidth&&r.right>0,
  blocked_by_modal:modalBlocked,
  actionable:visible&&!disabled&&!sensitive&&!modalBlocked&&(e.matches('a[href],button,input,textarea,select,summary,[contenteditable=true],[tabindex]')||['button','link','checkbox','radio','switch','menuitem','menuitemcheckbox','menuitemradio','option','tab','combobox','listbox','slider','spinbutton','treeitem','gridcell'].includes(role)),

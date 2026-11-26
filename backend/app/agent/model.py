@@ -142,7 +142,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
             from .discovery import search_control
 
             elements.sort(key=lambda element: (
-                not (compact.get("read_search_enabled") and search_control(element)),
+                not (compact.get("read_search_enabled") and search_control(element, compact.get("approved_post_search", []))),
                 not element.get("focused"), not element.get("actionable"), not element.get("visible"),
                 -len(query.intersection(re.findall(r"\w{3,}", str(element.get("name", "")).casefold()))),
             ) if isinstance(element, dict) else (True, True, True, True, 0))
@@ -174,6 +174,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 "ambiguous",
                 "context",
                 "form",
+                "search_interface",
                 "options",
                 "locator_strategy",
                 "safe",
@@ -419,7 +420,8 @@ class ModelClient:
                 "CAPTURE_RECORDS must map observed fields and unique identities; classify by own purpose, not a related topic. "
                 "Choose new authorized links when repeated scrolling adds no information. Do not repeat unchanged observations. "
                 "General form input is disabled: never choose TYPE, SET_CHECKED or SELECT_OPTION. "
-                "If read_search_enabled is true, SEARCH is allowed only for an observed GET search input using objective words. "
+                "If read_search_enabled is true, SEARCH uses an observed native or scripted search input and objective words. "
+                "POST search requires an explicitly approved exact endpoint; never invent one. "
                 "Otherwise do not choose SEARCH. Assess observed record groups before navigation; "
                 "use model-assisted CAPTURE_RECORDS or exact EXTRACT for unstructured evidence. "
                 "If no suitable group exists, prefer site search and unexplored sources. "
@@ -549,7 +551,7 @@ class ModelClient:
                             "CLICK requires target={element_id: an observed control ID}."
                         )
                         if payload.get("form_input_enabled") is False:
-                            hint += (" General form input is disabled. SEARCH is allowed only on an observed GET search field using objective words."
+                            hint += (" General form input is disabled. SEARCH is allowed on observed search controls using objective words; POST requires explicit endpoint approval."
                                      if payload.get("read_search_enabled") else
                                      " Form input is disabled: do not TYPE or SEARCH. Use relevant observed links or ASK_USER.")
                         recent = payload.get("session_memory", {}).get("recent_actions", [])

@@ -144,8 +144,9 @@ class Observer:
                 not e["focused"],
                 not e["actionable"],
                 bool(directory) and not pagination_element(e),
-                not (bool(research or structure or directory) and e.get("form") and e["form"].get("search")
-                     and e["form"].get("method") == "GET" and e.get("role") in {"searchbox", "textbox"}),
+                not (bool(research or structure or directory) and e.get("role") in {"searchbox", "textbox", "combobox"}
+                     and (e.get("search_interface", {}).get("search_semantics")
+                          or e.get("form", {}) and e["form"].get("search"))),
                 -relevance,
                 not e["in_view"],
                 e["role"] == "link",

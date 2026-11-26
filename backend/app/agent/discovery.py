@@ -247,19 +247,20 @@ def ranked_excerpt(objective, text, *, limit=1400):
     return "\n\n".join(chunk for _, chunk in sorted(selected))
 
 
-def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False, read_search=False):
+def compact_page(observation, objective, *, elements, groups, actions=(), form_input=False, read_search=False, approved_posts=()):
     """Preserve exact IDs and small, relevant page excerpts for read-side decisions."""
     available = [element for element in elements if element.get("actionable")
                  and element.get("visible") is not False
                  and not element.get("blocked_by_modal") and not element.get("disabled")]
     if not form_input:
         available = [element for element in available
-                     if (read_search and search_control(element)) or (
+                     if (read_search and search_control(element, approved_posts)) or (
                          element.get("role") not in {"textbox", "searchbox", "combobox", "spinbutton", "checkbox",
                                                      "radio", "switch", "option"} and not element.get("form"))]
-    available.sort(key=lambda element: (not (read_search and search_control(element)), -source_score(objective, element)))
+    available.sort(key=lambda element: (not (read_search and search_control(element, approved_posts)), -source_score(objective, element)))
     fields = {"element_id", "role", "name", "href", "tag", "type", "actionable", "visible",
-              "disabled", "readonly", "form", "focused", "context", "expanded", "selected", "blocked_by_modal"}
+              "disabled", "readonly", "form", "focused", "context", "expanded", "selected", "blocked_by_modal",
+              "search_interface", "controls", "active_descendant"}
     concise = []
     for element in available[:18]:
         row = {key: value for key, value in element.items() if key in fields}
@@ -318,13 +319,10 @@ def read_search_permission(objective, options, intent, criteria=()):
             and not any(_NO_SEARCH.search(text) for text in [objective, *criteria]))
 
 
-def search_control(element):
-    form = element.get("form") or {}
-    return bool(element.get("actionable") and element.get("visible") is not False
-                and not any(element.get(key) for key in ("disabled", "readonly", "sensitive", "blocked_by_modal"))
-                and element.get("tag") == "input" and element.get("type") in {"search", "text"}
-                and element.get("role") in {"searchbox", "textbox"}
-                and form.get("search") and form.get("method") == "GET" and valid_search_action(form.get("action")))
+def search_control(element, approved_posts=()):
+    from .search import search_interface
+
+    return search_interface(element, approved_posts) is not None
 
 
 def valid_search_action(value):
@@ -351,27 +349,29 @@ def search_query_allowed(objective, query):
                 and set(words(query)) <= set(words(objective)))
 
 
-def search_attempt_key(element, query):
-    action = urlsplit((element.get("form") or {}).get("action", ""))
-    return action._replace(query="", fragment="").geturl() + "\n" + " ".join(words(query))
+def search_attempt_key(element, query, page_url=""):
+    form = element.get("form") or {}
+    action = urlsplit(form.get("action") or page_url)
+    identity = "" if form else ":" + str(element.get("name") or element.get("role") or "search")[:120].casefold()
+    return action._replace(query="", fragment="").geturl() + identity + "\n" + " ".join(words(query))
 
 
-def search_candidate(observation, objective, policy, attempts):
+def search_candidate(observation, objective, policy, attempts, approved_posts=()):
     query = objective_query(objective)
     if (len(attempts) >= MAX_SEARCH_ATTEMPTS or not search_query_allowed(objective, query)
             or any(d.get("visible") for d in observation.get("dialogs", []))):
         return None
     for element in observation.get("elements", []):
-        if not search_control(element):
+        if not search_control(element, approved_posts):
             continue
         try:
-            policy.check(element["form"]["action"])
-            if search_attempt_key(element, query) in attempts:
+            policy.check((element.get("form") or {}).get("action") or observation["url"])
+            if search_attempt_key(element, query, observation["url"]) in attempts:
                 continue
         except ValueError:
             continue
         return Decision(decision="SEARCH", target={"element_id": element["element_id"]}, text=query,
-                        observation="An authorized GET search field is visible",
+                        observation="An eligible observed site search field is visible",
                         reason="Search for the requested entities before exploring more pages",
                         confidence=0.85, expected_result="Relevant search results to inspect and qualify")
     return None

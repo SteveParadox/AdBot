@@ -172,6 +172,7 @@ def specification(objective, criteria, options, domains):
             **({"read_search": read_search_permission(objective, options, intent["category"], criteria)}
                if "allow_search_input" in options else {}),
             "downloads": bool(options.get("allow_downloads")),
+            **({"approved_post_search": options["approved_post_search"]} if options.get("approved_post_search") else {}),
         },
         "output_format": requested,
         "ambiguities": ambiguities,
@@ -186,7 +187,8 @@ def specification(objective, criteria, options, domains):
                     options.get("allow_downloads"),
                     requested,
                 ] + ([options["dataset_query"]] if options.get("dataset_query") is not None else [])
-                + ([options["allow_search_input"], options.get("mode")] if "allow_search_input" in options else []),
+                + ([options["allow_search_input"], options.get("mode")] if "allow_search_input" in options else [])
+                + ([options["approved_post_search"]] if options.get("approved_post_search") else []),
                 sort_keys=True,
             ).encode()
         ).hexdigest(),
@@ -419,7 +421,8 @@ def guard(state, decision, observation):
         from .discovery import search_control, search_query_allowed
 
         if not (decision.decision == "SEARCH" and state["specification"]["permissions"].get("read_search")
-                and search_control(target) and search_query_allowed(state["specification"]["objective"], decision.text)):
+                and search_control(target, state["specification"]["permissions"].get("approved_post_search", []))
+                and search_query_allowed(state["specification"]["objective"], decision.text)):
             raise PermissionError("Task does not authorize form input")
     if decision.decision == "DOWNLOAD" and not state["specification"]["permissions"]["downloads"]:
         raise PermissionError("Task does not authorize downloads")
