@@ -85,21 +85,23 @@ def text_evidence(doc, source, question):
     if doc.metadata.get("document_type") == "pdf":
         return pdf_evidence(doc, source, question)
     keywords = terms(question) | terms(source["query"])
+    title_match = bool(terms(question) & terms(doc.title))
     scored = []
     for block_number, block in enumerate(doc.blocks, 1):
         context_score = int(bool(terms(block) & keywords))
         for offset, quote in enumerate(re.split(r"(?<=[.!?])\s+", block), 1):
             quote = quote[:460].strip()
             score = len(terms(quote) & keywords) * 2 + context_score
-            if score and len(quote) >= 35:
-                scored.append((score, block_number, offset, quote))
+            structured = " | " in quote and title_match
+            if (score or structured) and len(quote) >= 8:
+                scored.append((score + int(structured), block_number, offset, quote))
     relevance = lexical_scores(question, [row[3] for row in scored])
     scored = [row for _, row in sorted(zip(relevance, scored), key=lambda pair: (-pair[0], -pair[1][0], pair[1][1], pair[1][2]))]
     unique = {}
     for _, block, offset, quote in scored:
         if quote.casefold() not in unique:
             unique[quote.casefold()] = quote_record(source, quote, f"normalized-text:block-{block}:sentence-{offset}")
-        if len(unique) == 4:
+        if len(unique) == 8:
             break
     return list(unique.values())
 

@@ -45,6 +45,7 @@ class Question(Strict):
     mode: Mode = Mode.AUTO
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     freshness: str | None = Field(default=None, pattern=r"^(day|week|month|year)$")
+    utc_offset_minutes: int | None = Field(default=None, ge=-840, le=840)
     conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 

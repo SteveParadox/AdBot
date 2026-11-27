@@ -53,6 +53,8 @@ class ResearchRunner:
             self.usage = dict(task.usage)
             self.conversation = task.conversation_id
             self.saved = job.execution_state.get("research_checkpoint")
+            self.reference_at = job.snapshot.get("research_reference_at", task.created_at)
+            self.prior_queries = job.snapshot.get("research_prior_queries", [])
             before = job.snapshot.get("research_history_before", task.created_at)
             self.context = job.snapshot.get("research_context")
             self.history = [] if self.context is not None else previous_turns(session, task.conversation_id, job.owner, before)
@@ -99,7 +101,8 @@ class ResearchRunner:
         deadline = time.monotonic() + max(0.1, self.budget.seconds - (time.time() - self.started))
         engine = Research(self.owner, self.question, self.mode, self.intent, self.budget,
                           deadline, self.history, self.publish, self.gate, usage=self.usage, charge=self.charge,
-                          context=self.context, conversation=self.conversation, checkpoint=self.checkpoint, saved=self.saved)
+                          context=self.context, conversation=self.conversation, checkpoint=self.checkpoint, saved=self.saved,
+                          reference_at=self.reference_at, prior_queries=self.prior_queries)
         self.result = await engine.run()
 
     def persist(self, session):

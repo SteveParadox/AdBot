@@ -111,6 +111,8 @@ def enqueue(data, owner, key, retry_of=None):
                 if original_task.conversation_id != thread.id:
                     raise HTTPException(409, "Retry must stay in the original conversation")
                 intent, mode = original_task.intent, Mode(original_task.mode)
+                snapshot["research_prior_queries"] = [q[:350] for q in original_task.result.get("queries", [])[:32] if isinstance(q, str)]
+                snapshot["research_reference_at"] = original_job.snapshot.get("research_reference_at", original_task.created_at)
                 snapshot["research_history_before"] = original_job.snapshot.get(
                     "research_history_before", original_task.created_at
                 )
@@ -118,6 +120,7 @@ def enqueue(data, owner, key, retry_of=None):
                 context = original_job.snapshot.get("research_context") or build_context(data, history, intent, mode)
             else:
                 snapshot["research_history_before"] = time.time()
+                snapshot["research_reference_at"] = snapshot["research_history_before"]
                 history = previous_turns(session, thread.id, owner, snapshot["research_history_before"])
                 intent, mode = route(data, history)
                 context = build_context(data, history, intent, mode)

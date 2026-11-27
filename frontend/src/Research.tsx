@@ -337,6 +337,7 @@ export default function Research() {
     const data = {
       question: question.trim(), mode, conversation_id: thread,
       country: country.trim().toUpperCase() || null, freshness: freshness || null,
+      utc_offset_minutes: -new Date().getTimezoneOffset(),
     };
     try {
       const result = await api<Task>(`${ROOT}/query`, token, "POST", data,

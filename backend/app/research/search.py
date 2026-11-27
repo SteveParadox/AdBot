@@ -230,6 +230,7 @@ class ProviderPool:
 
     async def search(self, query, country, freshness, diversify=False):
         names = self.names[1:2] + self.names[:1] + self.names[2:] if diversify else self.names
+        collected = []
         for name in names:
             health = HEALTH[name]
             if health.status == "healthy":
@@ -240,8 +241,12 @@ class ProviderPool:
                 async with self.probe_locks[name]:
                     hits = await self.attempt(name, query, country, freshness, health)
             if hits:
-                return hits
-        return []
+                if not diversify:
+                    return hits
+                collected.extend(hits)
+                if len({hit.provider for hit in collected}) >= 2:
+                    break
+        return collected
 
     async def attempt(self, name, query, country, freshness, health):
         from json import loads
