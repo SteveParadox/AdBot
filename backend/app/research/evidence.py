@@ -98,7 +98,10 @@ def text_evidence(doc, source, question, *, target_date=None, offset_minutes=Non
             quote = json.dumps(observation, ensure_ascii=False, separators=(",", ":"))
             if len(quote) <= 1000:
                 record = quote_record(source, quote, f"json-ld:event-{index + 1}", "structured")
-                record["event_observation"] = {"local_date": day, "original_start": event.get("startDate")}
+                identity = {"event": " ".join(event["event"].casefold().split()),
+                            "start": converted or event.get("startDate"), "status": event.get("eventStatus", "")}
+                key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
+                record["event_observation"] = {"local_date": day, "original_start": event.get("startDate"), "key": key}
                 events.append(record)
             if len(events) >= 24:
                 break

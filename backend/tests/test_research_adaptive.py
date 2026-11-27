@@ -142,3 +142,30 @@ async def test_low_budget_skips_optional_semantic_routing(monkeypatch):
     await instance.classify()
     assert instance.route_done
     assert instance.mode == Mode.QUICK
+
+
+
+def test_comparison_candidate_diversity_and_criteria():
+    from types import SimpleNamespace
+    from app.research.objectives import prioritize_comparison_hits, subject_query
+    def hit(name, key):
+        return SimpleNamespace(title=name, description="", url="https://example.com/" + key, canonical_url=key)
+    ranked = [hit("PostgreSQL first", "a"), hit("PostgreSQL second", "b"), hit("Cassandra", "c")]
+    assert [h.canonical_url for h in prioritize_comparison_hits(ranked, ["PostgreSQL", "Cassandra"])] == ["a", "c", "b"]
+    assert subject_query("Cassandra", "Compare PostgreSQL and Cassandra for high-throughput workloads") == "Cassandra high-throughput workloads"
+
+
+def test_explicit_schedule_date_grounding():
+    from app.research.objectives import relative_date
+    assert relative_date("fixtures 2026-11-27", 0, 60) == "2026-11-27"
+    assert relative_date("fixtures 2026-11-27 and 2026-11-28", 0, 60) is None
+    assert relative_date("fixtures 2026-02-30", 0, 60) is None
+
+
+def test_schedule_coverage_ignores_duplicate_observations():
+    instance = engine(Question(question="League fixtures today"), intent="current")
+    instance.evidence = {"a": {"event_observation": {"key": "match1"}},
+                         "b": {"event_observation": {"key": "match1"}},
+                         "c": {"event_observation": {"key": "match2"}}}
+    assert instance.missing_schedule_observations([{"kind": "fact", "evidence": ["a"]}]) == 1
+    assert instance.missing_schedule_observations([{"kind": "fact", "evidence": ["a", "c"]}]) == 0

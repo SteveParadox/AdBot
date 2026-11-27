@@ -300,10 +300,19 @@ class Research:
                 and self.budget.calls - self.metrics["model_calls"] >= 2
                 and self.deadline - time.monotonic() >= 8)
 
+    def missing_schedule_observations(self, claims):
+        if not self.schedule_mode:
+            return 0
+        observed = {row["event_observation"]["key"] for row in self.evidence.values()
+                    if row.get("event_observation", {}).get("key")}
+        cited = {self.evidence[i]["event_observation"]["key"] for c in claims if c["kind"] != "excerpt"
+                 for i in c["evidence"] if i in self.evidence and self.evidence[i].get("event_observation", {}).get("key")}
+        return len(observed - cited)
+
     def recovery_needed(self):
         facts = [claim for claim in self.claims if claim["kind"] != "excerpt"]
         cited = {i for c in facts for i in c["evidence"] if i in self.evidence}
-        return not facts or (self.gap_plan is not None and bool(self.gap_plan.unanswered(facts))) or (
+        return not facts or bool(self.missing_schedule_observations(facts)) or (self.gap_plan is not None and bool(self.gap_plan.unanswered(facts))) or (
             self.result_quality == "partial" and (len(supporting_groups(cited, self.evidence, self.sources)) < 2
                                                   or self.metrics.get("synthesis_evidence_remaining", 0) > 0))
 
@@ -371,7 +380,8 @@ class Research:
             topic = search_text(q.question).strip()
             if q.question in self.comparison_subjects:
                 # Preserve workload/criteria rather than searching for a bare name.
-                topic = f"{topic} {plain}"
+                from .objectives import subject_query
+                topic = subject_query(topic, plain)
             suffix = ""
             if round_number:
                 suffix = (" independent conflicting findings" if q.status == "conflicting"
@@ -417,7 +427,8 @@ class Research:
             self.gap_plan = GapPlan(search_text(self.contextual_question()))
         evidence = self.coverage_evidence()
         assessment = None
-        if evidence and self.metrics["model_calls"] < self.budget.calls - 2:
+        reserve = 4 if self.phase_search_limit is not None and self.coverage_rounds else 2
+        if evidence and self.metrics["model_calls"] < self.budget.calls - reserve:
             assessment = await self.ask("research_coverage", ASSESS_COVERAGE, Coverage, {
                 "question": self.question.question,
                 "subquestions": [{"id": q.id, "question": q.question} for q in self.gap_plan.questions],
@@ -567,6 +578,9 @@ class Research:
                 if semantic:
                     ranked = rank_hits([*groups, supplied], self.contextual_question(),
                                        self.mode == Mode.TECHNICAL, semantic=semantic)
+            if self.coverage_required and self.comparison_subjects:
+                from .objectives import prioritize_comparison_hits
+                ranked = prioritize_comparison_hits(ranked, self.comparison_subjects, self.attempted)
             # Explicit user URLs retain priority and their provenance.
             ranked = list({hit.canonical_url: hit for hit in [*ranked, *supplied]}.values())
             explicit = {hit.canonical_url: index for index, hit in enumerate(supplied)}
@@ -574,7 +588,7 @@ class Research:
             for hit in ranked:
                 self.hits.setdefault(hit.canonical_url, asdict(hit))
             pages_left = self.budget.pages - self.page_count
-            if self.initial_search and self.mode not in {Mode.SHOPPING, Mode.FACT_CHECK} and self.budget.rounds > 1 and pages_left > 2:
+            if self.phase_search_limit is not None and pages_left > 1:
                 # Keep retrieval capacity for a possible post-synthesis recovery.
                 pages_left -= max(1, pages_left // 4)
             if self.mode == Mode.DEEP:
@@ -982,11 +996,17 @@ class Research:
                 self.result_quality = "partial"
         self.metrics["claims_verified"] = sum(c["kind"] != "excerpt" for c in valid)
         cited = {i for c in valid if c["kind"] != "excerpt" for i in c["evidence"]}
-        if self.mode != Mode.DIRECT and cited and len(supporting_groups(cited, self.evidence, self.sources)) < 2:
-            self.result_quality = "partial"
+        if self.mode != Mode.DIRECT:
             note = "The answer relies on fewer than two potentially independent source groups."
-            if note not in self.notes:
-                self.notes.append(note)
+            groups = supporting_groups(cited, self.evidence, self.sources) if cited else set()
+            if not cited:
+                self.result_quality = "partial"
+            elif len(groups) < 2:
+                self.result_quality = "partial"
+                if note not in self.notes:
+                    self.notes.append(note)
+            else:
+                self.notes = [n for n in self.notes if n != note]
 
     async def finish(self, answer):
         await self.stage("answering", "Generating the answer from checked findings")
@@ -1097,7 +1117,14 @@ class Research:
             self.synthesis_done = True
             await self.save_checkpoint()
         await self.recover_after_synthesis()
+        await self.cross_source_synthesis()
         self.audit_final_claims()
+        if self.schedule_mode:
+            missing = self.missing_schedule_observations(self.claims)
+            self.metrics["schedule_observations_unrepresented"] = missing
+            if missing:
+                self.result_quality = "partial"
+                self.notes.append(f"{missing} distinct retrieved schedule observations were not represented in verified claims; the list may be incomplete.")
         if self.metrics["shared_origin_sources"]:
             self.notes.append("Some retrieved sources contain substantially overlapping text and were grouped as a possible shared origin, not independent corroboration.")
         if any(source.get("metadata", {}).get("extraction_truncated") for source in self.sources.values()):
@@ -1134,8 +1161,6 @@ class Research:
         if self.model_failed:
             self.notes.append("The configured model did not finish every research stage.")
             self.result_quality = "partial"
-        await self.cross_source_synthesis()
-        self.audit_final_claims()
         await self.arrange_answer()
         self.notes = list(dict.fromkeys(self.notes))
         return await self.finish(arranged_report(self.claims, self.evidence, self.sources, self.mode, self.layout))
@@ -1183,7 +1208,9 @@ class Research:
         except TimeoutError:
             self.notes.append("The targeted recovery search reached its time allocation.")
             self.result_quality = "partial"
-        if set(self.evidence) != evidence_before and self.budget.calls - self.metrics["model_calls"] >= 2 and self.deadline - time.monotonic() >= 3:
+        new_evidence = set(self.evidence) - evidence_before
+        unprocessed = self.metrics.get("synthesis_evidence_remaining", 0) > 0
+        if (new_evidence or unprocessed) and self.budget.calls - self.metrics["model_calls"] >= 2 and self.deadline - time.monotonic() >= 3:
             self.synthesis_state = None
             self.claims = []
             await self.synthesize()

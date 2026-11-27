@@ -180,11 +180,11 @@ def build_context(question, history, intent, mode):
     from .schedule import schedule_request
     from .objectives import RELATIVE
     # "Fixtures today" asks about event dates, not articles published today.
-    event_day_only = bool(schedule_request(text) and RELATIVE.search(text) and not question.freshness
+    event_day_only = bool(schedule_request(text) and (RELATIVE.search(text) or re.search(r"\b\d{4}-\d{2}-\d{2}\b", text)) and not question.freshness
                           and not re.search(r"\b(?:published|updated|last 24 hours|past 24 hours)\b", text, re.I))
     freshness = question.freshness or (None if event_day_only else
         next((name for name, pattern in FRESHNESS if re.search(pattern, text, re.I)), None))
-    if not freshness:
+    if not freshness and not event_day_only:
         freshness = old.get("freshness") if old else anchor.get("freshness")
     if not freshness and not event_day_only and intent in {"news", "current"}:
         freshness = "week" if intent == "news" else "month"
