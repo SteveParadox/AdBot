@@ -586,7 +586,7 @@ class ModelClient:
                         "think": False,
                         "stream": False,
                         "keep_alive": -1,
-                        "options": {"num_predict": cfg.ai_max_output_tokens, "num_ctx": 8192, "temperature": 0},
+                        "options": {"num_predict": cfg.ai_max_output_tokens, "num_ctx": cfg.ollama_context_for(model), "temperature": 0},
                     }
                 # Keep smaller native Ollama contexts and ordinary browser decisions
                 # from losing most of their input window to an oversized output reserve.
@@ -630,7 +630,7 @@ class ModelClient:
                 if uses_gpt_oss and context_limit is None:
                     context_limit = 131072
                 if native:
-                    context_limit = min(context_limit or 8192, 8192)
+                    context_limit = cfg.ollama_context_for(model)
                     provider_body["options"] = {**provider_body["options"], "num_ctx": context_limit}
                 if context_limit is not None:
                     # Reserve at most a quarter of constrained context for output; retain
@@ -961,7 +961,7 @@ async def warm_local_fallback():
                     "prompt": "",
                     "stream": False,
                     "keep_alive": -1,
-                    "options": {"num_ctx": 8192},
+                    "options": {"num_ctx": cfg.ollama_context_for(cfg.ai_fallback_model)},
                 },
             )
             response.raise_for_status()
