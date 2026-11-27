@@ -72,10 +72,11 @@ class Settings(BaseSettings):
     ai_provider_order: str = ""
     ai_failure_cooldown_seconds: int = Field(30, ge=1, le=3600)
     ai_model: str = ""
-    ai_timeout_seconds: int = Field(30, ge=1, le=120)
+    ai_timeout_seconds: int = Field(60, ge=1, le=120)
     ai_ollama_native: bool = False
+    ai_ollama_context_tokens: int = Field(8192, ge=2048, le=32768)
     ai_ollama_warmup_timeout_seconds: int = Field(300, ge=1, le=600)
-    ai_primary_fallback_timeout_seconds: int = Field(10, ge=1, le=120)
+    ai_primary_fallback_timeout_seconds: int = Field(30, ge=1, le=120)
     ai_fallback_provider: Literal["disabled", "local"] = "disabled"
     ai_fallback_base_url: str = "http://127.0.0.1:11434/v1"
     ai_fallback_api_key: SecretStr = SecretStr("")
@@ -90,6 +91,7 @@ class Settings(BaseSettings):
     ai_json_mode: bool = True
     ai_context_windows: dict[str, int] = Field(default_factory=dict)
     ai_reasoning_effort: Literal["auto", "low", "medium", "high"] = "auto"
+    agent_max_evidence_records: int = Field(80, ge=1, le=200)
     agent_collection_max_rows: int = Field(5000, ge=1, le=10000)
     agent_collection_batch_rows: int = Field(250, ge=1, le=1000)
     agent_collection_max_bytes: int = Field(8_000_000, ge=4096, le=16_000_000)
@@ -155,6 +157,10 @@ class Settings(BaseSettings):
         return any(self.supports_vision(names[index], model,
                                         native=self.model_provider_is_local(index) and self.ai_ollama_native)
                    for index, (_, _, model) in enumerate(self.model_providers()))
+
+    def ollama_context_for(self, model: str) -> int:
+        configured = self.ai_context_windows.get("local", self.ai_context_windows.get(model, self.ai_ollama_context_tokens))
+        return min(configured, self.ai_ollama_context_tokens)
 
     def reasoning_effort_for(self, purpose: str) -> str:
         if self.ai_reasoning_effort != "auto":
