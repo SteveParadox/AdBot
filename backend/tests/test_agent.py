@@ -929,3 +929,50 @@ def test_old_capability_defaults_idempotency_replay(client, target, agent_config
     assert client.post("/api/agent/tasks", json={**body, "allow_downloads": True},
                        headers=headers).status_code == 409
 
+def test_server_budget_defaults_and_explicit_limits(client, target, agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "agent_max_tokens", 250000)
+    monkeypatch.setattr(agent_config, "agent_default_target_max_pages", 100)
+    monkeypatch.setattr(agent_config, "agent_default_target_max_duration_seconds", 3600)
+    monkeypatch.setattr(agent_config, "max_concurrency", 4)
+    monkeypatch.setattr(agent_config, "max_concurrent_agents", 3)
+    monkeypatch.setattr(agent_config, "max_browser_sessions", 2)
+    config = client.get("/api/agent/config").json()
+    assert config["max_tokens"] == 250000
+    assert config["default_target_max_pages"] == 100
+    assert config["default_target_max_duration_seconds"] == 3600
+    assert config["max_agent_browser_concurrency"] == 2
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    headers = {"Idempotency-Key": "automatic-budget"}
+    response = client.post("/api/agent/tasks", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    task = response.json()
+    assert task["options"]["max_tokens"] == 250000
+    assert task["budget"]["remaining_pages"] == target["configuration"]["max_pages"]
+    explicit = client.post("/api/agent/tasks", json={**body, "max_tokens": 60000})
+    assert explicit.status_code == 201
+    assert explicit.json()["options"]["max_tokens"] == 60000
+    assert client.post("/api/agent/tasks", json={**body, "max_tokens": 60000},
+                       headers=headers).status_code == 409
+    capped = client.post("/api/agent/tasks", json={**body, "max_tokens": 500000})
+    assert capped.status_code == 201
+    assert capped.json()["options"]["max_tokens"] == 250000
+
+
+def test_legacy_token_default_idempotency_replay(client, target, agent_config):
+    headers = {"Idempotency-Key": "legacy-token-default"}
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    task = client.post("/api/agent/tasks", json=body, headers=headers).json()
+    previous_payload = TaskInput(**body).model_dump(exclude={
+        "priority", "depends_on", "dataset_id", "dataset_query", "output_format"
+    })
+    previous_payload.update(max_tokens=60000, visual_reasoning=False,
+                            session_persistence=False, allow_downloads=False)
+    with transaction() as session:
+        session.get(Job, task["id"]).payload_hash = hashlib.sha256(
+            json.dumps(previous_payload, sort_keys=True).encode()
+        ).hexdigest()
+    replay = client.post("/api/agent/tasks", json=body, headers=headers)
+    assert replay.status_code == 201
+    assert replay.json()["id"] == task["id"]
+    assert client.post("/api/agent/tasks", json={**body, "max_tokens": 100000},
+                       headers=headers).status_code == 409
