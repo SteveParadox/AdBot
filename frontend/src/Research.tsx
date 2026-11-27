@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ArrowLeft, BookOpen, ExternalLink, Plus, Search, Send, Square } from "lucide-react";
 import Markdown from "react-markdown";
+import { Button, Field } from "./ui";
 import remarkGfm from "remark-gfm";
 import { api, type Collection, type Event } from "./api";
 import { subscribeEventStream, type StreamState } from "./useEventStream";
@@ -163,7 +164,7 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
     return () => controller.abort();
   }, [open, token, task.id, sources.length]);
 
-  return <article className="research-turn">
+  return <article className="research-turn panel">
     <h3 className="research-question">{task.question.question}</h3>
     {task.status === "failed" || task.status === "cancelled" ? <p role="status">{task.error || "Research was stopped."}</p> : null}
     {task.result.quality === "partial" && <p className="research-partial">Partial result</p>}
@@ -206,7 +207,7 @@ function Answer({ task, token, onRetry, retryDisabled }: {task: Task; token: str
       </li>)}</ol>
     </details>}
     {(task.status === "failed" || task.status === "cancelled" || task.result.quality === "partial") &&
-      <button type="button" className="research-button" onClick={onRetry} disabled={retryDisabled}>Retry</button>}
+      <button type="button" className="button outline research-button" onClick={onRetry} disabled={retryDisabled}>Retry</button>}
   </article>;
 }
 
@@ -354,54 +355,59 @@ export default function Research() {
   }
 
   if (!token) return <main className="research-logged-out"><h1>Web Research</h1><p>Connect your AdBot workspace to start a research conversation.</p>
-    <a className="research-button" href="/">Connect workspace</a> <a href="/docs/web-research">Research documentation</a>
+    <a className="button outline research-button" href="/">Connect workspace</a> <a href="/docs/web-research">Research documentation</a>
   </main>;
 
   const status = [...progress].reverse().find(event => event.event_type !== "answer_chunk");
   const chunks = progress.filter(event => event.event_type === "answer_chunk" && typeof event.details.text === "string");
   return <main className="research-shell">
-    <header className="research-header"><a href="/"><ArrowLeft size={17}/> AdBot dashboard</a>
-      <h1><Search size={22}/> Web Research</h1><a href="/docs/web-research"><BookOpen size={17}/> Help</a></header>
+    <header className="research-header page-heading">
+      <div>
+        <Button asChild variant="ghost"><a href="/"><ArrowLeft size={16}/> AdBot dashboard</a></Button>
+        <h1><Search size={27} aria-hidden="true"/> Web Research</h1>
+      </div>
+      <Button asChild variant="outline"><a href="/docs/web-research"><BookOpen size={16}/> Help</a></Button>
+    </header>
     <div className="research-grid">
-      <aside className="research-history" aria-label="Research history">
-        <button type="button" onClick={() => void openThread(null)} disabled={busy}><Plus size={17}/> New conversation</button>
-        {history.map(item => <button key={item.id} type="button" aria-current={thread === item.id ? "page" : undefined}
-          disabled={busy} onClick={() => void openThread(item.id)}>{item.title || "Untitled conversation"}</button>)}
+      <aside className="research-history panel" aria-label="Research history">
+        <Button variant="outline" onClick={() => void openThread(null)} disabled={busy}><Plus size={17}/> New conversation</Button>
+        {history.map(item => <Button variant="ghost" key={item.id} type="button" aria-current={thread === item.id ? "page" : undefined}
+          disabled={busy} onClick={() => void openThread(item.id)}>{item.title || "Untitled conversation"}</Button>)}
       </aside>
       <section className="research-chat" aria-label="Research conversation">
         {config && !config.enabled && <p role="status" className="research-partial">Research is disabled. Ask the workspace operator to enable it.</p>}
         {config?.enabled && !config.providers.length && <p role="status" className="research-partial">No search providers are configured.</p>}
         {config?.enabled && !config.model_configured && <p role="status" className="research-partial">A model provider is needed for answer synthesis.</p>}
-        {!tasks.length && <div className="research-empty"><h2>What would you like to research?</h2>
+        {!tasks.length && <div className="research-empty panel"><h2>What would you like to research?</h2>
           {["What are the latest developments in quantum computing?", "Find affordable AI engineering laptops in Nigeria",
             "Compare PostgreSQL and Cassandra for high-throughput applications"].map(text =>
-              <button key={text} type="button" onClick={() => setQuestion(text)}>{text}</button>)}
+              <Button key={text} variant="outline" onClick={() => setQuestion(text)}>{text}</Button>)}
         </div>}
-        {turnCount > tasks.length && <button type="button" className="research-button" disabled={busy}
+        {turnCount > tasks.length && <button type="button" className="button outline research-button" disabled={busy}
           onClick={() => void loadEarlierTurns()}>Load earlier turns</button>}
         {tasks.map(task => <Answer key={task.id} task={task} token={token} retryDisabled={!!active || busy} onRetry={() => void control(task, "retry")} />)}
-        {active && <div className="research-running"><div role="status" aria-live="polite">
+        {active && <div className="research-running panel"><div role="status" aria-live="polite">
           <strong>{status?.message || "Research queued"}</strong>
           {stream === "backoff" && <small> Reconnecting to progress updates.</small>}
           {chunks.map(chunk => <div key={chunk.id}><AnswerMarkup text={String(chunk.details.text)}
             direct={active.mode === "direct"} /></div>)}
-        </div><button type="button" className="research-button" disabled={busy} onClick={() => void control(active, "cancel")}><Square size={14}/> Stop</button></div>}
+        </div><button type="button" className="button outline research-button" disabled={busy} onClick={() => void control(active, "cancel")}><Square size={14}/> Stop</button></div>}
         {error && <p className="research-error" role="alert">{error}</p>}
-        <form className="research-composer" onSubmit={submit}>
+        <form className="research-composer panel" onSubmit={submit}>
           <label htmlFor="research-question">Question</label>
           <textarea id="research-question" value={question} onChange={e => setQuestion(e.target.value)} rows={3} maxLength={1400}
             placeholder={thread ? "Ask a follow-up question" : "Ask a question or compare products"} />
           <div className="research-options">
-            <label>Mode<select value={mode} onChange={e => setMode(e.target.value as Mode)}>
+            <Field label="Mode"><select value={mode} onChange={e => setMode(e.target.value as Mode)}>
               {Object.entries(MODES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select></label>
-            <label>Country code<input value={country} onChange={e => setCountry(e.target.value)} maxLength={2} pattern="[A-Za-z]{2}" placeholder="NG" /></label>
-            <label>Freshness<select value={freshness} onChange={e => setFreshness(e.target.value)}>
+            </select></Field>
+            <Field label="Country code"><input value={country} onChange={e => setCountry(e.target.value)} maxLength={2} pattern="[A-Za-z]{2}" placeholder="NG" /></Field>
+            <Field label="Freshness"><select value={freshness} onChange={e => setFreshness(e.target.value)}>
               <option value="">Any time</option><option value="day">Past day</option><option value="week">Past week</option>
               <option value="month">Past month</option><option value="year">Past year</option>
-            </select></label>
-            {mode === "website_agent" ? <a className="research-primary" href="/?tab=agent">Open Website Agent</a> :
-              <button className="research-primary" disabled={busy || !!active || !question.trim() || config?.enabled === false}><Send size={16}/> Send</button>}
+            </select></Field>
+            {mode === "website_agent" ? <Button asChild className="research-primary"><a href="/?tab=agent">Open Website Agent</a></Button> :
+              <Button type="submit" className="research-primary" disabled={busy || !!active || !question.trim() || config?.enabled === false}><Send size={16}/> Send</Button>}
           </div>
         </form>
       </section>
