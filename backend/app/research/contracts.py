@@ -37,6 +37,9 @@ def budget_for(mode):
     return settings().research_budgets.get(mode, DEFAULTS[mode])
 
 
+from .objectives import comparison_request, definition_request
+
+
 class Question(Strict):
     question: str = Field(min_length=2, max_length=1400)
     mode: Mode = Mode.AUTO
@@ -103,8 +106,8 @@ INTENTS = [
     ("financial", r"\b(stock price|market cap|exchange rate|inflation|interest rates?|earnings)\b"),
     ("news", r"\b(news|breaking|headlines)\b"),
     ("local", r"\b(near me|opening hours|local events|restaurants? in|weather in)\b"),
-    ("current", r"\b(current|latest|today|recent|recently|this (year|week|month))\b"),
-    ("technical", r"\b(technical|open.source|github|postgresql|cassandra|benchmark|compare|research)\b"),
+    ("current", r"\b(current|latest|today|tomorrow|yesterday|tonight|recent|recently|this (year|week|month))\b"),
+    ("technical", r"\b(technical|open.source|github|benchmark|compare|research)\b"),
 ]
 
 
@@ -132,6 +135,8 @@ def route(question, history):
         r"|^(what is|calculate)\s+[\d+*/(). -]+\??$|^(explain|define|what is)\s+(a |an |the )?"
         r"(python (tuple|list|dictionary)s?|recursion|gravity|photosynthesis|a prime number)\b", text
     )
-    if intent == "general" and direct and not question.freshness and not question.country:
+    if intent == "general" and (direct or definition_request(question.question)) and not question.freshness and not question.country:
         return intent, Mode.DIRECT
+    if intent in {"general", "technical", "documentation"} and comparison_request(question.question):
+        return intent, Mode.DEEP
     return intent, mapping.get(intent, Mode.QUICK)

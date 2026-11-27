@@ -56,6 +56,9 @@ def research(monkeypatch):
     ("Compare laptops from Nigerian retailers", Mode.SHOPPING, "product_comparison"),
     ("Verify that this statement is true", Mode.FACT_CHECK, "fact_check"),
     ("PostgreSQL and Cassandra benchmark", Mode.TECHNICAL, "technical"),
+    ("Compare PostgreSQL and Cassandra for high-throughput applications", Mode.DEEP, "technical"),
+    ("What is cataclysm?", Mode.DIRECT, "general"),
+    ("List Premier League fixtures today", Mode.QUICK, "current"),
     ("Deep research on battery storage", Mode.DEEP, "deep_research"),
 ])
 def test_route_modes(name, mode, intent):

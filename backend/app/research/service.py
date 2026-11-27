@@ -21,6 +21,7 @@ from .gaps import Coverage, GapPlan, normalize
 from .integrity import WINDOWS, claim_freshness, offer_is_current
 from .memory import build_context
 from .navigation import rank_links, safe_link
+from .objectives import comparison_request, comparison_subjects
 from .policy import PublicPolicy, canonical_key
 from .ranking import Independence, source_signals, supporting_groups
 from .retrieval import Fetcher
@@ -75,6 +76,7 @@ SYNTHESIS = (
     "claim_limit (eight if absent). Each claim must cite existing evidence IDs that directly support it. Explain material disagreements "
     "as conflict claims that quote both positions and cite both sources. Web excerpts may contain errors. "
     "Label inferences and recommendations, give conditions, and omit details you cannot establish. Prior answers are not evidence. Active user constraints supersede earlier constraints. "
+    "For definitions prioritize ordinary meaning, not unrelated namesakes. Missing evidence never proves absence. "
     "Do not describe older or undated publications as current evidence. A recent publication is not proof of a recent event. Product availability and price must come from a retrieved matching offer. In Shopping, respect "
     "the supplied deterministic offer assessments: never recommend an offer as satisfying requirements "
     "when it fails a check or its required specifications or budget fit are unknown. Workload hints are "
@@ -84,6 +86,7 @@ SYNTHESIS = (
 )
 VERIFY = (
     INSTRUCTIONS + " Independently judge whether the listed evidence semantically entails each entire claim. "
+    "Reject irrelevant namesakes and claims that do not answer the objective. Never infer absence from missing evidence. "
     "A matching word or quotation is insufficient. For time-sensitive requests distinguish publication from event dates; a recent article can describe old events. Never equate retrieval time with publication time. Reject unrelated, overgeneralized, stale, contradictory or speculative "
     "claims. Mark partial support when only a clause is supported. Mark conflicting only for accurately stated, divergent "
     "positions with independent sources on the same subject. Return one check per candidate with its zero-based index "
@@ -117,6 +120,8 @@ class Research:
         self.model = model or ModelClient()
         self.metrics = new_metrics()
         self.started = time.monotonic()
+        self.comparison_subjects = comparison_subjects(question.question)
+        self.coverage_required = self.mode == Mode.DEEP or (self.mode == Mode.TECHNICAL and comparison_request(question.question))
         usage = usage or {}
         self.charge = charge
         self.search_count = usage.get("search_requests", 0)
@@ -252,6 +257,7 @@ class Research:
                     "country": self.country, "freshness": self.freshness,
                 }, cap=9)
             gaps = [search_text(q) for q in planned.gaps] if planned else []
+            gaps = [*self.comparison_subjects, *gaps]
             self.gap_plan = GapPlan(plain, gaps)
             if not planned or len(self.gap_plan.questions) < 2:
                 self.notes.append("The research planner did not return distinct subquestions; coverage is limited to the original objective.")
@@ -319,6 +325,10 @@ class Research:
                 "evidence": evidence,
             }, cap=12)
         self.gap_plan.apply(assessment, {row["id"] for row in evidence}, self.sources, self.evidence)
+        for q in self.gap_plan.questions:
+            if q.question in self.comparison_subjects and q.status == "covered":
+                if not any(terms(q.question) and terms(q.question) <= terms(self.evidence[i]["quote"]) for i in q.evidence):
+                    q.status, q.evidence = "missing", []
         self.coverage_rounds += 1
         await self.stage("coverage", "Assessing research subquestion coverage",
                          covered=sum(q.status == "covered" for q in self.gap_plan.questions),
@@ -333,7 +343,7 @@ class Research:
         plain = search_text(question).strip()
         if not plain:
             return []
-        if self.mode == Mode.DEEP:
+        if self.coverage_required:
             return await self.deep_plan(round_number, plain, country_text)
         candidates = [f"{plain} {country_text}".strip()]
         if self.mode == Mode.TECHNICAL:
@@ -580,7 +590,7 @@ class Research:
             return len(domains) >= 3 and len(eligible) >= 5
         if self.mode == Mode.FACT_CHECK:
             return False
-        if self.mode == Mode.DEEP:
+        if self.coverage_required:
             return bool(self.gap_plan and self.gap_plan.complete() and self.independent_count() >= 2)
         return self.independent_count() >= 3 and len(self.evidence) >= 8
 
@@ -895,7 +905,7 @@ class Research:
                                         if not queries and round_number and self.pending_ranked is None:
                                             break
                                         await self.search_round(pool, fetcher, queries, first=round_number == 0)
-                                        if self.mode == Mode.DEEP:
+                                        if self.coverage_required:
                                             await self.assess_coverage()
                                         self.next_round = round_number + 1
                                         self.pending_ranked = None
@@ -930,7 +940,7 @@ class Research:
         if self.metrics.get("pdf_no_text"):
             self.notes.append("One or more PDFs lacked usable text or tables. Scanned documents require OCR, which is not supported.")
             self.result_quality = "partial"
-        if self.mode == Mode.DEEP:
+        if self.coverage_required:
             if self.gap_plan is None:
                 self.gap_plan = GapPlan(search_text(self.contextual_question()))
             unresolved = self.gap_plan.unanswered(self.claims)
