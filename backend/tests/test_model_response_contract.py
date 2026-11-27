@@ -88,13 +88,15 @@ async def test_configured_cloud_models_use_schema_and_reserved_output_limit(monk
                         "ai_max_output_tokens": 2048, "ai_provider_rpm": 0, "ai_provider_tpm": 0,
                         "nvidia_thinking_enabled": False}.items():
         monkeypatch.setattr(cfg, name, value)
-    original, charged = httpx.AsyncClient, []
+    original, charged, output_limits = httpx.AsyncClient, [], []
 
     async def respond(request):
         body = json.loads(request.content)
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
-        assert body["max_tokens"] == 2048
+        output_field = "max_completion_tokens" if provider == "groq" else "max_tokens"
+        assert 0 < body[output_field] < cfg.ai_max_output_tokens
+        output_limits.append(body[output_field])
         if provider == "nvidia":
             assert body["chat_template_kwargs"] == {"enable_thinking": False}
         if provider == "openrouter":
@@ -108,7 +110,7 @@ async def test_configured_cloud_models_use_schema_and_reserved_output_limit(monk
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
     assert (await ModelClient().request("decide", {}, Decision, account)).claims == []
-    assert charged == [2048]
+    assert charged == output_limits
 
 
 async def test_diagnostic_reports_schema_path_without_raw_response_or_secret(monkeypatch):

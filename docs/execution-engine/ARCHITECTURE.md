@@ -59,6 +59,34 @@ estimated tokens. Direct search needed only synthesis and verification calls.
 The historical live-provider HTTP 400 cannot be attributed to a particular
 request field from status alone.
 
+## Comparison and provider recovery
+
+Comparison uses the objective and success criteria to identify named subjects and
+requested dimensions. It records supporting passages for each combination and
+favors evidence that explicitly names the subject and addresses the dimension.
+Missing combinations guide navigation to observed authorized comparison or
+subject pages, including links retained from earlier observations. A source with
+enough evidence for the narrow objective can satisfy the comparison on its own.
+The answer synthesizer receives the requested subject list and the passages
+relevant to those subjects. The verifier checks scope, claims and citations before
+publication.
+
+Cloud decision failover has a 24-second request window and an eight-second
+per-provider cap. Other inference uses up to 48 seconds per request and 15 seconds
+per provider. Configured timeouts and the task deadline can impose lower limits.
+Structured-output rejection can trigger one compatible JSON retry, followed by
+local validation against the original schema. A truncated response can trigger
+one larger reservation within the configured output and context ceilings.
+Request and contract rejection are isolated from endpoint availability. HTTP 429,
+retryable server and transport errors, and exhausted quota with a known reset
+update the shared SQL cooldown. A task that discovers invalid credentials skips
+that provider during subsequent inference.
+
+Provider request formats and reasoning fields follow the documented APIs.
+[Groq API reference](https://console.groq.com/docs/api-reference),
+[OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs),
+and [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai).
+
 ## Discovery on unfamiliar websites
 
 The general planner can inspect and capture a previously unknown record shape in an authorized browser. The observer identifies native tables, ARIA grids and repeated visible sibling structures using browser semantics. It provides short examples, nearby headings, observed field labels and counts. The planner selects a region for the objective, assigns fields to the observed segments and chooses a record identity. It uses the existing browser actions for navigation, pagination and scrolling. Native selections and forms retain their existing permission gates.

@@ -66,7 +66,8 @@ _GENERIC_RESEARCH = {"best", "top", "recommended", "recommend", "rank", "ranking
 
 def research_terms(value):
     aliases = {"production": "generate", "produce": "generate", "producing": "generate",
-               "produces": "generate", "produced": "generate"}
+               "produces": "generate", "produced": "generate", "prices": "price",
+               "pricing": "price", "cost": "price", "costs": "price"}
     return {aliases.get(term, term) for term in semantic_terms(value)}
 
 
@@ -84,21 +85,38 @@ def topical_match(criterion, quote):
 def comparison_entities(objective, declared=()):
     literal = set(words(objective))
     names = [name for name in declared if terms(name) and terms(name) <= literal]
-    match = re.match(r"\s*(?:please\s+)?compare\s+(.+)", objective, re.I)
-    if match and len(names) < 2:
-        subjects = re.split(r"\s+(?:on|by|in terms of|based on|for|using)\s+|[!?;\n]", match[1], maxsplit=1, flags=re.I)[0]
+    match = re.search(r"^\s*(?:please\s+)?compare\s+(.+)|\b(?:differences?|comparison)\s+between\s+(.+)",
+                      objective, re.I)
+    text = (match[1] or match[2]) if match else (
+        objective if literal & {"vs", "versus"} else ""
+    )
+    if text and len(names) < 2:
+        prefix = re.match(r".+?\s+for\s+(.+\s+(?:versus|vs\.?|against)\s+.+)", text, re.I)
+        if prefix:
+            text = prefix[1]
+        subjects = re.split(r"\s+(?:on|by|across|in terms of|based on|with respect to|for|using)\s+|[!?;\n]", text, maxsplit=1, flags=re.I)[0]
         parts = re.split(r",\s*(?:and\s+)?|\s+(?:with|against|versus|vs\.?|and)\s+", subjects, flags=re.I)
         if len(parts) > 1:
             names.extend(part.strip(" .") for part in parts if terms(part) and len(words(part)) <= 8)
     return list({name.casefold(): name for name in names}.values())[:8]
 
 
-def comparison_dimensions(objective):
-    if not re.match(r"\s*(?:please\s+)?compare\b", objective, re.I):
+def comparison_dimensions(objective, criteria=()):
+    if not re.match(r"\s*(?:please\s+)?compare\b", objective, re.I) and not comparison_entities(objective):
         return []
-    match = re.search(r"\s+(?:on|in terms of|based on)\s+([^.!?;\n]+)", objective, re.I)
-    return [name.strip() for name in re.split(r"\s+and\s+|,\s*", match[1], flags=re.I)
-            if terms(name) and len(words(name)) <= 8][:8] if match else []
+    fields = {}
+    prefix = re.match(r"\s*(?:please\s+)?compare\s+(.+?)\s+for\s+.+\s+(?:versus|vs\.?|against)\s+", objective, re.I)
+    requirements = [prefix[1]] if prefix else []
+    for requirement in (objective, *criteria):
+        match = re.search(r"\s+(?:on|by|across|in terms of|based on|with respect to)\s+([^.!?;\n]+)", requirement, re.I)
+        if match:
+            requirements.append(match[1])
+    for requirement in requirements:
+        for part in re.split(r"\s+and\s+|,\s*", requirement, flags=re.I):
+            name = part.strip()
+            if terms(name) and len(words(name)) <= 12:
+                fields.setdefault(name.casefold(), name)
+    return list(fields.values())[:8]
 
 
 def ranked_chunks(chunks, objective, title, entities=(), criteria=()):
@@ -138,36 +156,70 @@ def capture_evidence(observation, store, step_id, entities, criteria, *, max_rec
         return 0
     url = observation["url"]
     seen = {(source["url"].split("#", 1)[0], source["quote"]) for source in store}
-    quotes = {source["quote"] for source in store}
+    quotes = {(source["quote"], tuple(sorted(source.get("entities", [])))) for source in store}
     added = 0
     for chunk in observation.get("research_chunks", ()):
         quote = chunk["quote"]
         key = (url.split("#", 1)[0], quote)
         relevant = bool(chunk["entities"]) if entities else any(topical_match(item, quote) for item in criteria)
-        if key in seen or quote in quotes or not relevant:
+        quote_scope = (quote, tuple(sorted(chunk["entities"])))
+        if key in seen or quote_scope in quotes or not relevant:
             continue
         digest = hashlib.sha256("\0".join(key).encode()).hexdigest()[:24]
         store.append({"id": f"dom-{digest}", "url": url, "quote": quote, "step_id": step_id,
                       "entities": chunk["entities"], "heading": chunk["heading"],
+                      "source_title": observation.get("title", ""),
                       "criteria_hints": [item for item in criteria if (
                           bool(terms(item) & terms(quote)) if entities else topical_match(item, quote)
                       )]})
         seen.add(key)
+        quotes.add(quote_scope)
         added += 1
         if added == 4 or len(store) >= max_records:
             break
     return added
 
 
+def evidence_subjects(evidence, entities):
+    quote = terms(evidence["quote"])
+    explicit = [name for name in entities if name in evidence.get("entities", []) or terms(name) <= quote]
+    if explicit:
+        return explicit
+    title = terms(evidence.get("source_title", "") + " " + evidence.get("heading", ""))
+    contextual = [name for name in entities if terms(name) <= title]
+    return contextual if len(contextual) == 1 else []
+
+
 def coverage(evidence, entities, criteria):
     return {
-        "entities": {entity: [row["id"] for row in evidence if entity in row.get("entities", []) or
-                              terms(entity) <= terms(row["quote"])] for entity in entities},
+        "entities": {entity: [row["id"] for row in evidence if entity in evidence_subjects(row, entities)]
+                     for entity in entities},
         "criteria": {criterion: [row["id"] for row in evidence if (
             criterion in row.get("criteria_hints", []) or bool(terms(criterion) & terms(row["quote"]))
             if entities else topical_match(criterion, row["quote"])
         )] for criterion in criteria},
     }
+
+
+def comparison_coverage(evidence, entities, dimensions):
+    """A passage must bind the subject and the dimension within one observed source."""
+    result = {}
+    for entity in entities:
+        entity_terms = terms(entity)
+        candidates = [row for row in evidence if entity in evidence_subjects(row, entities)]
+        cells = result[entity] = {}
+        for dimension in dimensions:
+            ranked = []
+            for row in candidates:
+                quote = row["quote"]
+                body_match = topical_match(dimension, quote)
+                heading_match = topical_match(dimension, row.get("heading", ""))
+                if body_match or heading_match and len(terms(quote)) >= 3:
+                    score = (4 * body_match + 2 * (entity_terms <= terms(quote))
+                             + (entity_terms <= terms(row.get("source_title", ""))))
+                    ranked.append((score, row["id"]))
+            cells[dimension] = [identifier for _, identifier in sorted(ranked, key=lambda item: -item[0])]
+    return result
 
 
 def destination_key(url):
@@ -196,11 +248,11 @@ def repair_exact_citations(claims, evidence):
             claim.evidence_ids = candidates
 
 
-def claim_verification_criteria(claims, evidence):
+def claim_verification_criteria(claims, evidence, *, verify_excerpts=False):
     required = {}
     for index, claim in enumerate(claims, 1):
         text = " ".join(claim.text.split())
-        if len(claim.evidence_ids) == 1 and any(
+        if not verify_excerpts and len(claim.evidence_ids) == 1 and any(
             text == " ".join(evidence[key]["quote"].split())
             for key in claim.evidence_ids if key in evidence
         ):

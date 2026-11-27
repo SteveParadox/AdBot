@@ -10,6 +10,7 @@ from app.agent.contracts import Decision, Verification
 from app.agent.discovery import objective_query, task_token_allowance
 from app.agent.model import ModelBudgetExceeded, ModelContextExceeded
 from app.agent.planning import evaluate, initial_plan, needs_model_plan, specification
+from app.agent.research import comparison_coverage, comparison_dimensions, comparison_entities
 from app.agent.routing import select_route
 from app.agent.runner import AgentRunner
 from app.fixture import app as browser_fixture
@@ -37,6 +38,85 @@ def test_search_permission_and_complexity_are_independent():
     assert not specification("Amber Relay", ["Never use site search"], options, [])["permissions"]["read_search"]
     spec = specification("Tell me about Amber Relay using independent sources", [], options, [])
     assert needs_model_plan(spec)
+
+
+async def test_comparison_uses_previously_observed_subject_link_for_missing_dimension():
+    objective = "Compare Cedar and Cypress across warranty and battery life"
+    assert comparison_entities(objective) == ["Cedar", "Cypress"]
+    assert comparison_dimensions(objective) == ["warranty", "battery life"]
+    evidence = [
+        {"id": "a", "quote": "Cedar has a two-year warranty and a battery life of 10 hours."},
+        {"id": "b", "quote": "Cypress has a one-year warranty."},
+    ]
+    assert comparison_coverage(evidence, ["Cedar", "Cypress"], ["warranty", "battery life"]) == {
+        "Cedar": {"warranty": ["a"], "battery life": ["a"]},
+        "Cypress": {"warranty": ["b"], "battery life": []},
+    }
+    runner = object.__new__(AgentRunner)
+    runner.comparison_mode = True
+    runner.recommendation_mode = False
+    runner.objective = objective
+    runner.options = {"success_criteria": [objective]}
+    runner.memory = {"evidence": evidence, "visited_urls": [], "planning": initial_plan(
+        specification(objective, [objective], runner.options, ["example.test"])
+    ), "comparison_links": {"https://example.test/support/device-45": "Cypress battery life"}}
+
+    class FixturePolicy:
+        def check(self, url):
+            assert url.startswith("https://example.test/")
+            return url
+
+    runner.policy = FixturePolicy()
+    action = await runner.research_decision({"url": "https://example.test/comparison", "elements": []})
+    assert action.decision == "NAVIGATE" and action.url.endswith("/device-45")
+
+
+async def test_comprehensive_single_source_can_synthesize_a_scoped_comparison():
+    objective = "Compare Cedar and Cypress on warranty"
+    url = "https://example.test/comparison"
+    runner = object.__new__(AgentRunner)
+    runner.comparison_mode = True
+    runner.recommendation_mode = False
+    runner.objective = objective
+    runner.options = {"success_criteria": [objective]}
+    runner.memory = {"evidence": [
+        {"id": "cedar", "url": url, "quote": "Cedar includes a two-year warranty."},
+        {"id": "cypress", "url": url, "quote": "Cypress includes a one-year warranty."},
+        {"id": "other", "url": url, "quote": "Juniper includes a three-year warranty."},
+    ], "planning": initial_plan(specification(objective, [objective], runner.options, ["example.test"]))}
+
+    async def ask(kind, payload, schema):
+        assert kind == "synthesize"
+        assert {row["id"] for row in payload["evidence"]} == {"cedar", "cypress"}
+        assert payload["subjects"] == ["Cedar", "Cypress"]
+        return schema(claims=[{"text": "Cedar's warranty lasts twice as long as Cypress's.",
+                               "evidence_ids": ["cedar", "cypress"]}])
+
+    runner.ask_model = ask
+    action = await runner.research_decision({"url": url, "elements": []})
+    assert action.decision == "COMPLETE" and "Juniper" not in action.claims[0].text
+
+
+async def test_recommendation_uses_relevant_observed_destination_without_a_model():
+    runner = object.__new__(AgentRunner)
+    runner.comparison_mode = False
+    runner.recommendation_mode = True
+    runner.objective = "Recommend an audio restoration utility"
+    runner.options = {"success_criteria": [runner.objective]}
+    runner.memory = {"evidence": [], "visited_urls": []}
+
+    class FixturePolicy:
+        def check(self, url):
+            if not url.startswith("https://example.test/"):
+                raise ValueError("URL outside fixture scope")
+            return url
+
+    runner.policy = FixturePolicy()
+    action = await runner.research_decision({"url": "https://example.test/catalog", "elements": [
+        {"role": "link", "actionable": True, "name": "Audio restoration utilities", "href": "https://outside.test/tools"},
+        {"role": "link", "actionable": True, "name": "Audio restoration utilities", "href": "https://example.test/audio"},
+    ]})
+    assert action.decision == "NAVIGATE" and action.url == "https://example.test/audio"
 
 
 @pytest.mark.parametrize("objective,reason,verified,expected", [

@@ -20,7 +20,8 @@ from .contracts import AnswerDraft, Decision, Verification
 from .controller import Controller, NavigationFailed
 from .directory import DirectoryCollection, directory_link, directory_result, matching_collection
 from .routing import (ExecutionRoute, InformationalAssessment, RouteAssessment, ambiguous_subject, assessed_entity,
-                      collection_kinds, exhaustive_request, inventory_route, select_route, task_text_only, words)
+                      collection_kinds, exhaustive_request, inventory_route, requested_operation, select_route,
+                      task_text_only, words)
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelContextExceeded, ModelError, ModelProvidersUnavailable
 from .structure import add_capture, classification_request
@@ -29,7 +30,7 @@ from .discovery import (
     search_attempt_key, search_candidate, search_control, search_query_allowed, task_token_allowance, unchanged_scrolls, update_frontier,
 )
 from .research import (
-    capture_evidence, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
+    capture_evidence, comparison_coverage, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
     terms,
 )
 
@@ -177,6 +178,7 @@ class AgentRunner(Runner):
                     return await database_call(self.account, *args)
             return await database_call(self.account, *args)
 
+        provider_waits = 0
         while True:
             remaining = self.deadline - time.time() - 5
             if remaining <= 0:
@@ -197,7 +199,10 @@ class AgentRunner(Runner):
                     kind, payload, schema, account_async, image, timeout_cap_seconds=remaining - time_reserve,
                 )
             except ModelProvidersUnavailable as exc:
-                if not wait_for_provider or exc.retry_after is None:
+                if (not wait_for_provider or exc.retry_after is None or provider_waits >= 2
+                        or provider_waits and exc.retry_after > 1):
+                    raise
+                if kind == "decide" and getattr(self, "comparison_mode", False) and exc.retry_after > 8:
                     raise
                 remaining = self.deadline - time.time() - 5
                 if exc.retry_after >= remaining:
@@ -210,6 +215,7 @@ class AgentRunner(Runner):
                 )
                 # This is inference recovery before dispatch, not a browser action.
                 # Preserve the same payload, schema, observation and action budget.
+                provider_waits += 1
                 await asyncio.sleep(exc.retry_after)
 
     async def checkpoint(self, controller):
@@ -349,6 +355,9 @@ class AgentRunner(Runner):
             else:
                 digest = hashlib.sha256(f"{url}\0{quote}".encode()).hexdigest()[:24]
                 item = {"id": f"evidence-{digest}", "url": url, "quote": quote, "step_id": source_step_id}
+                if url == observation.get("url"):
+                    item["source_title"] = observation.get("title", "")
+                    item["heading"] = next(iter(observation.get("headings", [])), "")
                 known[url, quote] = item
                 additions.append(item)
             result.setdefault(item["id"], item)
@@ -386,7 +395,24 @@ class AgentRunner(Runner):
             from .research import repair_exact_citations, claim_verification_criteria
 
             repair_exact_citations(decision.claims, evidence)
-            claim_checks = claim_verification_criteria(decision.claims, evidence)
+            comparison = getattr(self, "comparison_mode", False)
+            if comparison:
+                subjects = comparison_entities(self.objective, planning["plan"]["intent"].get("entities", []))
+                cells = comparison_coverage(evidence.values(), subjects, self.research_dimensions())
+                missing = [f"{subject} / {dimension}" for subject, dimensions in cells.items()
+                           for dimension, ids in dimensions.items() if not ids]
+                if missing:
+                    self.memory["verification_feedback"] = {
+                        "problems": missing[:12],
+                        "instruction": "Gather observed evidence for the missing comparison cells before completing.",
+                    }
+                    raise ValueError("Comparison evidence is missing for a requested subject and dimension")
+            claim_checks = claim_verification_criteria(decision.claims, evidence, verify_excerpts=comparison)
+            if comparison and all(
+                any(" ".join(claim.text.split()) == " ".join(evidence[key]["quote"].split())
+                    for key in claim.evidence_ids) for claim in decision.claims
+            ):
+                raise ValueError("Comparison requires a synthesized answer grounded in the observed excerpts")
             criteria = list(dict.fromkeys([*criteria, *claim_checks]))
         attempt = action_key({"decision": "COMPLETE", "claims": sorted(
             ({"text": " ".join(claim.text.casefold().split()), "evidence_ids": sorted(set(claim.evidence_ids))}
@@ -429,6 +455,7 @@ class AgentRunner(Runner):
                                     "Copy each supplied criterion exactly. For Claim criteria use only the IDs "
                                     "attached to that claim; mark unmet if they do not support the entire claim. "
                                     "For objective criteria, confirm that the claims together actually answer the requirement. "
+                                    "For comparisons, reject unrelated subjects and check each requested dimension for each subject. "
                                     "Do not confuse supported individual claims with full objective coverage. "
                                     "If sources materially disagree about a required fact, report the disagreement "
                                     "and leave that criterion unverified unless the answer explicitly accounts for it."}
@@ -558,7 +585,11 @@ class AgentRunner(Runner):
         }
         if research:
             result["claims"] = [claim.model_dump() for claim in decision.claims if set(claim.evidence_ids) <= supported_ids]
+            if getattr(self, "comparison_mode", False):
+                result["evidence"] = [row for row in evidence.values() if row["id"] in supported_ids]
             if not result["claims"]:
+                if getattr(self, "comparison_mode", False):
+                    raise ValueError("Comparison requires verified synthesized claims")
                 result["claims"] = [{"text": evidence[identifier]["quote"], "evidence_ids": [identifier]}
                                     for identifier in evidence if identifier in supported_ids]
         if structured:
@@ -865,6 +896,8 @@ class AgentRunner(Runner):
         research = route.name in {"comparison", "research", "informational"} and not route.entity and not self.snapshot.get("extraction")
         self.research_mode = research
         self.informational_mode = route.name == "informational"
+        self.comparison_mode = route.name == "comparison"
+        self.recommendation_mode = research and requested_operation(self.objective) == "recommendation"
         enumeration = route.name == "enumeration"
         self.enumeration_mode = enumeration
         await self.restore_tabs(controller)
@@ -963,7 +996,7 @@ class AgentRunner(Runner):
                     if research:
                         if self.memory.pop("recover_with_navigation", False):
                             decision = self.discovery_alternative(observation)
-                        decision = decision or self.research_decision(observation)
+                        decision = decision or await self.research_decision(observation)
                         if decision is None and self.informational_mode:
                             decision = await self.informational_decision(observation)
                     if enumeration:
@@ -1437,6 +1470,7 @@ class AgentRunner(Runner):
                 if research and decision and not controller.engine.dispatch_started and (
                     category == "requires_authorization" or decision.decision == "EXTRACT"
                     or safe_error.startswith("Completion already failed")
+                    or safe_error.startswith("Comparison evidence is missing")
                     or isinstance(exc, NavigationFailed)
                 ):
                     self.memory["recover_with_navigation"] = True
@@ -1455,7 +1489,7 @@ class AgentRunner(Runner):
     def rank_research(self, observation):
         planning = self.memory["planning"]
         entities = comparison_entities(self.objective, planning["plan"]["intent"].get("entities", []))
-        criteria = self.verification_criteria()
+        criteria = [*self.verification_criteria(), *self.research_dimensions()]
         observation["research_chunks"] = ranked_chunks(
             observation.get("research_chunks", []), self.objective, observation.get("title", ""), entities, criteria,
         )[:12]
@@ -1631,47 +1665,90 @@ class AgentRunner(Runner):
             return navigation_candidate(observation, self.objective, self.policy, excluded=self.discovery_exclusions())
         return None
 
-    def research_decision(self, observation):
-        entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
-        if len(entities) < 2 or any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
+    async def research_decision(self, observation):
+        if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
             return None
         evidence = self.memory["evidence"]
-        dimensions = comparison_dimensions(self.objective)
-        matrix = coverage(evidence, entities, dimensions)
-        if all(matrix["entities"].values()) and all(matrix["criteria"].values()):
-            offered = self.verification_evidence({row["id"]: row for row in evidence})
-            fingerprint = [row["id"] for row in offered]
-            if fingerprint != self.memory.get("research_verified_candidates"):
-                self.memory["research_verified_candidates"] = fingerprint
-                return Decision(
-                    observation="Rendered excerpts cover each comparison subject",
-                    decision="COMPLETE", reason="Verify the captured comparison evidence", confidence=1,
-                    expected_result="A source-backed result or identified evidence gaps",
-                    claims=[{"text": row["quote"], "evidence_ids": [row["id"]]} for row in offered],
-                )
-        destinations = {}
-        indexes = {}
-        for element in observation.get("elements", []):
-            url = element.get("href")
-            if not url or not element.get("actionable") or element.get("blocked_by_modal"):
-                continue
-            label = terms(element.get("name", "") + " " + urlsplit(url).path.replace("-", " "))
-            direct = all(terms(entity) <= label for entity in entities)
-            comparison_index = element.get("name", "").casefold().strip() in {"compare", "comparison", "comparisons"}
-            if not direct and not comparison_index:
-                continue
-            try:
-                url = self.policy.check(url)
-                guard_navigation(self.memory.get("research_destinations", {}), url, observation["url"], len(evidence))
-            except ValueError:
-                continue
-            (destinations if direct else indexes)[destination_key(url)] = url
-        choices = destinations or (indexes if not any(matrix["entities"].values()) else {})
-        if len(choices) == 1:
-            return Decision(observation="Observed comparison destination", decision="NAVIGATE",
-                            url=next(iter(choices.values())), reason="Open the relevant comparison source",
-                            confidence=1, expected_result="Rendered evidence for the requested subjects")
+        if self.recommendation_mode and (not evidence or any(
+            not ids for ids in coverage(evidence, [], self.verification_criteria())["criteria"].values()
+        )):
+            return navigation_candidate(observation, self.objective, self.policy, excluded=self.discovery_exclusions())
+        if not self.comparison_mode:
+            return None
+        entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
+        if len(entities) < 2:
+            return None
+        dimensions = self.research_dimensions()
+        by_entity = coverage(evidence, entities, [])["entities"]
+        cells = comparison_coverage(evidence, entities, dimensions)
+        self.memory["comparison_coverage"] = cells
+        missing = {name for name, ids in by_entity.items() if not ids or any(not value for value in cells[name].values())}
+        needs_depth = not dimensions and any(len(ids) < 2 for ids in by_entity.values())
+        if missing or needs_depth:
+            focus = missing or set(entities)
+            ranked = []
+            sources = self.memory.setdefault("comparison_links", {})
+            for element in observation.get("elements", []):
+                href = element.get("href")
+                if (not href or element.get("role") != "link" or element.get("form") or not element.get("actionable")
+                        or element.get("blocked_by_modal") or element.get("visible") is False):
+                    continue
+                try:
+                    href = self.policy.check(href)
+                except ValueError:
+                    continue
+                if not urlsplit(href).fragment:
+                    sources[destination_key(href)] = element.get("name", "")[:200]
+            while len(sources) > 100:
+                sources.pop(next(iter(sources)))
+            excluded = self.discovery_exclusions()
+            for href, name in sources.items():
+                if href in excluded:
+                    continue
+                try:
+                    href = self.policy.check(href)
+                    guard_navigation(self.memory.get("research_destinations", {}), href, observation["url"], len(evidence))
+                except ValueError:
+                    continue
+                label = terms(name)
+                path = terms(urlsplit(href).path)
+                matched = [name for name in focus if terms(name) <= label or terms(name) <= path]
+                index = not evidence and label in ({"compare"}, {"comparison"}, {"comparisons"})
+                if matched or index:
+                    requested_fields = set().union(*(terms(field) for name in matched for field, ids in cells[name].items() if not ids))
+                    ranked.append((10 * len(matched) + 2 * sum(terms(name) <= label for name in matched)
+                                   + len(requested_fields & (label | path)), href))
+            if ranked:
+                return Decision(decision="NAVIGATE", url=max(ranked, key=lambda row: row[0])[1],
+                                observation="An observed link is relevant to missing comparison evidence",
+                                reason="Inspect an authorized comparison source or dedicated subject page", confidence=1,
+                                expected_result="Observed facts for the requested subjects and dimensions")
+            if missing:
+                return None
+        offered = self.verification_evidence({row["id"]: row for row in evidence})
+        offered = [row for row in offered if any(row["id"] in ids for ids in by_entity.values())]
+        fingerprint = [row["id"] for row in offered]
+        if not offered or fingerprint == self.memory.get("research_verified_candidates"):
+            return None
+        self.memory["research_verified_candidates"] = fingerprint
+        draft = await self.ask_model("synthesize", {
+            "objective": self.objective,
+            "success_criteria": self.research_criteria(),
+            "subjects": entities,
+            "dimensions": dimensions,
+            "evidence": offered,
+            "instructions": "Compare only the requested subjects. Synthesize relative differences and trade-offs in your own words. "
+                            "Cite each subject's actual source passages for every compared dimension. Exclude unrelated entities "
+                            "even when sources mention them. Return an empty claims list if comparable facts are missing.",
+        }, AnswerDraft)
+        if draft.claims:
+            return Decision(decision="COMPLETE", claims=draft.claims, observation="Comparable source passages are available",
+                            reason="Verify the synthesized comparison", confidence=1,
+                            expected_result="A verified comparison or precise evidence gaps")
         return None
+
+    def research_dimensions(self):
+        return comparison_dimensions(self.objective, self.verification_criteria())
 
     def research_model_page(self, observation):
         history = self.memory.get("research_destinations", {})
@@ -1702,7 +1779,7 @@ class AgentRunner(Runner):
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
         criteria = [*self.verification_criteria(), *(f"Compare the requested subjects on {field}"
-                    for field in comparison_dimensions(self.objective))]
+                    for field in self.research_dimensions())]
         # Assess each requested subject even if the original comparison is incomplete.
         return list(dict.fromkeys([*criteria, *(f"Source evidence relevant to the objective for {entity}" for entity in entities)]))
 
@@ -1713,6 +1790,10 @@ class AgentRunner(Runner):
         prioritized = list(dict.fromkeys(
             identifier for matrix in dimensions.values() for ids in matrix.values() for identifier in ids[:2]
         ))
+        cell_ids = [ids[0] for cells in self.memory.get("comparison_coverage", {}).values() for ids in cells.values() if ids]
+        for identifier in dict.fromkeys(cell_ids):
+            if identifier in evidence and evidence[identifier] not in selected:
+                selected.append(evidence[identifier])
         from .context import retrieve_evidence
 
         ranked = retrieve_evidence(list(evidence.values()), self.objective, {}, limit=12, exact=True)
@@ -1796,10 +1877,14 @@ class AgentRunner(Runner):
             return False
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
         evidence = self.memory["evidence"]
+        for dimension in self.research_dimensions():
+            if check.criterion == f"Compare the requested subjects on {dimension}":
+                matrix = comparison_coverage(evidence, entities, [dimension])
+                return bool(entities) and all(cited.intersection(cells[dimension]) for cells in matrix.values())
         by_entity = coverage(evidence, entities, [])["entities"]
         relevant_entities = (
             entities if check.criterion in {f"Compare the requested subjects on {field}"
-                                            for field in comparison_dimensions(self.objective)}
+                                            for field in self.research_dimensions()}
             else [entity for entity in entities if check.criterion == f"Source evidence relevant to the objective for {entity}"]
         )
         return all(cited.intersection(by_entity[entity]) for entity in relevant_entities)
@@ -1819,7 +1904,7 @@ class AgentRunner(Runner):
 
     async def save_research_observation(self, observation, step_id, controller, *, persist=True):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
-        criteria = [*self.verification_criteria(), *comparison_dimensions(self.objective)]
+        criteria = [*self.verification_criteria(), *self.research_dimensions()]
         store = self.memory["evidence"]
         if capture_evidence(observation, store, step_id, entities, criteria,
                             max_records=settings().agent_max_evidence_records):
@@ -1961,7 +2046,7 @@ class AgentRunner(Runner):
             state["research_evidence_required"] = True
             state["research_requirements"] = {
                 "entities": comparison_entities(self.objective, state["plan"]["intent"].get("entities", [])),
-                "criteria": list(dict.fromkeys([*self.verification_criteria(), *comparison_dimensions(self.objective)])),
+                "criteria": list(dict.fromkeys([*self.verification_criteria(), *self.research_dimensions()])),
             }
         state["complex_plan"] = needs_model_plan(expected)
         if not state.get("initialized"):

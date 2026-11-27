@@ -19,6 +19,65 @@ class Reply(BaseModel):
     status: str
 
 
+async def test_schema_rejection_retries_once_with_local_validation(cloud, monkeypatch):
+    cloud.ai_model = "openai/gpt-oss-20b"
+    original = httpx.AsyncClient
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"message": "unsupported response_format json_schema"}})
+        return success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    model = ModelClient()
+    assert (await model.request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert requests[0]["response_format"]["type"] == "json_schema"
+    assert "max_completion_tokens" in requests[0] and "max_tokens" not in requests[0]
+    assert requests[1]["response_format"]["type"] == "json_object"
+    assert "schema" in json.loads(requests[1]["messages"][1]["content"])
+    await model.request("decide", {}, Reply, lambda *args: (1, 1))
+    assert len(requests) == 3 and requests[2]["response_format"]["type"] == "json_object"
+    assert all(request["model"] == cloud.ai_model for request in requests)
+
+
+async def test_truncation_retries_within_existing_output_ceiling(cloud, monkeypatch):
+    cloud.ai_max_output_tokens = 2200
+    original = httpx.AsyncClient
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {"content": "{"}}]})
+        return success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    assert (await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert len(requests) == 2
+    assert requests[0]["max_tokens"] < requests[1]["max_tokens"] <= cloud.ai_max_output_tokens
+    assert requests[0]["model"] == requests[1]["model"]
+
+
+async def test_exhausted_response_quota_is_shared_with_new_model_client(cloud, monkeypatch):
+    original = httpx.AsyncClient
+    hosts = []
+
+    def respond(request):
+        hosts.append(request.url.host)
+        response = success()
+        if request.url.host == "groq.test":
+            response.headers["x-ratelimit-remaining-requests"] = "0"
+            response.headers["x-ratelimit-reset-requests"] = "1m2s"
+        return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    for _ in range(2):
+        assert (await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert hosts == ["groq.test", "openrouter.test"]
+
+
 async def test_provider_context_rejection_rebuilds_before_retry(cloud, monkeypatch):
     original = httpx.AsyncClient
     requests, reservations = [], []
@@ -83,8 +142,8 @@ async def test_chain_hands_off_each_failure_once_and_preserves_request(cloud, mo
         requests.append(body)
         assert request.url.path == "/v1/chat/completions"  # Never Ollama for remote fallbacks.
         if len(calls) <= failed:
-            assert request.extensions["timeout"]["read"] == cloud.ai_primary_fallback_timeout_seconds
-            assert request.extensions["timeout"]["connect"] == 3
+            assert 0 < request.extensions["timeout"]["read"] <= min(8, cloud.ai_primary_fallback_timeout_seconds)
+            assert 0 < request.extensions["timeout"]["connect"] <= 3
             if isinstance(failure, int):
                 return httpx.Response(failure, headers={"retry-after": "3600"})
             if failure == "timeout":

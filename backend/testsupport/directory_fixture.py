@@ -9,6 +9,7 @@ RECORD_COUNT = 119
 CATEGORIES = ["AI chatbot", "Image generator", "SEO tool", "Audio editor", "Video editor"]
 EXPECTED = {f"Tool {index:03}" for index in range(1, RECORD_COUNT + 1) if index % len(CATEGORIES) == 0}
 CONVERSATION_DESCRIPTION = "Visitors practice languages and ask follow-up questions in a conversation with the product."
+TUTOR_DESCRIPTION = "Among language tutors, Ask focuses on guided conversational practice."
 TRANSCRIPTION_DESCRIPTION = "Converts uploaded audio recordings into time-coded transcripts."
 
 
@@ -122,7 +123,7 @@ def in_place():
 
 @router.get("/execution-fixture/tutors", response_class=HTMLResponse)
 def tutors():
-    return semantic().replace("AI products", "Language tutors")
+    return semantic().replace("AI products", "Language tutors").replace(CONVERSATION_DESCRIPTION, TUTOR_DESCRIPTION)
 
 
 @router.get("/execution-fixture/prompt-hub", response_class=HTMLResponse)

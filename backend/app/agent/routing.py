@@ -64,7 +64,8 @@ def requested_operation(objective):
     ):
         return "recommendation"
     if (leading == "compare" or (leading == "comparison" and set(tokens) & {"of", "between"})
-            or (leading not in _INVENTORY and "versus" in tokens)):
+            or re.search(r"\bdifferences?\s+between\b", objective, re.I)
+            or (leading not in _INVENTORY and set(tokens) & {"vs", "versus"})):
         return "comparison"
     return None
 

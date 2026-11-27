@@ -22,14 +22,16 @@ def test_literal_comparison_keeps_three_subjects():
 
 @fixture.app.get("/research-proof/{fixture_page}", response_class=HTMLResponse)
 def research_page(fixture_page: str):
-    if fixture_page in {"first", "long", "conflict"}:
+    if fixture_page in {"first", "long", "conflict", "incomplete"}:
         noise = "".join(f"<p>Unrelated archived informational paragraph number {i} contains general announcements.</p>"
                         for i in range(300)) if fixture_page == "long" else ""
+        link = "" if fixture_page == "incomplete" else (
+            f'<a href="/research-proof/{ {"long": "dynamic", "conflict": "contradiction"}.get(fixture_page, "second")}">South Station</a>'
+        )
         return (
             f'<article>{noise}<h1>North Station</h1><section><p>North Station operates weekday departures '
             'every fifteen minutes from the central concourse.</p></section></article>'
-            f'<nav><a href="/research-proof/{ {"long": "dynamic", "conflict": "contradiction"}.get(fixture_page, "second")}">South Station</a>'
-            '<a href="/research-proof/empty">Other listing</a></nav>'
+            f'<nav>{link}<a href="/research-proof/empty">Other listing</a></nav>'
         )
     if fixture_page == "dynamic":
         rendered = "<h2>South Station weekday departures</h2><table><tr><td>Weekday departures</td><td>30 min</td></tr></table>"
@@ -44,7 +46,7 @@ def research_page(fixture_page: str):
         '</div>' if fixture_page == "second" else
         '<p>Browse the directory to find weekday departures and other general transport information.</p>'
     )
-    return content + '<nav><a href="/research-proof/first#top">North Station</a></nav>'
+    return content + '<nav><a href="/research-proof/incomplete#top">North Station</a></nav>'
 
 
 @pytest.mark.browser
@@ -53,6 +55,8 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
     monkeypatch.setattr(settings(), "ai_provider", "local")
     decisions = 0
     conflict = first == "conflict"
+    if incomplete:
+        first = "incomplete"
     objective = "Compare North Station and South Station on weekday departures"
     registration = {key: target[key] for key in ("name", "allowed_domains", "configuration")}
     registration.update(base_url=f"http://127.0.0.1:8765/research-proof/{first}", authorized=True)
@@ -65,6 +69,12 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
         nonlocal decisions
         if kind == "plan":
             return schema.model_validate(payload["seed_plan"])
+        if kind == "synthesize":
+            assert payload["subjects"] == ["North Station", "South Station"]
+            assert "Exclude unrelated entities" in payload["instructions"]
+            observed = [row for row in payload["evidence"] if "heritage" not in row["quote"]]
+            return schema(claims=[{"text": "North has more frequent weekday departures than South.",
+                                   "evidence_ids": [row["id"] for row in observed]}])
         if kind == "verify":
             if first == "first" and not incomplete:
                 assert any("heritage" in row["quote"] for row in payload["evidence"])
@@ -79,6 +89,8 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
                 cited = [row["id"] for row in observed if any(entity in criterion for entity in row["entities"])]
                 if criterion == "Compare the requested subjects on weekday departures":
                     cited = [row["id"] for row in observed] if len(observed) == 2 else []
+                if criterion.startswith("Claim "):
+                    cited = payload["claims"][0]["evidence_ids"]
                 met = bool(cited) and (not incomplete or "for North Station" in criterion)
                 if conflict and not criterion.startswith("Source evidence"):
                     met = False
@@ -94,9 +106,11 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
             assert any("fifteen minutes" in row["quote"] and row["url"].endswith(first) for row in observed)
         defaults = {"observation": "Read the rendered source", "reason": "Compare observed service",
                     "confidence": 1, "expected_result": "Verify both departure schedules"}
+        if conflict:
+            return Decision(decision="FAIL", text="The sources disagree on North Station", **defaults)
         if decisions <= 1 or (incomplete and decisions == 2):
             destination = "/empty" if incomplete else "/" + {"long": "dynamic", "conflict": "contradiction"}.get(first, "second")
-            ending = destination if decisions == 1 else "/first#top"
+            ending = destination if decisions == 1 else f"/{first}#top"
             if decisions == 1:
                 href = next(e["href"] for e in payload["current_page"]["elements"] if (e.get("href") or "").endswith(ending))
             else:
@@ -114,6 +128,7 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
     result = client.get(f"/api/agent/tasks/{job}").json()
     assert result["status"] == ("failed" if incomplete or conflict else "completed"), result.get("error_message")
     assert len(result["memory"]["evidence"]) == (1 if incomplete else 2 if first == "long" else 3)
+    assert result["result"], (result.get("error_message"), result["memory"].get("failures"))
     assert result["result"]["verification"]["complete"] is (not incomplete and not conflict)
     if incomplete:
         assert result["result"]["partial"]
@@ -125,7 +140,7 @@ async def test_research_captures_sources_before_deciding_and_verifies_coverage(c
         assert objective in result["result"]["verification"]["missing_criteria"]
         assert result["result"]["partial"]
     else:
-        assert decisions == 1
+        assert decisions == 0
         assert set(result["memory"]["research_coverage"]["entities"]) == {"North Station", "South Station"}
         published = {identifier for row in result["result"]["claims"] for identifier in row["evidence_ids"]}
         assert all(set(node["evidence_ids"]) <= published for node in result["planning"]["plan"]["subtasks"])
