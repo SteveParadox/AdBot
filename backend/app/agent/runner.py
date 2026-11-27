@@ -310,7 +310,7 @@ class AgentRunner(Runner):
         if existing:
             return {**existing, "already_collected": True,
                     **({"summary": text} if text != quote else {})}
-        if len(self.memory["evidence"]) >= 40:
+        if len(self.memory["evidence"]) >= settings().agent_max_evidence_records:
             raise ValueError("Evidence budget exhausted")
         item = {"id": f"evidence-{step_id}", "url": url, "quote": quote, "step_id": source_step_id}
         if text != quote:
@@ -563,7 +563,7 @@ class AgentRunner(Runner):
 
             if rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", [])):
                 raise ValueError("This observed collection was rejected. Choose a different source or record group.")
-        if len(self.memory["evidence"]) >= 40:
+        if len(self.memory["evidence"]) >= settings().agent_max_evidence_records:
             raise ValueError("Evidence budget exhausted")
         self.policy.check(observation["url"])
         cfg = settings()
@@ -1639,7 +1639,8 @@ class AgentRunner(Runner):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
         criteria = [*self.verification_criteria(), *comparison_dimensions(self.objective)]
         store = self.memory["evidence"]
-        if capture_evidence(observation, store, step_id, entities, criteria):
+        if capture_evidence(observation, store, step_id, entities, criteria,
+                            max_records=settings().agent_max_evidence_records):
             self.memory["research_coverage"] = coverage(store, entities, criteria)
         history = self.memory.setdefault("research_destinations", {})
         history[destination_key(observation["url"])] = len(store)
