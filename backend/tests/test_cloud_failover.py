@@ -19,6 +19,65 @@ class Reply(BaseModel):
     status: str
 
 
+async def test_schema_rejection_retries_once_with_local_validation(cloud, monkeypatch):
+    cloud.ai_model = "openai/gpt-oss-20b"
+    original = httpx.AsyncClient
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"message": "unsupported response_format json_schema"}})
+        return success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    model = ModelClient()
+    assert (await model.request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert requests[0]["response_format"]["type"] == "json_schema"
+    assert "max_completion_tokens" in requests[0] and "max_tokens" not in requests[0]
+    assert requests[1]["response_format"]["type"] == "json_object"
+    assert "schema" in json.loads(requests[1]["messages"][1]["content"])
+    await model.request("decide", {}, Reply, lambda *args: (1, 1))
+    assert len(requests) == 3 and requests[2]["response_format"]["type"] == "json_object"
+    assert all(request["model"] == cloud.ai_model for request in requests)
+
+
+async def test_truncation_retries_within_existing_output_ceiling(cloud, monkeypatch):
+    cloud.ai_max_output_tokens = 2200
+    original = httpx.AsyncClient
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {"content": "{"}}]})
+        return success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    assert (await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert len(requests) == 2
+    assert requests[0]["max_tokens"] < requests[1]["max_tokens"] <= cloud.ai_max_output_tokens
+    assert requests[0]["model"] == requests[1]["model"]
+
+
+async def test_exhausted_response_quota_is_shared_with_new_model_client(cloud, monkeypatch):
+    original = httpx.AsyncClient
+    hosts = []
+
+    def respond(request):
+        hosts.append(request.url.host)
+        response = success()
+        if request.url.host == "groq.test":
+            response.headers["x-ratelimit-remaining-requests"] = "0"
+            response.headers["x-ratelimit-reset-requests"] = "1m2s"
+        return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    for _ in range(2):
+        assert (await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert hosts == ["groq.test", "openrouter.test"]
+
+
 async def test_provider_context_rejection_rebuilds_before_retry(cloud, monkeypatch):
     original = httpx.AsyncClient
     requests, reservations = [], []
@@ -83,8 +142,8 @@ async def test_chain_hands_off_each_failure_once_and_preserves_request(cloud, mo
         requests.append(body)
         assert request.url.path == "/v1/chat/completions"  # Never Ollama for remote fallbacks.
         if len(calls) <= failed:
-            assert request.extensions["timeout"]["read"] == cloud.ai_primary_fallback_timeout_seconds
-            assert request.extensions["timeout"]["connect"] == 3
+            assert 0 < request.extensions["timeout"]["read"] <= min(8, cloud.ai_primary_fallback_timeout_seconds)
+            assert 0 < request.extensions["timeout"]["connect"] <= 3
             if isinstance(failure, int):
                 return httpx.Response(failure, headers={"retry-after": "3600"})
             if failure == "timeout":
@@ -315,7 +374,13 @@ async def test_last_provider_failure_revisits_recovered_primary(cloud, monkeypat
 
 
 async def test_all_cooling_providers_report_earliest_retry_without_dispatch(cloud, monkeypatch):
+    from app import provider_quota
+    from app.agent import model as agent_model
     from app.provider_quota import cooldown, identity
+
+    # This checks ordering and remaining cooldown, independent of SQLite I/O latency.
+    monkeypatch.setattr(provider_quota, "time", SimpleNamespace(time=lambda: 1000))
+    monkeypatch.setattr(agent_model, "time", SimpleNamespace(monotonic=lambda: 1000))
     for index, (base, key, _) in enumerate(cloud.model_providers()):
         cooldown(identity(base, key.get_secret_value()), 10 + index * 10)
 
@@ -324,7 +389,7 @@ async def test_all_cooling_providers_report_earliest_retry_without_dispatch(clou
 
     with pytest.raises(ModelProvidersUnavailable) as captured:
         await ModelClient().request("decide", {}, Reply, no_charge)
-    assert 8 < captured.value.retry_after <= 10
+    assert captured.value.retry_after == 10
     assert [item["provider"] for item in captured.value.failures] == cloud.ai_provider_order.split(",")
 
 
@@ -450,6 +515,8 @@ async def test_vision_fallback_only_sends_screenshot_to_compatible_model(cloud, 
 
 @pytest.mark.browser
 async def test_browser_task_waits_for_provider_recovery_without_replanning(client, target, cloud, fixture_server, monkeypatch):  # noqa: F811
+    import time
+    from app.agent import model as model_module
     from app.agent import runner as runner_module
     from app.db import ProviderQuota, transaction
     from app.jobs import claim
@@ -460,10 +527,13 @@ async def test_browser_task_waits_for_provider_recovery_without_replanning(clien
     original, failures, decide_payloads, waits = httpx.AsyncClient, [], [], []
     fixture_transport = httpx.ASGITransport(app=fixture_model)
     recovered = False
+    provider_clock_offset = 0.0
+    monkeypatch.setattr(model_module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + provider_clock_offset))
 
     async def expire_cooldowns(delay):
-        nonlocal recovered
+        nonlocal recovered, provider_clock_offset
         waits.append(delay)
+        provider_clock_offset += delay + 0.05
         with transaction() as session:
             session.execute(update(ProviderQuota).values(cooldown_until=0))
         recovered = True

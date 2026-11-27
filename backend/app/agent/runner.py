@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+import hashlib
 import re
 from asyncio import Lock
 from dataclasses import asdict
@@ -15,11 +16,12 @@ from ..config import settings
 from ..concurrency import database_call
 from ..db import AgentStep, AgentTask, emit, transaction
 from ..jobs import owned_job
-from .contracts import Decision, Verification
-from .controller import Controller
+from .contracts import AnswerDraft, Decision, Verification
+from .controller import Controller, NavigationFailed
 from .directory import DirectoryCollection, directory_link, directory_result, matching_collection
-from .routing import (ExecutionRoute, RouteAssessment, assessed_entity, collection_kinds, exhaustive_request, inventory_route,
-                      select_route, task_text_only, words)
+from .routing import (ExecutionRoute, InformationalAssessment, RouteAssessment, ambiguous_subject, assessed_entity,
+                      collection_kinds, exhaustive_request, inventory_route, requested_operation, select_route,
+                      task_text_only, words)
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelContextExceeded, ModelError, ModelProvidersUnavailable
 from .structure import add_capture, classification_request
@@ -28,7 +30,7 @@ from .discovery import (
     search_attempt_key, search_candidate, search_control, search_query_allowed, task_token_allowance, unchanged_scrolls, update_frontier,
 )
 from .research import (
-    capture_evidence, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
+    capture_evidence, comparison_coverage, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
     terms,
 )
 
@@ -100,10 +102,21 @@ class AgentRunner(Runner):
             provider_index = (reservation or {}).get("provider_index", 0)
             maximum = self.options["max_tokens"]
             spent = task.prompt_tokens + task.completion_tokens
+            finalization_estimate = None
+            if (reservation or {}).get("purpose") == "decide" and getattr(self, "research_mode", False):
+                cfg = settings()
+                passages = self.memory.get("evidence", [])[:12]
+                evidence_bytes = sum(len(row["quote"].encode("utf-8")) for row in passages)
+                criteria_bytes = sum(len(item.encode("utf-8")) for item in self.research_criteria())
+                # Estimate schema and instructions, excerpts, synthesis, and verifier output/reasoning.
+                finalization_estimate = (1200 + (evidence_bytes + criteria_bytes) // 3
+                                         + cfg.ai_max_output_tokens
+                                         + (min(1536, cfg.ai_max_output_tokens) if getattr(self, "informational_mode", False) else 0))
             available, held, final = task_token_allowance(
                 maximum, spent, fallback_reserve=settings().agent_fallback_tokens,
                 primary=provider_index == 0 and len(settings().model_providers()) > 1,
                 purpose=(reservation or {}).get("purpose"),
+                finalization_estimate=finalization_estimate,
                 handoff=bool(getattr(getattr(self, "model", None), "fallback_active", False)
                              or getattr(self, "fallback_notified", 0)),
             )
@@ -148,10 +161,13 @@ class AgentRunner(Runner):
         )
 
     async def ask_model(self, kind, payload, schema, observation=None, *, wait_for_provider=True, client=None):
+        research = getattr(self, "research_mode", False)
         image = (
             settings().artifact_dir / observation["screenshot_path"]
             if observation and observation.get("screenshot_path") and self.options["visual_reasoning"]
             and settings().vision_available()
+            and (not research or not observation.get("elements") or observation.get("dialogs")
+                 or set(words(self.objective)) & {"layout", "appearance", "color", "colour", "screenshot"})
             else None
         )
         async def account_async(*args):
@@ -162,6 +178,7 @@ class AgentRunner(Runner):
                     return await database_call(self.account, *args)
             return await database_call(self.account, *args)
 
+        provider_waits = 0
         while True:
             remaining = self.deadline - time.time() - 5
             if remaining <= 0:
@@ -176,9 +193,16 @@ class AgentRunner(Runner):
                 if remaining <= 0:
                     raise ModelDeadlineExceeded("Task time budget exhausted while paused before model request")
             try:
-                return await (client or self.model).request(kind, payload, schema, account_async, image, timeout_cap_seconds=remaining)
+                time_reserve = (min(20, remaining / 4) if research and kind == "decide"
+                                and self.memory.get("evidence") else 0)
+                return await (client or self.model).request(
+                    kind, payload, schema, account_async, image, timeout_cap_seconds=remaining - time_reserve,
+                )
             except ModelProvidersUnavailable as exc:
-                if not wait_for_provider or exc.retry_after is None:
+                if (not wait_for_provider or exc.retry_after is None or provider_waits >= 2
+                        or provider_waits and exc.retry_after > 1):
+                    raise
+                if kind == "decide" and getattr(self, "comparison_mode", False) and exc.retry_after > 8:
                     raise
                 remaining = self.deadline - time.time() - 5
                 if exc.retry_after >= remaining:
@@ -191,6 +215,7 @@ class AgentRunner(Runner):
                 )
                 # This is inference recovery before dispatch, not a browser action.
                 # Preserve the same payload, schema, observation and action budget.
+                provider_waits += 1
                 await asyncio.sleep(exc.retry_after)
 
     async def checkpoint(self, controller):
@@ -262,23 +287,26 @@ class AgentRunner(Runner):
         requested = (decision.source_quote or text).strip()
         if not requested:
             raise ValueError("Provide source text for the evidence")
-        formatted = re.compile(r"\s+".join(re.escape(word) for word in requested.split()), re.IGNORECASE)
+        parts = [part.strip() for part in re.split(
+            r"\s*(?:\.{3}|\u2026|\n\s*\n)\s*|(?<=[.!?])\s+(?!\.{3}|\u2026)", requested,
+        ) if part.strip()] if decision.source_quote else []
+        passages = [requested, *parts] if 2 <= len(parts) <= 8 else [requested]
+        patterns = {part: re.compile(r"\s+".join(map(re.escape, part.split())), re.IGNORECASE)
+                    for part in passages}
         query = {word[:6] for word in terms(text) if len(word) > 2}
         best = (0.0, None)
+        found = {}
 
         def match(source, identifier):
             nonlocal best
-            if not source.get("url", "").startswith(("http://", "https://")):
-                return None
-            candidates = [source.get("text", ""), source.get("viewport_text", ""), source.get("quote", "")]
+            if not source.get("url", "").startswith(("http://", "https://")) or (source.get("http_status") or 0) >= 400:
+                return
+            candidates = [source.get("text"), source.get("viewport_text"), source.get("quote")]
             candidates.extend(chunk["quote"] for chunk in source.get("research_chunks", []))
-            for value in candidates:
-                if requested in (value or ""):
-                    return source["url"], identifier, requested
-                if not value:
-                    continue
-                if hit := formatted.search(value):
-                    return source["url"], identifier, hit.group()
+            for value in filter(None, candidates):
+                for part, pattern in patterns.items():
+                    if part not in found and (hit := pattern.search(value)):
+                        found[part] = (source["url"], identifier, hit.group())
                 if decision.source_quote or len(query) < 2:
                     continue
                 for excerpt in re.split(r"(?<=[.!?])\s+|(?:\r?\n){2,}", value):
@@ -287,14 +315,21 @@ class AgentRunner(Runner):
                     score = len(overlap) / len(query)
                     if len(overlap) >= 2 and score >= 0.4 and score > best[0]:
                         best = score, (source["url"], identifier, excerpt)
-            return None
 
-        found = match(observation, step_id)
-        if not found:
-            found = next((hit for item in reversed(self.memory["evidence"])
-                          if (hit := match(item, item["step_id"]))), None)
-        if not found:
-            def historical_source():
+        def resolved():
+            if requested in found:
+                return [found[requested]]
+            if len(passages) > 2 and all(part in found for part in passages[1:]):
+                return [found[part] for part in passages[1:]]
+            return []
+
+        match(observation, step_id)
+        for item in reversed(self.memory["evidence"]):
+            if resolved():
+                break
+            match(item, item["step_id"])
+        if not resolved():
+            def historical_sources():
                 with transaction() as session:
                     owned_job(session, self.id, self.token)
                     rows = session.execute(
@@ -302,28 +337,40 @@ class AgentRunner(Runner):
                         .order_by(AgentStep.number.desc()).execution_options(yield_per=10)
                     )
                     for identifier, earlier in rows:
-                        if hit := match(earlier or {}, identifier):
-                            return hit
-                return None
-            found = await database_call(historical_source)
-        found = found or best[1]
-        if not found:
-            raise ValueError("Source text was not found in this task's authorized observations")
-        url, source_step_id, quote = found
-        existing = next((e for e in self.memory["evidence"] if e["url"] == url and e["quote"] == quote), None)
-        if existing:
-            return {**existing, "already_collected": True,
-                    **({"summary": text} if text != quote else {})}
-        if len(self.memory["evidence"]) >= settings().agent_max_evidence_records:
+                        match(earlier or {}, identifier)
+                        if resolved():
+                            break
+            await database_call(historical_sources)
+        matches = resolved() or ([best[1]] if best[1] else [])
+        if not matches:
+            if len(parts) > 8:
+                raise ValueError("Extract at most eight source passages at a time")
+            raise ValueError("Source text was not found in this task's authorized observations; cite exact passages separately")
+        known = {(row["url"], row["quote"]): row for row in self.memory["evidence"]}
+        additions, result = [], {}
+        for url, source_step_id, quote in matches:
+            existing = known.get((url, quote))
+            if existing:
+                item = {**existing, "already_collected": True}
+            else:
+                digest = hashlib.sha256(f"{url}\0{quote}".encode()).hexdigest()[:24]
+                item = {"id": f"evidence-{digest}", "url": url, "quote": quote, "step_id": source_step_id}
+                if url == observation.get("url"):
+                    item["source_title"] = observation.get("title", "")
+                    item["heading"] = next(iter(observation.get("headings", [])), "")
+                known[url, quote] = item
+                additions.append(item)
+            result.setdefault(item["id"], item)
+        if len(self.memory["evidence"]) + len(additions) > settings().agent_max_evidence_records:
             raise ValueError("Evidence budget exhausted")
-        item = {"id": f"evidence-{step_id}", "url": url, "quote": quote, "step_id": source_step_id}
-        if text != quote:
-            item["summary"] = text
-        self.memory["evidence"].append(item)
-        return item
+        self.memory["evidence"].extend(additions)
+        if len(result) == 1:
+            item = next(iter(result.values()))
+            return {**item, **({"summary": text} if text != item["quote"] else {})}
+        return {"passages": list(result.values()), "evidence_ids": list(result)}
 
     async def complete(self, decision):
-        from .planning import evaluate
+        from .planning import can_reconcile_read_denial, evaluate
 
         evidence = {e["id"]: e for e in self.memory["evidence"]}
         if any(key not in evidence for claim in decision.claims for key in claim.evidence_ids):
@@ -333,18 +380,50 @@ class AgentRunner(Runner):
         enumeration = getattr(self, "enumeration_mode", False)
         if enumeration and not structured:
             raise ValueError("Listing requires captured records with evidence of category membership")
-        criteria = self.verification_criteria()
         research = getattr(self, "research_mode", False)
-        if research:
-            criteria = self.research_criteria()
+        criteria = self.research_criteria() if research else self.verification_criteria()
         objective_criteria = list(criteria)
         claim_checks = {}
+        planning = self.memory.get("planning")
+        if planning and any(
+            node["status"] in {"failed", "blocked"}
+            and not (node["status"] == "blocked" and research and evidence and can_reconcile_read_denial(planning, node))
+            for node in planning["plan"]["subtasks"]
+        ):
+            raise ValueError("Required plan subtasks have not completed because a mandatory phase is blocked or failed")
         if research:
             from .research import repair_exact_citations, claim_verification_criteria
 
             repair_exact_citations(decision.claims, evidence)
-            claim_checks = claim_verification_criteria(decision.claims, evidence)
-            criteria = [*criteria, *claim_checks]
+            comparison = getattr(self, "comparison_mode", False)
+            if comparison:
+                subjects = comparison_entities(self.objective, planning["plan"]["intent"].get("entities", []))
+                cells = comparison_coverage(evidence.values(), subjects, self.research_dimensions())
+                missing = [f"{subject} / {dimension}" for subject, dimensions in cells.items()
+                           for dimension, ids in dimensions.items() if not ids]
+                if missing:
+                    self.memory["verification_feedback"] = {
+                        "problems": missing[:12],
+                        "instruction": "Gather observed evidence for the missing comparison cells before completing.",
+                    }
+                    raise ValueError("Comparison evidence is missing for a requested subject and dimension")
+            claim_checks = claim_verification_criteria(decision.claims, evidence, verify_excerpts=comparison)
+            if comparison and all(
+                any(" ".join(claim.text.split()) == " ".join(evidence[key]["quote"].split())
+                    for key in claim.evidence_ids) for claim in decision.claims
+            ):
+                raise ValueError("Comparison requires a synthesized answer grounded in the observed excerpts")
+            criteria = list(dict.fromkeys([*criteria, *claim_checks]))
+        attempt = action_key({"decision": "COMPLETE", "claims": sorted(
+            ({"text": " ".join(claim.text.casefold().split()), "evidence_ids": sorted(set(claim.evidence_ids))}
+             for claim in decision.claims),
+            key=lambda claim: (claim["text"], claim["evidence_ids"]),
+        )})
+        completion = self.memory.get("failed_completion", {})
+        if research and completion.get("evidence_ids") == sorted(evidence):
+            attempts = completion.get("attempts", [])
+            if attempt in attempts or len(attempts) >= 2:
+                raise ValueError("Completion already failed with this evidence; gather new sources before retrying")
         capture_criterion = "The captured records come from a relevant source and their observed fields satisfy the requested entity and constraints."
         coverage_criterion = "The quoted count is the full relevant inventory and all requested records have been covered."
         if (not structured and not self.snapshot.get("extraction") and task_text_only(self.objective, self.options)
@@ -366,9 +445,7 @@ class AgentRunner(Runner):
         qualified = self.enumeration_records(structured) if enumeration else {}
         if len(criteria) > 60:
             raise ValueError("Too many verification checks; consolidate related claims without dropping required criteria")
-        verification = await self.ask_model(
-            "verify",
-            {
+        verification_payload = {
                 "objective": self.objective,
                 "success_criteria": criteria,
                 "claims": [c.model_dump() for c in decision.claims],
@@ -377,6 +454,8 @@ class AgentRunner(Runner):
                 **({"instructions": "Check the original objective and each claim against its cited excerpts. "
                                     "Copy each supplied criterion exactly. For Claim criteria use only the IDs "
                                     "attached to that claim; mark unmet if they do not support the entire claim. "
+                                    "For objective criteria, confirm that the claims together actually answer the requirement. "
+                                    "For comparisons, reject unrelated subjects and check each requested dimension for each subject. "
                                     "Do not confuse supported individual claims with full objective coverage. "
                                     "If sources materially disagree about a required fact, report the disagreement "
                                     "and leave that criterion unverified unless the answer explicitly accounts for it."}
@@ -391,9 +470,9 @@ class AgentRunner(Runner):
                 **({"captured_records": {
                     **structured, "records": qualified,
                 } if enumeration else structured} if structured else {}),
-            },
-            Verification,
-        )
+        }
+        verification = (await self.verify_research(verification_payload, claim_checks) if research and not structured
+                        else await self.ask_model("verify", verification_payload, Verification))
         checks = verification.checks
         verification_ids = set(evidence) if not research else {
             row["id"] for row in self.verification_evidence(evidence, decision.claims)
@@ -421,7 +500,9 @@ class AgentRunner(Runner):
             if research:
                 from .research import citation_candidates
 
-                self.keep_research_partial(verification, objective_criteria, verification_ids)
+                self.keep_research_partial(verification, objective_criteria, verification_ids, claim_checks)
+                previous_attempts = completion.get("attempts", []) if completion.get("evidence_ids") == sorted(evidence) else []
+                self.memory["failed_completion"] = {"evidence_ids": sorted(evidence), "attempts": [*previous_attempts, attempt][-12:]}
                 self.memory["verification_feedback"] = {
                     "problems": problems[:12],
                     "claims": citation_candidates(decision.claims, evidence),
@@ -465,7 +546,6 @@ class AgentRunner(Runner):
         supported_ids = {identifier for check in checks for identifier in check.evidence_ids}
         checkpoint_evidence = ([row for row in evidence.values() if row["id"] in supported_ids]
                                if research else self.memory["evidence"])
-        planning = self.memory.get("planning")
         if planning:
             if planning["specification"]["output_format"] in {"csv", "json"}:
                 def validate_artifact():
@@ -505,7 +585,11 @@ class AgentRunner(Runner):
         }
         if research:
             result["claims"] = [claim.model_dump() for claim in decision.claims if set(claim.evidence_ids) <= supported_ids]
+            if getattr(self, "comparison_mode", False):
+                result["evidence"] = [row for row in evidence.values() if row["id"] in supported_ids]
             if not result["claims"]:
+                if getattr(self, "comparison_mode", False):
+                    raise ValueError("Comparison requires verified synthesized claims")
                 result["claims"] = [{"text": evidence[identifier]["quote"], "evidence_ids": [identifier]}
                                     for identifier in evidence if identifier in supported_ids]
         if structured:
@@ -618,10 +702,10 @@ class AgentRunner(Runner):
 
     async def execution_route(self):
         cached = self.memory.get("execution_route")
-        if cached:
-            return ExecutionRoute(**cached)
         has_dataset = bool(self.snapshot.get("extraction"))
         route = select_route(self.objective, self.options, has_dataset)
+        if cached and not (cached["name"] == "general" and route.name == "informational"):
+            return ExecutionRoute(**cached)
         if (not route.entity and route.name in {"general", "research"} and not has_dataset
                 and task_text_only(self.objective, self.options) and exhaustive_request(self.objective)
                 and settings().ai_provider != "disabled"):
@@ -635,6 +719,19 @@ class AgentRunner(Runner):
                 entity = assessed_entity(self.objective, assessment)
                 if entity:
                     route = inventory_route(entity)
+            except (ModelError, ModelBudgetExceeded):
+                pass
+        elif (route.name == "general" and not has_dataset and task_text_only(self.objective, self.options)
+              and ambiguous_subject(self.objective) and settings().ai_provider != "disabled"):
+            try:
+                assessment = await self.ask_model("route", {
+                    "objective": self.objective,
+                    "instructions": "Identify whether this brief objective is a lookup about a subject. "
+                                    "Copy the entire subject phrase verbatim. If it requests an operation or "
+                                    "cannot reasonably be understood as an informational lookup, return false.",
+                }, InformationalAssessment, wait_for_provider=False)
+                if assessment.informational and assessment.subject.casefold().strip() == self.objective.casefold().strip():
+                    route = ExecutionRoute("informational", "Find a relevant authorized source and answer with verified passages.")
             except (ModelError, ModelBudgetExceeded):
                 pass
         self.memory["execution_route"] = asdict(route)
@@ -770,10 +867,24 @@ class AgentRunner(Runner):
         try:
             await self.execute_steps(page, context)
         except (RuntimeError, ValueError) as exc:
+            recent = self.memory.get("recent_actions", [])
             if (getattr(self, "research_mode", False) and self.memory["evidence"]
                     and not self.memory.get("research_partial") and not isinstance(exc, BrowserCrashed)
-                    and self.deadline - time.time() > 8):
-                await self.verify_research_partial()
+                    and not (recent and recent[-1]["action"] == "COMPLETE")
+                    and "may have modified external state" not in str(exc)):
+                if self.deadline - time.time() > 8:
+                    await self.verify_research_partial()
+                if not self.memory.get("research_partial"):
+                    evidence = self.verification_evidence({row["id"]: row for row in self.memory["evidence"]})
+                    self.memory["research_partial"] = {
+                        "partial": True, "claims": [], "evidence": evidence,
+                        "verification": {
+                            "complete": False,
+                            "explanation": "Observed source excerpts were retained. Answer verification was incomplete.",
+                            "missing_criteria": self.research_criteria(),
+                        },
+                    }
+                    await self.checkpoint(self.controller)
             raise
 
     async def execute_steps(self, page, context):
@@ -782,8 +893,11 @@ class AgentRunner(Runner):
         await context.unroute("**/*")
         await context.route("**/*", controller.route)
         route = await self.execution_route()
-        research = route.name in {"comparison", "research"} and not route.entity and not self.snapshot.get("extraction")
+        research = route.name in {"comparison", "research", "informational"} and not route.entity and not self.snapshot.get("extraction")
         self.research_mode = research
+        self.informational_mode = route.name == "informational"
+        self.comparison_mode = route.name == "comparison"
+        self.recommendation_mode = research and requested_operation(self.objective) == "recommendation"
         enumeration = route.name == "enumeration"
         self.enumeration_mode = enumeration
         await self.restore_tabs(controller)
@@ -792,7 +906,7 @@ class AgentRunner(Runner):
         directory = DirectoryCollection(route.entity, self.memory.setdefault("directory", {}),
                                         max_rows=cfg.agent_collection_max_rows, max_bytes=cfg.agent_collection_max_bytes) if route.entity else None
         collection_mode = route.entity
-        use_structure = not self.snapshot.get("extraction") and cfg.ai_provider != "disabled"
+        use_structure = not self.snapshot.get("extraction") and cfg.ai_provider != "disabled" and not self.informational_mode
         structure_options = {"structure": "enumeration" if enumeration else True} if use_structure else {}
         def read_start():
             with transaction() as session:
@@ -820,8 +934,7 @@ class AgentRunner(Runner):
                 research and len(comparison_entities(self.objective)) >= 2
             ))
             permissions = self.memory["planning"]["specification"]["permissions"]
-            read_search = bool(self.mode == "autonomous" and (research or enumeration or use_directory)
-                               and permissions.get("read_search"))
+            read_search = bool(permissions.get("read_search"))
             approved_posts = permissions.get("approved_post_search", []) if read_search else []
             if research and not reused_observation:
                 self.rank_research(observation)
@@ -856,7 +969,10 @@ class AgentRunner(Runner):
 
             step_id = await database_call(record_observation)
             if research and not reused_observation:
+                before_capture = len(self.memory["evidence"])
                 await self.save_research_observation(observation, step_id, controller)
+                if len(self.memory["evidence"]) > before_capture:
+                    consecutive_failures = 0
             decision = None
             deterministic = False
             scoped_search = False
@@ -878,7 +994,11 @@ class AgentRunner(Runner):
                         if directory.state["pages"]:
                             await self.checkpoint(controller)
                     if research:
-                        decision = self.research_decision(observation)
+                        if self.memory.pop("recover_with_navigation", False):
+                            decision = self.discovery_alternative(observation)
+                        decision = decision or await self.research_decision(observation)
+                        if decision is None and self.informational_mode:
+                            decision = await self.informational_decision(observation)
                     if enumeration:
                         decision = self.enumeration_decision(observation, controller.observer.structural_groups)
                     if terminal is None and decision is None:
@@ -901,12 +1021,12 @@ class AgentRunner(Runner):
                                     owned_job(session, self.id, self.token)
                                     session.get(AgentStep, step_id).observation = observation
                             await database_call(update_observation)
-                        if (research or enumeration or use_directory) and not self.options["allow_form_input"]:
+                        if not self.options["allow_form_input"]:
                             groups = self.available_groups(observation) if enumeration else []
                             if not groups and read_search:
                                 decision = search_candidate(observation, self.objective, self.policy,
                                                             self.memory.get("search_attempts", []), approved_posts)
-                            if decision is None and not groups and unchanged_scrolls(observation, self.memory["recent_actions"]) >= 2:
+                            if (research or enumeration or use_directory) and decision is None and not groups and unchanged_scrolls(observation, self.memory["recent_actions"]) >= 2:
                                 decision = self.discovery_alternative(observation)
                         plan = self.planning_context()
                         if decision is None:
@@ -978,7 +1098,11 @@ class AgentRunner(Runner):
                             # selected; a search is a more direct discovery path.
                             decision = search_candidate(observation, self.objective, self.policy,
                                                         self.memory.get("search_attempts", []), approved_posts) or decision
-                # Retain the common planning permission guard below.
+                # Keep task permissions and live search revalidation on the same path.
+                if read_search and not self.options["allow_form_input"] and decision.decision == "TYPE":
+                    target = next((e for e in observation["elements"] if e["element_id"] == decision.target.element_id), {})
+                    if search_control(target, approved_posts) and search_query_allowed(self.objective, decision.text):
+                        decision = decision.model_copy(update={"decision": "SEARCH", "subtask_id": None})
                 decision_data = decision.model_dump()
                 key = action_key(decision_data)
                 if enumeration:
@@ -1053,7 +1177,7 @@ class AgentRunner(Runner):
                         raise ValueError("Read-only search attempt limit reached; inspect the observed sources")
                     attempts.append(attempt)
                     await self.checkpoint(controller)
-                if any(
+                if not (research and decision.decision == "COMPLETE") and any(
                     f["action_key"] == key and f["fingerprint"] == observation["fingerprint"]
                     for f in self.memory["failures"]
                 ):
@@ -1174,6 +1298,11 @@ class AgentRunner(Runner):
                         outcome["scroll_after"] = after.get("scroll", {})
                         outcome["scroll_direction"] = "up" if decision.decision == "SCROLL_BACK" else decision.direction
                 outcome["after_url"] = controller.page.url if deterministic else after["url"]
+                if after["url"] == outcome["after_url"] and after is not observation:
+                    outcome["live_observation"] = {
+                        key: after[key] for key in ("url", "screenshot_path", "tab_id", "tabs", "elements", "observation_metrics")
+                        if key in after
+                    }
                 outcome["url_changed"] = outcome["after_url"] != observation["url"]
                 if enumeration and decision.decision == "GO_BACK" and outcome["url_changed"]:
                     edges = self.memory.setdefault("enumeration_return_edges", [])
@@ -1206,7 +1335,8 @@ class AgentRunner(Runner):
                     {
                         "action": decision.decision,
                         "reason": decision.reason,
-                        "outcome": outcome if decision.decision != "COMPLETE" else "Verified result",
+                        "outcome": ({k: v for k, v in outcome.items() if k != "live_observation"}
+                                    if decision.decision != "COMPLETE" else "Verified result"),
                     }
                 )
                 if len(self.memory["evidence"]) > len_before:
@@ -1258,7 +1388,7 @@ class AgentRunner(Runner):
                     raise RuntimeError("Agent stopped after repeated actions without observable progress")
             except (ModelContextExceeded, ModelDeadlineExceeded, ModelProvidersUnavailable):
                 raise
-            except (ValueError, PermissionError, ModelError, BrowserError, BrowserCrashed) as exc:
+            except (ValueError, PermissionError, ModelError, BrowserError, BrowserCrashed, NavigationFailed) as exc:
                 decision_data = locals().get("decision")
                 key = (
                     action_key(decision_data.model_dump()) if isinstance(decision_data, Decision) else f"model:{number}"
@@ -1299,9 +1429,10 @@ class AgentRunner(Runner):
                     # A one-step synthetic research checkpoint can deadlock a
                     # multi-hop source search. The current phase and job bounds
                     # already limit recovery.
-                    category = classify_failure(safe_reason)
+                    category = classify_failure(exc)
                 else:
-                    category = replan(self.memory["planning"], safe_reason, observation)
+                    category = replan(self.memory["planning"], safe_reason, observation,
+                                      action_only=safe_error == "Task does not authorize form input")
                 def record_failure():
                     with transaction() as session:
                         owned_job(session, self.id, self.token)
@@ -1336,6 +1467,15 @@ class AgentRunner(Runner):
                             await controller.observe()
                 except (BrowserError, BrowserCrashed) as recovery_error:
                     raise BrowserCrashed("Agent browser unavailable during recovery") from recovery_error
+                if research and decision and not controller.engine.dispatch_started and (
+                    category == "requires_authorization" or decision.decision == "EXTRACT"
+                    or safe_error.startswith("Completion already failed")
+                    or safe_error.startswith("Comparison evidence is missing")
+                    or isinstance(exc, NavigationFailed)
+                ):
+                    self.memory["recover_with_navigation"] = True
+                    if not isinstance(exc, NavigationFailed):
+                        next_observation = observation
                 await self.checkpoint(controller)
                 if category == "terminal":
                     raise RuntimeError(str(exc)) from exc
@@ -1349,7 +1489,7 @@ class AgentRunner(Runner):
     def rank_research(self, observation):
         planning = self.memory["planning"]
         entities = comparison_entities(self.objective, planning["plan"]["intent"].get("entities", []))
-        criteria = self.verification_criteria()
+        criteria = [*self.verification_criteria(), *self.research_dimensions()]
         observation["research_chunks"] = ranked_chunks(
             observation.get("research_chunks", []), self.objective, observation.get("title", ""), entities, criteria,
         )[:12]
@@ -1501,47 +1641,114 @@ class AgentRunner(Runner):
             raise ValueError("Accumulated verified collection exceeds its resource budget")
         return records
 
-    def research_decision(self, observation):
-        entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
-        if len(entities) < 2 or any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
+    async def informational_decision(self, observation):
+        if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
+            return None
+        if self.memory["planning"].get("complex_plan"):
+            return None
+        evidence = self.verification_evidence({row["id"]: row for row in self.memory["evidence"]})
+        signature = [row["id"] for row in evidence]
+        if evidence and signature != self.memory.get("informational_evidence"):
+            self.memory["informational_evidence"] = signature
+            draft = await self.ask_model("synthesize", {
+                "objective": self.objective,
+                "success_criteria": self.verification_criteria(),
+                "evidence": evidence,
+                "instructions": "Answer the objective using only these excerpts. Write concise claims with exact evidence IDs. "
+                                "Return no claims if more discovery is needed to answer the objective.",
+            }, AnswerDraft)
+            if draft.claims:
+                return Decision(decision="COMPLETE", observation="Relevant rendered source passages captured",
+                                reason="Verify a concise answer from the collected source passages", confidence=1,
+                                expected_result="Verified answer or identified evidence gaps", claims=draft.claims)
+        if not evidence:
+            return navigation_candidate(observation, self.objective, self.policy, excluded=self.discovery_exclusions())
+        return None
+
+    async def research_decision(self, observation):
+        if any(dialog.get("visible") for dialog in observation.get("dialogs", [])):
             return None
         evidence = self.memory["evidence"]
-        dimensions = comparison_dimensions(self.objective)
-        matrix = coverage(evidence, entities, dimensions)
-        if all(matrix["entities"].values()) and all(matrix["criteria"].values()):
-            offered = self.verification_evidence({row["id"]: row for row in evidence})
-            fingerprint = [row["id"] for row in offered]
-            if fingerprint != self.memory.get("research_verified_candidates"):
-                self.memory["research_verified_candidates"] = fingerprint
-                return Decision(
-                    observation="Rendered excerpts cover each comparison subject",
-                    decision="COMPLETE", reason="Verify the captured comparison evidence", confidence=1,
-                    expected_result="A source-backed result or identified evidence gaps",
-                    claims=[{"text": row["quote"], "evidence_ids": [row["id"]]} for row in offered],
-                )
-        destinations = {}
-        indexes = {}
-        for element in observation.get("elements", []):
-            url = element.get("href")
-            if not url or not element.get("actionable") or element.get("blocked_by_modal"):
-                continue
-            label = terms(element.get("name", "") + " " + urlsplit(url).path.replace("-", " "))
-            direct = all(terms(entity) <= label for entity in entities)
-            comparison_index = element.get("name", "").casefold().strip() in {"compare", "comparison", "comparisons"}
-            if not direct and not comparison_index:
-                continue
-            try:
-                url = self.policy.check(url)
-                guard_navigation(self.memory.get("research_destinations", {}), url, observation["url"], len(evidence))
-            except ValueError:
-                continue
-            (destinations if direct else indexes)[destination_key(url)] = url
-        choices = destinations or (indexes if not any(matrix["entities"].values()) else {})
-        if len(choices) == 1:
-            return Decision(observation="Observed comparison destination", decision="NAVIGATE",
-                            url=next(iter(choices.values())), reason="Open the relevant comparison source",
-                            confidence=1, expected_result="Rendered evidence for the requested subjects")
+        if self.recommendation_mode and (not evidence or any(
+            not ids for ids in coverage(evidence, [], self.verification_criteria())["criteria"].values()
+        )):
+            return navigation_candidate(observation, self.objective, self.policy, excluded=self.discovery_exclusions())
+        if not self.comparison_mode:
+            return None
+        entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
+        if len(entities) < 2:
+            return None
+        dimensions = self.research_dimensions()
+        by_entity = coverage(evidence, entities, [])["entities"]
+        cells = comparison_coverage(evidence, entities, dimensions)
+        self.memory["comparison_coverage"] = cells
+        missing = {name for name, ids in by_entity.items() if not ids or any(not value for value in cells[name].values())}
+        needs_depth = not dimensions and any(len(ids) < 2 for ids in by_entity.values())
+        if missing or needs_depth:
+            focus = missing or set(entities)
+            ranked = []
+            sources = self.memory.setdefault("comparison_links", {})
+            for element in observation.get("elements", []):
+                href = element.get("href")
+                if (not href or element.get("role") != "link" or element.get("form") or not element.get("actionable")
+                        or element.get("blocked_by_modal") or element.get("visible") is False):
+                    continue
+                try:
+                    href = self.policy.check(href)
+                except ValueError:
+                    continue
+                if not urlsplit(href).fragment:
+                    sources[destination_key(href)] = element.get("name", "")[:200]
+            while len(sources) > 100:
+                sources.pop(next(iter(sources)))
+            excluded = self.discovery_exclusions()
+            for href, name in sources.items():
+                if href in excluded:
+                    continue
+                try:
+                    href = self.policy.check(href)
+                    guard_navigation(self.memory.get("research_destinations", {}), href, observation["url"], len(evidence))
+                except ValueError:
+                    continue
+                label = terms(name)
+                path = terms(urlsplit(href).path)
+                matched = [name for name in focus if terms(name) <= label or terms(name) <= path]
+                index = not evidence and label in ({"compare"}, {"comparison"}, {"comparisons"})
+                if matched or index:
+                    requested_fields = set().union(*(terms(field) for name in matched for field, ids in cells[name].items() if not ids))
+                    ranked.append((10 * len(matched) + 2 * sum(terms(name) <= label for name in matched)
+                                   + len(requested_fields & (label | path)), href))
+            if ranked:
+                return Decision(decision="NAVIGATE", url=max(ranked, key=lambda row: row[0])[1],
+                                observation="An observed link is relevant to missing comparison evidence",
+                                reason="Inspect an authorized comparison source or dedicated subject page", confidence=1,
+                                expected_result="Observed facts for the requested subjects and dimensions")
+            if missing:
+                return None
+        offered = self.verification_evidence({row["id"]: row for row in evidence})
+        offered = [row for row in offered if any(row["id"] in ids for ids in by_entity.values())]
+        fingerprint = [row["id"] for row in offered]
+        if not offered or fingerprint == self.memory.get("research_verified_candidates"):
+            return None
+        self.memory["research_verified_candidates"] = fingerprint
+        draft = await self.ask_model("synthesize", {
+            "objective": self.objective,
+            "success_criteria": self.research_criteria(),
+            "subjects": entities,
+            "dimensions": dimensions,
+            "evidence": offered,
+            "instructions": "Compare only the requested subjects. Synthesize relative differences and trade-offs in your own words. "
+                            "Cite each subject's actual source passages for every compared dimension. Exclude unrelated entities "
+                            "even when sources mention them. Return an empty claims list if comparable facts are missing.",
+        }, AnswerDraft)
+        if draft.claims:
+            return Decision(decision="COMPLETE", claims=draft.claims, observation="Comparable source passages are available",
+                            reason="Verify the synthesized comparison", confidence=1,
+                            expected_result="A verified comparison or precise evidence gaps")
         return None
+
+    def research_dimensions(self):
+        return comparison_dimensions(self.objective, self.verification_criteria())
 
     def research_model_page(self, observation):
         history = self.memory.get("research_destinations", {})
@@ -1562,7 +1769,7 @@ class AgentRunner(Runner):
 
             groups = [group for group in groups
                       if not rejected_group(observation["url"], group, self.memory.get("rejected_collection_scopes", []))]
-        if self.options["allow_form_input"] or self.options.get("visual_reasoning"):
+        if self.options["allow_form_input"]:
             return {**observation, "elements": available, "record_groups": groups}
         return compact_page(observation, self.objective, elements=available, groups=groups,
                             actions=self.memory.get("recent_actions", []), form_input=False,
@@ -1572,7 +1779,7 @@ class AgentRunner(Runner):
     def research_criteria(self):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
         criteria = [*self.verification_criteria(), *(f"Compare the requested subjects on {field}"
-                    for field in comparison_dimensions(self.objective))]
+                    for field in self.research_dimensions())]
         # Assess each requested subject even if the original comparison is incomplete.
         return list(dict.fromkeys([*criteria, *(f"Source evidence relevant to the objective for {entity}" for entity in entities)]))
 
@@ -1583,6 +1790,10 @@ class AgentRunner(Runner):
         prioritized = list(dict.fromkeys(
             identifier for matrix in dimensions.values() for ids in matrix.values() for identifier in ids[:2]
         ))
+        cell_ids = [ids[0] for cells in self.memory.get("comparison_coverage", {}).values() for ids in cells.values() if ids]
+        for identifier in dict.fromkeys(cell_ids):
+            if identifier in evidence and evidence[identifier] not in selected:
+                selected.append(evidence[identifier])
         from .context import retrieve_evidence
 
         ranked = retrieve_evidence(list(evidence.values()), self.objective, {}, limit=12, exact=True)
@@ -1593,15 +1804,63 @@ class AgentRunner(Runner):
                 selected.append(evidence[identifier])
         return selected
 
-    def keep_research_partial(self, verification, criteria, offered):
-        supported = {}
+    async def verify_research(self, payload, claim_checks, *, split=False):
+        """Split oversized requests by criterion without dropping claim citations."""
+        criteria = payload["success_criteria"]
+        try:
+            verification = await self.ask_model("verify", payload, Verification)
+        except ModelContextExceeded:
+            pass
+        except ModelProvidersUnavailable as exc:
+            if not exc.failures or any(failure.get("failure_category") != "context" for failure in exc.failures):
+                raise
+        except ModelBudgetExceeded:
+            if not split:
+                raise
+            return Verification(complete=False, explanation="Verification budget exhausted during batching.",
+                                checks=[{"criterion": criterion, "met": False} for criterion in criteria])
+        else:
+            offered = {row["id"] for row in payload["evidence"]}
+            for check in verification.checks:
+                if not set(check.evidence_ids) <= offered:
+                    check.met = False
+                    verification.complete = False
+            return verification
+        if len(criteria) == 1:
+            return Verification(complete=False, explanation="This verification check exceeds provider context.",
+                                checks=[{"criterion": criteria[0], "met": False}])
+        midpoint = len(criteria) // 2
+        results = []
+        for batch in (criteria[:midpoint], criteria[midpoint:]):
+            batch_payload = {**payload, "success_criteria": batch}
+            if all(check in claim_checks for check in batch):
+                ids = set().union(*(claim_checks[check] for check in batch))
+                batch_payload["claims"] = [payload["claims"][int(check.split(":", 1)[0].split()[1]) - 1]
+                                           for check in batch]
+                batch_payload["evidence"] = [row for row in payload["evidence"] if row["id"] in ids]
+            results.append(await self.verify_research(batch_payload, claim_checks, split=True))
+        return Verification(complete=all(result.complete for result in results),
+                            explanation="Verification combined across bounded criterion batches.",
+                            checks=[check for result in results for check in result.checks])
+
+    def keep_research_partial(self, verification, criteria, offered, claim_checks=None):
+        previous = self.memory.get("research_partial", {})
+        supported = dict(previous.get("verification", {}).get("supported_criteria", {}))
         for criterion in criteria:
             checks = [check for check in verification.checks if check.criterion == criterion]
             if len(checks) == 1 and self.research_check_supported(checks[0], offered):
                 supported[criterion] = checks[0].evidence_ids
-        if not supported:
+            elif len(checks) == 1 and set(supported.get(criterion, [])) <= offered:
+                supported.pop(criterion, None)
+        claim_ids = set()
+        for criterion, allowed in (claim_checks or {}).items():
+            checks = [check for check in verification.checks if check.criterion == criterion]
+            if len(checks) == 1 and checks[0].met and set(checks[0].evidence_ids) <= offered & allowed:
+                claim_ids.update(checks[0].evidence_ids)
+        if not (supported or claim_ids or previous):
             return
-        ids = {identifier for identifiers in supported.values() for identifier in identifiers}
+        ids = (claim_ids | {row["id"] for row in previous.get("evidence", [])}
+               | {identifier for identifiers in supported.values() for identifier in identifiers})
         evidence = [row for row in self.memory["evidence"] if row["id"] in ids]
         self.memory["research_partial"] = {
             "partial": True,
@@ -1618,10 +1877,14 @@ class AgentRunner(Runner):
             return False
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
         evidence = self.memory["evidence"]
+        for dimension in self.research_dimensions():
+            if check.criterion == f"Compare the requested subjects on {dimension}":
+                matrix = comparison_coverage(evidence, entities, [dimension])
+                return bool(entities) and all(cited.intersection(cells[dimension]) for cells in matrix.values())
         by_entity = coverage(evidence, entities, [])["entities"]
         relevant_entities = (
             entities if check.criterion in {f"Compare the requested subjects on {field}"
-                                            for field in comparison_dimensions(self.objective)}
+                                            for field in self.research_dimensions()}
             else [entity for entity in entities if check.criterion == f"Source evidence relevant to the objective for {entity}"]
         )
         return all(cited.intersection(by_entity[entity]) for entity in relevant_entities)
@@ -1641,7 +1904,7 @@ class AgentRunner(Runner):
 
     async def save_research_observation(self, observation, step_id, controller, *, persist=True):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
-        criteria = [*self.verification_criteria(), *comparison_dimensions(self.objective)]
+        criteria = [*self.verification_criteria(), *self.research_dimensions()]
         store = self.memory["evidence"]
         if capture_evidence(observation, store, step_id, entities, criteria,
                             max_records=settings().agent_max_evidence_records):
@@ -1771,6 +2034,9 @@ class AgentRunner(Runner):
             self.memory["planning"] = state
         if state["specification"]["source_hash"] != expected["source_hash"]:
             raise ValueError("Durable task constraints no longer match the authorized task")
+        if "read_search" in expected["permissions"]:
+            state["specification"]["permissions"]["read_search"] = expected["permissions"]["read_search"]
+        state["specification"]["execution_intent"] = expected["execution_intent"]
         route = self.memory.get("execution_route")
         if route:
             state["route"] = "structured_discovery" if self.memory.get("structured_capture") else route["name"]
@@ -1780,10 +2046,11 @@ class AgentRunner(Runner):
             state["research_evidence_required"] = True
             state["research_requirements"] = {
                 "entities": comparison_entities(self.objective, state["plan"]["intent"].get("entities", [])),
-                "criteria": list(dict.fromkeys([*self.verification_criteria(), *comparison_dimensions(self.objective)])),
+                "criteria": list(dict.fromkeys([*self.verification_criteria(), *self.research_dimensions()])),
             }
+        state["complex_plan"] = needs_model_plan(expected)
         if not state.get("initialized"):
-            if not deterministic and needs_model_plan(expected):
+            if not deterministic and state["complex_plan"]:
                 try:
                     draft = await self.ask_model(
                         "plan",

@@ -293,17 +293,19 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
     return page
 
 
-def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=None, handoff=False):
-    """Never reserve already spent tokens; preserve a small finalization reserve."""
+def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=None, handoff=False,
+                         finalization_estimate=None):
+    """Reserve remaining tokens for verification and, when needed, provider handoff."""
     remaining = max(0, maximum - spent)
     final = (min(4000, maximum // 10, remaining // 2) if purpose == "decide" else
              min(2000, maximum // 20, remaining // 3) if purpose == "classify" else 0)
+    if purpose == "decide" and finalization_estimate is not None:
+        final = min(finalization_estimate, maximum // 3, remaining // 2)
     available = remaining - final
     fallback = min(fallback_reserve, maximum // 3, available // 3) if primary and not handoff else 0
     return max(0, available - fallback), fallback, final
 
 
-_READ_INTENTS = {"structured_extraction", "research", "comparison", "search"}
 _NO_SEARCH = re.compile(
     r"\b(?:do\s+not|must\s+not|never|without|no|don['’]t|avoid)\s+"
     r"(?:(?:use|using|perform|performing|fill|filling)\s+)?(?:(?:the|a|any|site|website|read.only)\s+)*"
@@ -313,10 +315,14 @@ _NO_SEARCH = re.compile(
 MAX_SEARCH_ATTEMPTS = 8
 
 
-def read_search_permission(objective, options, intent, criteria=()):
+def read_search_permission(objective, options, intent=None, criteria=()):
+    """Derive search permission from task options. Intent remains advisory."""
     return (options.get("mode") == "autonomous" and options.get("allow_search_input") is True
-            and intent in _READ_INTENTS
-            and not any(_NO_SEARCH.search(text) for text in [objective, *criteria]))
+            and not search_forbidden(objective, criteria))
+
+
+def search_forbidden(objective, criteria):
+    return any(_NO_SEARCH.search(text) for text in (objective, *criteria))
 
 
 def search_control(element, approved_posts=()):
@@ -327,6 +333,16 @@ def search_control(element, approved_posts=()):
 
 def objective_query(objective):
     query = re.sub(r"^\s*(?:please\s+)?(?:list|find|search(?:\s+for)?|look\s+up|show(?:\s+me)?|identify|recommend)\s+(?:all\s+)?", "", objective, flags=re.I)
+    text = " ".join(objective.split()).rstrip(" .?!")
+    for pattern in (
+        r"(?:tell me about|what are the features of|what is|what are|who developed|who created|where can I find) (.+)",
+        r"how (?:does|do) (.+?) work",
+        r"how much (?:does|do) (.+?) cost",
+        r"is (.+?) (?:suitable|right|good)\b.*",
+    ):
+        if match := re.fullmatch(r"(?:please\s+)?" + pattern, text, re.I):
+            query = match[1]
+            break
     normalized = " ".join(query.split()).strip(" .?!,")
     if len(normalized) > 200:
         normalized = normalized[:201].rsplit(" ", 1)[0]

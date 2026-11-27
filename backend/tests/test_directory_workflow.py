@@ -120,7 +120,11 @@ async def test_unlandmarked_extraction(client, target, fixture_server, monkeypat
         if request_kind == "route":
             assert inferred and payload["objective"] == objective
             return RouteAssessment(exhaustive_inventory=True, entity_phrase="language tutors")
-        assert request_kind == "classify" and len(payload["records"]) == 2
+        assert request_kind == "classify"
+        if inferred:
+            assert {"Ask"} <= {record["name"] for record in payload["records"]} <= {"Ask", "Transcribe"}
+        else:
+            assert len(payload["records"]) == 2
         return AssessmentBatch(records=[
             {"id": row["id"], "classification": "match" if row["name"] == "Ask" else "excluded",
              "evidence": 1}
@@ -150,7 +154,10 @@ async def test_unlandmarked_extraction(client, target, fixture_server, monkeypat
     if kind == "semantic":
         assert calls == (["route", "classify"] if inferred else ["classify"])
         assert [claim["text"] for claim in answer["claims"]] == ["Ask"]
-        assert [evidence["classification_quote"] for evidence in answer["evidence"]] == [CONVERSATION_DESCRIPTION]
+        from testsupport.directory_fixture import TUTOR_DESCRIPTION
+
+        expected_quote = TUTOR_DESCRIPTION if inferred else CONVERSATION_DESCRIPTION
+        assert len(answer["evidence"]) == 1 and expected_quote in answer["evidence"][0]["classification_quote"]
     else:
         assert calls == []
         assert answer["strategy"] == "table_extraction"
@@ -222,8 +229,10 @@ async def test_filtered_source_has_a_durable_unverified_result(client, target, f
     saved = client.get(f"/api/agent/tasks/{identifier}").json()
     assert saved["status"] == "failed" and saved["model_calls"] == 0
     result = saved["result"]
-    assert result["partial"] and result["directory"]["unique_records"] == 0
-    assert not any(result["verification"]["dimensions"].values())
+    assert result["partial"] and result["directory"]["unique_records"] == 3
+    dimensions = result["verification"]["dimensions"]
+    assert dimensions["source_relevance"] and dimensions["extraction_complete"]
+    assert not dimensions["directory_coverage"] and not dimensions["objective_satisfied"]
     assert "filtered" in result["verification"]["explanation"]
 
 

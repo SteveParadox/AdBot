@@ -16,6 +16,10 @@ class Claim(Strict):
     evidence_ids: list[str] = Field(min_length=1, max_length=20)
 
 
+class AnswerDraft(Strict):
+    claims: list[Claim] = Field(max_length=6, description="Answer claims citing stored evidence. Return an empty list if evidence is insufficient.")
+
+
 class Decision(Strict):
     observation: str = Field(
         min_length=1, max_length=1000, description="Brief observation summary, not a copy of the page."

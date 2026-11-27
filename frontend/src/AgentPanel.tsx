@@ -55,6 +55,7 @@ type Step = {
   observation: SemanticObservationData & {
     url: string;
     screenshot_path: string | null;
+    tab_id?: string;
     tabs?: { tab_id: string; url: string; purpose: string }[];
     elements?: { element_id: string; name: string; role: string }[];
   };
@@ -66,6 +67,7 @@ type Step = {
     target?: { element_id: string };
   };
   outcome: {
+    live_observation?: Step["observation"];
     url_changed?: boolean;
     content_changed?: boolean | null;
     semantic?: SemanticAction;
@@ -488,7 +490,7 @@ export default function AgentPanel({
             <label>
               <input type="checkbox" checked={readSearch} disabled={mode !== "autonomous"}
                 onChange={(e) => setReadSearch(e.target.checked)} />
-              Allow read-only site search in autonomous research tasks
+              Allow read-only site search in autonomous tasks
             </label>
             {mode === "autonomous" && readSearch && (
               <details>
@@ -706,15 +708,9 @@ function AgentDetail({
     pending = steps.data?.items.find(
       (s) => s.id === task.data?.pending_step_id,
     );
-  const imageEvent = [...events]
-    .reverse()
-    .find((e) => typeof e.details.screenshot_path === "string" && e.details.screenshot_path);
-  const capturedStep = steps.data?.items.find((s) => s.observation.screenshot_path);
-  const capture =
-    (imageEvent?.details.screenshot_path as string | undefined) ||
-    capturedStep?.observation.screenshot_path;
-  const previewUrl = (typeof imageEvent?.details.url === "string" && imageEvent.details.url) ||
-    capturedStep?.observation.url || latest?.observation.url;
+  const live = latest?.outcome?.live_observation ?? latest?.observation;
+  const capture = live?.screenshot_path;
+  const previewUrl = live?.url;
   const [answer, setAnswer] = useState("");
   const [memoryOpen, setMemoryOpen] = useState(false);
   const memory = useQuery({
@@ -884,9 +880,9 @@ function AgentDetail({
           <h2>Current decision</h2>
           <DecisionStatus status={shownStatus ?? t.status} decision={latest?.decision} verified={t.result.verification?.complete} />
           <h2 className="agent-subheading">Tabs and context</h2>
-          {latest?.observation.tabs?.map((tab) => (
+          {live?.tabs?.map((tab) => (
             <p className="hint url" key={tab.tab_id}>
-              <strong>{tab.tab_id}</strong> {tab.purpose}
+              <strong>{tab.tab_id}</strong> {tab.purpose}{tab.tab_id === live.tab_id && " (active)"}
               <br />
               {tab.url}
             </p>
@@ -897,7 +893,7 @@ function AgentDetail({
               memory.data ? <pre className="agent-json">{JSON.stringify(memory.data, null, 2)}</pre> :
               <Empty text="Loading saved session memory…" />)}
           </details>
-          <SemanticObservation observation={latest?.observation} />
+          <SemanticObservation observation={live} />
         </section>
       </div>
       {((t.status === "completed" && t.result.verification?.complete) || t.result.partial) && t.result.claims && (

@@ -179,9 +179,9 @@ async def test_goal_driven_real_browser(client, target, agent_config, agent_serv
     assert result["result"]["verification"]["complete"] is True
     assert result["execution"]["strategy"] == "research"
     assert result["result"]["evidence"]
-    assert result["model_calls"] >= 4 and result["prompt_tokens"] > 0
+    assert 2 <= result["model_calls"] <= 8 and result["prompt_tokens"] > 0
     steps = client.get(f"/api/agent/tasks/{task['id']}/steps").json()["items"]
-    assert any(s["decision"].get("decision") == "CLICK" for s in steps)
+    assert any(s["decision"].get("decision") == ("SEARCH" if allow_input else "CLICK") for s in steps)
     assert all(s["observation"]["screenshot_path"] for s in steps)
     assert client.get("/api/agent/memories").json()["total"] == 1
 
@@ -225,7 +225,8 @@ async def test_step_budget_does_not_mark_incomplete_success(client, target, agen
     task = new_task(client, target, max_steps=1)
     await execute(*claim())
     result = client.get("/api/agent/tasks/" + task["id"]).json()
-    assert result["status"] == "failed" and not result["result"]
+    assert result["status"] == "failed"
+    assert result["result"]["partial"] and result["result"]["verification"]["complete"] is False
 
 
 def test_interrupted_mutation_requires_review(client, target, agent_config):
@@ -304,6 +305,10 @@ async def test_comparison_uses_evidence_from_both_pages(client, target, agent_co
               "Office desk": "The desk costs 199 dollars."}
 
     async def fixture_response(self, kind, payload, schema, *args, **kwargs):
+        if kind == "synthesize":
+            assert set(payload["subjects"]) == {"the Orion AI workstation", "the office desk"}
+            return schema(claims=[{"text": "The workstation costs $700 more than the office desk.",
+                                   "evidence_ids": [row["id"] for row in payload["evidence"]]}])
         if kind != "decide":
             return schema.model_validate(decide({"purpose": kind, **payload}))
         assert payload["execution_route"]["name"] == "comparison"
@@ -327,10 +332,11 @@ async def test_comparison_uses_evidence_from_both_pages(client, target, agent_co
     task = new_task(client, target, "Compare prices for the Orion AI workstation versus the office desk.")
     await execute(*claim())
     result = client.get("/api/agent/tasks/" + task["id"]).json()
-    assert result["status"] == "completed", result.get("error_message")
+    assert result["status"] == "completed", (result.get("error_message"), result["memory"].get("failures"))
     assert result["execution"]["strategy"] == "comparison"
     assert len({item["url"] for item in result["result"]["evidence"]}) == 2
     assert {item["quote"] for item in result["result"]["evidence"]} == set(quotes.values())
+    assert result["result"]["claims"][0]["text"] == "The workstation costs $700 more than the office desk."
 
 
 @pytest.mark.browser
