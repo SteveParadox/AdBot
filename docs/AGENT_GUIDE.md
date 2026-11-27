@@ -222,7 +222,10 @@ All names below have the `ADBOT_` prefix.
 | AI_MODEL | Required when enabling a provider |
 | AI_BASE_URL / AI_API_KEY | Generic compatible endpoint and secret |
 | GROQ_BASE_URL / GROQ_API_KEY | Groq endpoint and secret |
-| AI_TIMEOUT_SECONDS | `30`; 1–120 seconds per HTTP request |
+| AI_TIMEOUT_SECONDS | `60`; 1–120 seconds per primary HTTP request |
+| AI_PRIMARY_FALLBACK_TIMEOUT_SECONDS | `30`; bounded timeout for provider-chain attempts |
+| AI_OLLAMA_CONTEXT_TOKENS | `8192`; native Ollama context ceiling, configurable up to 32768 subject to model and host capacity |
+| AGENT_MAX_EVIDENCE_RECORDS | `80`; stored source evidence records per agent task (1–200) |
 | AI_RETRIES | `2`; bounded transport retries |
 | AI_MAX_OUTPUT_TOKENS | `4096`; maximum per model response, reduced for constrained contexts |
 | AI_MAX_REQUEST_CHARS | `36000`; maximum serialized request characters |
