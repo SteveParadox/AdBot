@@ -386,7 +386,7 @@ class AgentRunner(Runner):
 
             repair_exact_citations(decision.claims, evidence)
             claim_checks = claim_verification_criteria(decision.claims, evidence)
-            criteria = [*criteria, *claim_checks]
+            criteria = list(dict.fromkeys([*criteria, *claim_checks]))
         attempt = action_key({"decision": "COMPLETE", "claims": sorted(
             ({"text": " ".join(claim.text.casefold().split()), "evidence_ids": sorted(set(claim.evidence_ids))}
              for claim in decision.claims),
@@ -1722,19 +1722,21 @@ class AgentRunner(Runner):
                 selected.append(evidence[identifier])
         return selected
 
-    async def verify_research(self, payload, claim_checks):
+    async def verify_research(self, payload, claim_checks, *, split=False):
         """Split oversized requests by criterion without dropping claim citations."""
         criteria = payload["success_criteria"]
         try:
             verification = await self.ask_model("verify", payload, Verification)
         except ModelContextExceeded:
-            if len(criteria) == 1:
-                raise
+            pass
         except ModelProvidersUnavailable as exc:
-            if len(criteria) == 1 or not exc.failures or any(
-                failure.get("failure_category") != "context" for failure in exc.failures
-            ):
+            if not exc.failures or any(failure.get("failure_category") != "context" for failure in exc.failures):
                 raise
+        except ModelBudgetExceeded:
+            if not split:
+                raise
+            return Verification(complete=False, explanation="Verification budget exhausted during batching.",
+                                checks=[{"criterion": criterion, "met": False} for criterion in criteria])
         else:
             offered = {row["id"] for row in payload["evidence"]}
             for check in verification.checks:
@@ -1742,6 +1744,9 @@ class AgentRunner(Runner):
                     check.met = False
                     verification.complete = False
             return verification
+        if len(criteria) == 1:
+            return Verification(complete=False, explanation="This verification check exceeds provider context.",
+                                checks=[{"criterion": criteria[0], "met": False}])
         midpoint = len(criteria) // 2
         results = []
         for batch in (criteria[:midpoint], criteria[midpoint:]):
@@ -1751,7 +1756,7 @@ class AgentRunner(Runner):
                 batch_payload["claims"] = [payload["claims"][int(check.split(":", 1)[0].split()[1]) - 1]
                                            for check in batch]
                 batch_payload["evidence"] = [row for row in payload["evidence"] if row["id"] in ids]
-            results.append(await self.verify_research(batch_payload, claim_checks))
+            results.append(await self.verify_research(batch_payload, claim_checks, split=True))
         return Verification(complete=all(result.complete for result in results),
                             explanation="Verification combined across bounded criterion batches.",
                             checks=[check for result in results for check in result.checks])
@@ -1763,6 +1768,8 @@ class AgentRunner(Runner):
             checks = [check for check in verification.checks if check.criterion == criterion]
             if len(checks) == 1 and self.research_check_supported(checks[0], offered):
                 supported[criterion] = checks[0].evidence_ids
+            elif len(checks) == 1 and set(supported.get(criterion, [])) <= offered:
+                supported.pop(criterion, None)
         claim_ids = set()
         for criterion, allowed in (claim_checks or {}).items():
             checks = [check for check in verification.checks if check.criterion == criterion]

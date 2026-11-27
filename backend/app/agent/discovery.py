@@ -332,6 +332,16 @@ def search_control(element, approved_posts=()):
 
 def objective_query(objective):
     query = re.sub(r"^\s*(?:please\s+)?(?:list|find|search(?:\s+for)?|look\s+up|show(?:\s+me)?|identify|recommend)\s+(?:all\s+)?", "", objective, flags=re.I)
+    text = " ".join(objective.split()).rstrip(" .?!")
+    for pattern in (
+        r"(?:tell me about|what are the features of|what is|what are|who developed|who created|where can I find) (.+)",
+        r"how (?:does|do) (.+?) work",
+        r"how much (?:does|do) (.+?) cost",
+        r"is (.+?) (?:suitable|right|good)\b.*",
+    ):
+        if match := re.fullmatch(r"(?:please\s+)?" + pattern, text, re.I):
+            query = match[1]
+            break
     normalized = " ".join(query.split()).strip(" .?!,")
     if len(normalized) > 200:
         normalized = normalized[:201].rsplit(" ", 1)[0]

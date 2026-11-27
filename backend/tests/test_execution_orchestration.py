@@ -7,7 +7,7 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 
 from app.agent.contracts import Decision, Verification
-from app.agent.discovery import task_token_allowance
+from app.agent.discovery import objective_query, task_token_allowance
 from app.agent.model import ModelBudgetExceeded, ModelContextExceeded
 from app.agent.planning import evaluate, initial_plan, needs_model_plan, specification
 from app.agent.routing import select_route
@@ -28,6 +28,7 @@ from testsupport.model_fixture import app as model_fixture
 def test_informational_routing(objective):
     assert select_route(objective, {}).name == "informational"
     assert not needs_model_plan(specification(objective, [objective], {}, []))
+    assert objective_query(objective) == "Amber Relay"
 
 
 def test_search_permission_and_complexity_are_independent():
@@ -90,6 +91,27 @@ async def test_verification_batches_preserve_all_citations():
         "evidence": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
     }, {"Claim 1: The device records": {"a", "b"}, "Claim 2: The device stores audio": {"c"}})
     assert result.complete and offered == [{"a", "b"}, {"c"}]
+
+
+async def test_oversized_objective_check_preserves_independently_verified_claim():
+    runner = object.__new__(AgentRunner)
+    objective, claim = "Compare a long set of options", "Claim 1: The relay records audio"
+
+    async def ask(_kind, payload, _schema):
+        criteria = payload["success_criteria"]
+        if objective in criteria:
+            raise ModelContextExceeded("Objective exceeds provider context")
+        return Verification(complete=True, explanation="Claim supported",
+                            checks=[{"criterion": claim, "met": True, "evidence_ids": ["a"]}])
+
+    runner.ask_model = ask
+    result = await runner.verify_research({
+        "success_criteria": [objective, claim],
+        "claims": [{"text": "The relay records audio"}],
+        "evidence": [{"id": "a"}],
+    }, {claim: {"a"}})
+    assert not result.complete
+    assert [check.met for check in result.checks] == [False, True]
 
 
 async def test_rejected_claims_cannot_publish_or_repeat_verification():
