@@ -976,3 +976,45 @@ def test_legacy_token_default_idempotency_replay(client, target, agent_config):
     assert replay.json()["id"] == task["id"]
     assert client.post("/api/agent/tasks", json={**body, "max_tokens": 100000},
                        headers=headers).status_code == 409
+
+def test_step_history_newest_first_and_pagination(client, target, agent_config):
+    task = new_task(client, target)
+    with transaction() as session:
+        session.add_all([
+            AgentStep(job_id=task["id"], number=number, observation={}, decision={}, outcome={})
+            for number in range(1, 106)
+        ])
+    url = f"/api/agent/tasks/{task['id']}/steps"
+    original = client.get(url + "?limit=100").json()
+    assert original["total"] == 105
+    assert original["items"][0]["number"] == 1
+    latest = client.get(url + "?limit=100&newest_first=true").json()
+    assert latest["items"][0]["number"] == 105
+    assert latest["items"][-1]["number"] == 6
+    older = client.get(url + "?limit=100&offset=100&newest_first=true").json()
+    assert [step["number"] for step in older["items"]] == [5, 4, 3, 2, 1]
+    assert client.get(url + "?newest_first=true", headers=OTHER_AUTH).status_code == 404
+
+
+def test_ollama_context_configuration(agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "ai_ollama_context_tokens", 16384)
+    monkeypatch.setattr(agent_config, "ai_context_windows", {})
+    assert agent_config.ollama_context_for("example") == 16384
+    monkeypatch.setattr(agent_config, "ai_context_windows", {"example": 4096})
+    assert agent_config.ollama_context_for("example") == 4096
+    monkeypatch.setattr(agent_config, "ai_context_windows", {"example": 65536})
+    assert agent_config.ollama_context_for("example") == 16384
+
+
+def test_research_evidence_budget_is_configurable():
+    from app.agent.research import capture_evidence
+
+    store = [{"id": f"old-{i}", "url": "https://example.test/old", "quote": f"Old quote {i}"}
+             for i in range(40)]
+    observation = {"url": "https://example.test/new", "research_chunks": [
+        {"quote": "Orion released its documentation.", "entities": ["Orion"], "heading": "Release"},
+        {"quote": "Orion updated its documentation.", "entities": ["Orion"], "heading": "Update"},
+    ]}
+    assert capture_evidence(observation, store, 1, ["Orion"], [], max_records=41) == 1
+    assert len(store) == 41
+    assert capture_evidence(observation, store, 2, ["Orion"], [], max_records=41) == 0
