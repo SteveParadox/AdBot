@@ -8,6 +8,7 @@ import pycountry
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..config import ResearchBudget, settings
+from .objectives import comparison_request, definition_request
 
 
 class Strict(BaseModel):
@@ -26,7 +27,7 @@ class Mode(StrEnum):
 
 DEFAULTS = {
     Mode.DIRECT: ResearchBudget(seconds=45, requests=0, pages=0, rounds=0, calls=3, tokens=12000, browsers=0),
-    Mode.QUICK: ResearchBudget(seconds=45, requests=4, pages=5, rounds=1, calls=4, tokens=22000, browsers=1),
+    Mode.QUICK: ResearchBudget(seconds=45, requests=5, pages=6, rounds=2, calls=6, tokens=22000, browsers=1),
     Mode.DEEP: ResearchBudget(seconds=220, requests=18, pages=24, rounds=4, calls=11, tokens=75000, browsers=4),
     Mode.SHOPPING: ResearchBudget(seconds=100, requests=12, pages=14, rounds=2, calls=7, tokens=48000, browsers=3),
     Mode.FACT_CHECK: ResearchBudget(seconds=85, requests=10, pages=12, rounds=2, calls=7, tokens=46000, browsers=2),
@@ -36,9 +37,6 @@ DEFAULTS = {
 
 def budget_for(mode):
     return settings().research_budgets.get(mode, DEFAULTS[mode])
-
-
-from .objectives import comparison_request, definition_request
 
 
 class Question(Strict):

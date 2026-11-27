@@ -14,7 +14,7 @@ from .policy import PublicPolicy
 from .ranking import Independence
 from .shared_cache import digest
 
-VERSION = 3
+VERSION = 4
 MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024
 COUNTERS = ("provider_requests", "provider_failures", "provider_ms", "provider_rate_limits")
 
@@ -30,6 +30,7 @@ def capture(engine):
         "version": VERSION, "policy": policy_stamp(),
         "effective_mode": engine.mode.value, "route_done": engine.route_done, "schedule_mode": engine.schedule_mode,
         "recovery_started": engine.recovery_started, "recovery_done": engine.recovery_done,
+        "recovery_base_claims": engine.recovery_base_claims, "cross_source_done": engine.cross_source_done,
         "layout": engine.layout, "initial_search": engine.initial_search,
         "next_round": engine.next_round, "search_done": engine.search_done,
         "pending_ranked": engine.pending_ranked, "round_page_limit": engine.round_page_limit,
@@ -82,7 +83,7 @@ def restore(engine, state):
         progress = state["synthesis_state"] or {}
         if any(row["id"] not in state["evidence"] for row in progress.get("presented", [])):
             return False
-        if any(i not in state["evidence"] for c in state["claims"] + progress.get("accepted", []) for i in c["evidence"]):
+        if any(i not in state["evidence"] for c in state["claims"] + progress.get("accepted", []) + state["recovery_base_claims"] for i in c["evidence"]):
             return False
         independence = Independence()
         index = state["independence"]
@@ -111,6 +112,7 @@ def restore(engine, state):
         restored = {
             "mode": mode, "route_done": state["route_done"], "schedule_mode": state["schedule_mode"],
             "recovery_started": state["recovery_started"], "recovery_done": state["recovery_done"],
+            "recovery_base_claims": state["recovery_base_claims"], "cross_source_done": state["cross_source_done"],
             "layout": state["layout"], "initial_search": state["initial_search"],
             "coverage_required": mode == Mode.DEEP or (mode == Mode.TECHNICAL and comparison_request(engine.question.question)),
             "next_round": state["next_round"], "search_done": state["search_done"],

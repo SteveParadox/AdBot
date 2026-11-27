@@ -563,11 +563,12 @@ class Fetcher:
             if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
                     and ((shopping and not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
                                                   for product in doc.products for offer in product["offers"]))
-                         or (not shopping and not doc.products and sum(map(len, doc.blocks)) < 200))):
+                         or (not shopping and not doc.products and not doc.metadata.get("schedule_events")
+                             and sum(map(len, doc.blocks)) < 200))):
                 # Shell validators cannot refresh scripts or API data. Keep
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
-            if not doc.blocks and not doc.products and not doc.links and not doc.table_rows:
+            if not doc.blocks and not doc.products and not doc.links and not doc.table_rows and not doc.metadata.get("schedule_events"):
                 await self.discard_document(cache_key)
                 return None
             if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")

@@ -30,7 +30,7 @@ def source_record(doc, query, provider):
         "domain": urlsplit(doc.url).hostname, "independence_group": source_domain(doc.url),
         "published_at": doc.published, "modified_at": doc.modified,
         "retrieved_at": doc.retrieved, "content_hash": doc.digest, "query": query,
-        "metadata": doc.metadata, "provider": provider,
+        "metadata": {k: v for k, v in doc.metadata.items() if k != "schedule_events"}, "provider": provider,
         "credibility": source_signals(doc.url, doc.metadata),
     }
 
@@ -46,18 +46,6 @@ def quote_record(source, quote, location, kind="quote"):
 
 
 def pdf_evidence(doc, source, question):
-    from .schedule import event_day, schedule_request
-    events = []
-    if schedule_request(question) or target_date:
-        for index, event in enumerate(doc.metadata.get("schedule_events", [])[:100]):
-            day = event_day(event.get("startDate"), offset_minutes)
-            if target_date and day != target_date:
-                continue
-            quote = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-            if len(quote) <= 1000:
-                events.append(quote_record(source, quote, f"json-ld:event-{index + 1}", "structured"))
-            if len(events) >= 24:
-                break
     keywords = terms(question) | terms(source["query"])
     candidates = []
     for block, loc in zip(doc.blocks, doc.block_locations):
@@ -96,6 +84,18 @@ def pdf_evidence(doc, source, question):
 def text_evidence(doc, source, question, *, target_date=None, offset_minutes=None):
     if doc.metadata.get("document_type") == "pdf":
         return pdf_evidence(doc, source, question)
+    from .schedule import event_day, schedule_request
+    events = []
+    if schedule_request(question) or target_date:
+        for index, event in enumerate(doc.metadata.get("schedule_events", [])[:100]):
+            day = event_day(event.get("startDate"), offset_minutes)
+            if target_date and day != target_date:
+                continue
+            quote = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            if len(quote) <= 1000:
+                events.append(quote_record(source, quote, f"json-ld:event-{index + 1}", "structured"))
+            if len(events) >= 24:
+                break
     keywords = terms(question) | terms(source["query"])
     title_match = bool(terms(question) & terms(doc.title))
     scored = []

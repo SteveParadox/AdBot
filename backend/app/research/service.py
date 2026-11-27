@@ -147,6 +147,8 @@ class Research:
         self.schedule_mode = schedule_request(question.question)
         self.recovery_started = False
         self.recovery_done = False
+        self.recovery_base_claims = []
+        self.cross_source_done = False
         self.layout = None
         self.initial_search = True
         usage = usage or {}
@@ -179,6 +181,9 @@ class Research:
         self.search_done = self.synthesis_done = False
         self.synthesis_state = None
         self.resumed = bool(saved and restore(self, saved))
+        if self.resumed and self.mode == Mode.SHOPPING:
+            from .memory import constraint_text
+            self.context = {**self.context, "constraints": constraint_text(self.context["slots"])}
         if saved and not self.resumed:
             self.notes.append("Prior research progress could not be restored under the current policy; charged usage was retained.")
             self.result_quality = "partial"
@@ -548,7 +553,7 @@ class Research:
             for hit in ranked:
                 self.hits.setdefault(hit.canonical_url, asdict(hit))
             pages_left = self.budget.pages - self.page_count
-            if self.initial_search and self.budget.rounds > 1 and pages_left > 2:
+            if self.initial_search and self.mode not in {Mode.SHOPPING, Mode.FACT_CHECK} and self.budget.rounds > 1 and pages_left > 2:
                 # Keep retrieval capacity for a possible post-synthesis recovery.
                 pages_left -= max(1, pages_left // 4)
             if self.mode == Mode.DEEP:
@@ -1083,12 +1088,16 @@ class Research:
         if self.model_failed:
             self.notes.append("The configured model did not finish every research stage.")
             self.result_quality = "partial"
+        await self.cross_source_synthesis()
+        self.audit_final_claims()
         await self.arrange_answer()
         return await self.finish(arranged_report(self.claims, self.evidence, self.sources, self.mode, self.layout))
 
     async def recover_after_synthesis(self):
         if self.recovery_started:
             if not self.recovery_done:
+                progress = self.synthesis_state or {}
+                self.claims = unique_claims([*self.recovery_base_claims, *self.claims, *progress.get("accepted", [])])
                 self.notes.append("Recovery was interrupted; retained the verified findings already available.")
                 self.result_quality = "partial"
             return
@@ -1097,10 +1106,11 @@ class Research:
         self.recovery_started = True
         self.initial_search = False
         self.metrics["recovery_attempts"] = 1
+        self.recovery_base_claims = [c for c in self.claims if c["kind"] != "excerpt"]
         await self.stage("recovery", "Investigating gaps after synthesis")
         await self.save_checkpoint()
-        old_claims = [c for c in self.claims if c["kind"] != "excerpt"]
-        old_notes, old_quality = list(self.notes), self.result_quality
+        old_claims = list(self.recovery_base_claims)
+        old_notes = list(self.notes)
         try:
             # Leave a minimum synthesis/verification window inside the same deadline.
             async with asyncio.timeout(max(.1, (self.deadline - time.monotonic()) * .45)):
@@ -1134,9 +1144,50 @@ class Research:
             self.metrics["recovery_verified_claims"] = len(new_claims)
         else:
             self.notes = list(dict.fromkeys([*old_notes, *self.notes]))
-            self.result_quality = old_quality
+            self.result_quality = "partial"
         self.recovery_done = True
+        self.recovery_base_claims = []
         self.pending_ranked = None
+        await self.save_checkpoint()
+
+    async def cross_source_synthesis(self):
+        """Optional synthesis across batches; every new claim is reverified."""
+        if self.cross_source_done or self.mode not in {Mode.DEEP, Mode.TECHNICAL}:
+            return
+        if self.budget.calls - self.metrics["model_calls"] < 2 or self.deadline - time.monotonic() < 8:
+            return
+        accepted = [c for c in self.claims if c["kind"] != "excerpt"]
+        ids = {i for c in accepted for i in c["evidence"]}
+        if len(accepted) < 2 or len(supporting_groups(ids, self.evidence, self.sources)) < 2:
+            return
+        records = [self.evidence[i] for i in sorted(ids)]
+        rows = evidence_rows(records, self.sources, self.contextual_question(), ids, 1000, freshness=self.freshness)
+        prompt = SYNTHESIS + " Produce only complementary cross-source comparisons or implications; each must cite at least two independent groups. Do not restate isolated findings."
+        def payload(items):
+            return {**self.synthesis_payload(items), "claim_limit": 3}
+        offered_rows, _ = batch_rows(rows, payload, prompt, settings().ai_max_request_chars, 12,
+                                    3, VERIFY, self.verification_context)
+        if len({r["source"] for r in offered_rows}) < 2:
+            return
+        self.cross_source_done = True
+        await self.save_checkpoint()
+        await self.stage("cross_source", "Synthesizing findings across sources", evidence=len(offered_rows))
+        prior_failure = self.model_failed
+        summary = await self.ask("research_synthesis", prompt, Summary,
+                                 {**payload(offered_rows), "evidence": offered_rows})
+        offered = offered_evidence(offered_rows, self.evidence)
+        proposals = [c for c in (summary.claims[:3] if summary else [])
+                     if set(c.evidence) <= offered.keys() and len(set(c.evidence)) == len(c.evidence)
+                     and len(supporting_groups(c.evidence, offered, self.sources)) >= 2]
+        if proposals:
+            data = {**self.verification_context(offered_rows), "candidates": [c.model_dump() for c in proposals],
+                    "evidence": offered_rows}
+            if fits(VERIFY, "research_verify", data, Verification, settings().ai_max_request_chars):
+                checked = await self.ask("research_verify", VERIFY, Verification, data)
+                verified = verified_claims(proposals, checked, offered, self.sources, self.freshness) if checked else []
+                self.claims = unique_claims([*self.claims, *[c for c in verified if c["independent_sources"] >= 2]])
+                self.metrics["cross_source_claims"] = sum(c["independent_sources"] >= 2 for c in verified)
+        self.model_failed = prior_failure
         await self.save_checkpoint()
 
     async def arrange_answer(self):
