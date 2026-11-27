@@ -932,3 +932,17 @@ async def test_research_checkpoint_write_is_lease_fenced(client, research):
     assert client.post(f"{API}/tasks/{job_id}/cancel").json()["status"] == "cancelled"
     with Session() as session:
         assert "research_checkpoint" not in session.get(Job, job_id).execution_state
+
+
+def test_research_workspace_bootstrap_routes(client):
+    # Exercise the actual application router, not a standalone research router.
+    conversations = client.get(API + "/conversations")
+    assert conversations.status_code == 200, conversations.text
+    assert conversations.json() == {"items": [], "total": 0}
+
+    providers = client.get(API + "/providers")
+    assert providers.status_code == 200, providers.text
+    config = providers.json()
+    assert isinstance(config["enabled"], bool)
+    assert isinstance(config["model_configured"], bool)
+    assert isinstance(config["providers"], list)
