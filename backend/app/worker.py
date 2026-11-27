@@ -44,6 +44,9 @@ async def _execute(job_id, token):
             if kind == 'export':
                 from .extraction.exporter import ExportRunner
                 runner = ExportRunner(job_id,token)
+            elif kind == "research":
+                from .research.runner import ResearchRunner
+                runner = ResearchRunner(job_id, token)
             elif kind == "agent":
                 from .agent.runner import AgentRunner
 
@@ -102,7 +105,7 @@ async def _execute(job_id, token):
             if previous_status != control:
                 def publish_control():
                     with transaction() as session:
-                        job = owned_job(session, job_id, token)
+                        job = owned_job(session, job_id, token, write=kind == "research")
                         if job.status == previous_status:
                             job.status = control
                             emit(session, job_id, control, "Execution state updated")
@@ -138,7 +141,13 @@ async def _execute(job_id, token):
         def finalize():
             nonlocal status, error
             with transaction() as session:
-                job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                if status and kind == "research":
+                    try:
+                        job = owned_job(session, job_id, token, write=True)
+                    except InterruptedError:
+                        job = None
+                else:
+                    job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 if status and job and job.lease_token == token and job.lease_until > time.time():
                     if error:
                         from .failures import diagnose
@@ -191,6 +200,10 @@ async def _execute(job_id, token):
                                 save_memory(session, job, task)
                             emit(session, job_id, "goal_verified", "Objective verified against collected evidence",
                                  claims=len(result["claims"]))
+                    if kind == "research" and job.status == "completed":
+                        runner.persist(session)
+                    if kind == "research" and job.status in {"completed", "failed", "cancelled"}:
+                        job.execution_state = {k: v for k, v in job.execution_state.items() if k != "research_checkpoint"}
                     if kind == "agent" and job.status in {"failed", "cancelled"}:
                         task = session.get(AgentTask, job_id)
                         directory = task.memory.get("directory", {})

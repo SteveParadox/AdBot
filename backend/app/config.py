@@ -3,8 +3,19 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ResearchBudget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    seconds: int = Field(ge=5, le=600)
+    requests: int = Field(ge=0, le=30)
+    pages: int = Field(ge=0, le=40)
+    rounds: int = Field(ge=0, le=5)
+    calls: int = Field(ge=1, le=18)
+    tokens: int = Field(ge=1000, le=150000)
+    browsers: int = Field(ge=0, le=6)
 
 
 class Settings(BaseSettings):
@@ -40,6 +51,22 @@ class Settings(BaseSettings):
     max_proxy_connections: int = Field(64, ge=1, le=1024)
     extraction_max_export_bytes: int = Field(52428800, ge=1024, le=209715200)
     extraction_export_ttl_seconds: int = Field(86400, ge=60, le=604800)
+    research_enabled: bool = False
+    research_browser_enabled: bool = False
+    research_semantic_ranking_enabled: bool = False
+    research_searxng_url: str = ""
+    research_brave_key: SecretStr = SecretStr("")
+    research_tavily_key: SecretStr = SecretStr("")
+    research_exa_key: SecretStr = SecretStr("")
+    research_serper_key: SecretStr = SecretStr("")
+    research_provider_order: str = "searxng,brave,tavily,exa,serper"
+    research_provider_timeout: float = Field(8, ge=1, le=30)
+    research_provider_rpm: int = Field(60, ge=1, le=600)
+    research_fetch_timeout: float = Field(8, ge=1, le=30)
+    research_parallelism: int = Field(4, ge=1, le=8)
+    research_cache_seconds: int = Field(300, ge=0, le=3600)
+    research_excluded_domains: str = ""
+    research_budgets: dict[Literal["direct", "quick", "deep", "shopping", "fact_check", "technical"], ResearchBudget] = Field(default_factory=dict)
     max_concurrent_agents: int = Field(2, ge=1, le=8)
     max_browser_sessions: int = Field(2, ge=1, le=8)
     priority_aging_seconds: int = Field(300, ge=1, le=86400)
@@ -175,6 +202,21 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def secure(self):
         from ipaddress import ip_network
+        if self.research_searxng_url:
+            endpoint = urlsplit(self.research_searxng_url)
+            if (endpoint.scheme not in {"http", "https"} or not endpoint.hostname or endpoint.username is not None
+                    or endpoint.query or endpoint.fragment or (endpoint.port is not None and endpoint.port < 1)):
+                raise ValueError("Configure an explicit SearXNG HTTP(S) base URL without credentials")
+        research_providers = self.research_provider_order.split(",")
+        if (len(set(research_providers)) != len(research_providers)
+                or set(research_providers) - {"searxng", "brave", "tavily", "exa", "serper"}):
+            raise ValueError("Invalid research provider order")
+        direct = self.research_budgets.get("direct")
+        if direct and (direct.requests or direct.pages or direct.rounds or direct.browsers):
+            raise ValueError("Direct mode cannot be assigned network budgets")
+        for mode, budget in self.research_budgets.items():
+            if mode != "direct" and (not budget.requests or not budget.pages or not budget.rounds):
+                raise ValueError("Web research modes require positive search and retrieval budgets")
         for value in filter(None, (v.strip() for v in self.trusted_proxy_cidrs.split(","))):
             if ip_network(value).prefixlen == 0:
                 raise ValueError("Trust explicit proxy networks, never all addresses")

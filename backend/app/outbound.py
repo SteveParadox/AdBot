@@ -81,7 +81,7 @@ class Service(BaseModel):
 class Routing(BaseModel):
     model_config = ConfigDict(extra='forbid')
     endpoints: list[Endpoint]
-    services: dict[Literal['browser','ai','ai_local'], Service]
+    services: dict[Literal['browser','ai','ai_local','research','research_local'], Service]
 
     @model_validator(mode='after')
     def references(self):

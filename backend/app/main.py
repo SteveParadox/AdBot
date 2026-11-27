@@ -25,6 +25,7 @@ from .security import Policy
 from .api_support import Limit, Offset, Owner, collection, output, owned, workflow_for
 from .api_support import rate_windows as rate_windows
 from .agent.api import router as agent_router
+from .research.api import router as research_router
 from .content import router as content_router
 from .outbound import manager
 from .network_api import router as network_router
@@ -88,6 +89,7 @@ app.include_router(user_agent_router)
 app.include_router(network_router)
 app.include_router(content_router)
 app.include_router(agent_router)
+app.include_router(research_router)
 
 
 @app.middleware("http")
@@ -257,7 +259,7 @@ async def start_job(
 @app.get("/api/jobs")
 def jobs(owner: Owner, offset: Offset = 0, limit: Limit = 100, status: str | None = None):
     with Session() as session:
-        query = select(Job).where(Job.owner == owner).order_by(Job.created_at.desc())
+        query = select(Job).where(Job.owner == owner, Job.job_type != "research").order_by(Job.created_at.desc())
         if status:
             query = query.where(Job.status == status)
         return collection(session, query, offset, limit)
@@ -288,6 +290,8 @@ def cancel_job(identifier: str, owner: Owner):
         if changed:
             emit(session, identifier, "cancellation_requested", "Cancellation requested")
         session.refresh(item)
+        if item.job_type == "research" and item.status == "cancelled":
+            item.execution_state = {k: v for k, v in item.execution_state.items() if k != "research_checkpoint"}
         return output(item)
 
 
@@ -319,6 +323,8 @@ def retry_job(identifier: str, owner: Owner):
             raise HTTPException(409,'Create a new dataset export after reviewing the failure')
         if item.job_type == "agent":
             raise HTTPException(409, "Create a new agent task explicitly after reviewing its outcomes")
+        if item.job_type == "research":
+            raise HTTPException(409, "Retry from the research workspace")
         if item.status not in {"failed", "cancelled"}:
             raise HTTPException(409, "Only failed or cancelled jobs can be retried")
         if "workflow" in item.snapshot and any(s["action"] == "CLICK" for s in item.snapshot["workflow"]["steps"]):
@@ -456,16 +462,20 @@ async def events(
     with Session() as session:
         owned(session, Job, identifier, owner)
     try:
-        cursor = max(after, int(last_event_id or "0"))
+        cursor = max(0, after, int(last_event_id or "0"))
+        if cursor > 2**63 - 1:
+            raise ValueError
     except ValueError:
-        raise HTTPException(422, "Last-Event-ID must be an integer") from None
+        raise HTTPException(422, "Event cursor must fit in a signed 64-bit integer") from None
 
     async def stream():
         nonlocal cursor
         deadline = time.monotonic() + 55
         while time.monotonic() < deadline and not await request.is_disconnected():
             with Session() as session:
-                job = owned(session, Job, identifier, owner)
+                job = session.get(Job, identifier)
+                if job is None or job.owner != owner:
+                    return
                 batch = session.scalars(
                     select(AutomationEvent)
                     .where(AutomationEvent.job_id == identifier, AutomationEvent.id > cursor)

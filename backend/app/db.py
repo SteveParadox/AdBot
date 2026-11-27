@@ -40,10 +40,16 @@ class Workflow(Base):
 
 class Job(Base):
     __tablename__ = "automation_jobs"
-    __table_args__ = (UniqueConstraint("owner", "idempotency_key"),)
+    __table_args__ = (
+        UniqueConstraint("owner", "idempotency_key"),
+        CheckConstraint(
+            "(job_type = 'research' AND website_id IS NULL) OR (job_type != 'research' AND website_id IS NOT NULL)",
+            name="ck_job_website_scope",
+        ),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     owner: Mapped[str] = mapped_column(String(64), index=True)
-    website_id: Mapped[str] = mapped_column(ForeignKey("websites.id", ondelete="CASCADE"), index=True)
+    website_id: Mapped[str | None] = mapped_column(ForeignKey("websites.id", ondelete="CASCADE"), index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     depends_on: Mapped[str | None] = mapped_column(ForeignKey("automation_jobs.id"), nullable=True)
     manual_release: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -64,6 +70,30 @@ class Job(Base):
     pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     lease_until: Mapped[float] = mapped_column(Float, default=0, index=True)
+
+
+class ResearchConversation(Base):
+    __tablename__ = "research_conversations"
+    __table_args__ = (Index("ix_research_conversations_owner_activity", "owner", "updated_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    owner: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(160), default="")
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ResearchTask(Base):
+    __tablename__ = "research_tasks"
+    __table_args__ = (Index("ix_research_tasks_conversation_created", "conversation_id", "created_at"),)
+    job_id: Mapped[str] = mapped_column(ForeignKey("automation_jobs.id", ondelete="CASCADE"), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("research_conversations.id", ondelete="RESTRICT"))
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    question: Mapped[dict] = mapped_column(JSON)
+    mode: Mapped[str] = mapped_column(String(20))
+    intent: Mapped[str] = mapped_column(String(24))
+    budget: Mapped[dict] = mapped_column(JSON)
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class Frontier(Base):

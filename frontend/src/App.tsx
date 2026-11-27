@@ -79,7 +79,7 @@ export default function App() {
     sessionStorage.getItem("adbot-token") || "",
   );
   const [input, setInput] = useState("");
-  const [tab, setTab] = useState<Tab>("Overview");
+  const [tab, setTab] = useState<Tab>(() => new URLSearchParams(window.location.search).get("tab") === "agent" ? "AI Agent" : "Overview");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -273,6 +273,7 @@ export default function App() {
               )}
             </button>
           ))}
+          <a className="docs-entry" href="/research"><Globe2 size={18}/>Web Research</a>
           <a className="docs-entry" href="/docs"><BookOpen size={18}/>Documentation</a>
         </nav>
         <div className="sidebar-bottom">

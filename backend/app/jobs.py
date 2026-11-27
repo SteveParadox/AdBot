@@ -45,7 +45,7 @@ def make_job(session, website: Website, workflow: Workflow | None = None, key=No
         payload.update(priority=priority,depends_on=depends_on)
     if depends_on:
         parent=session.get(Job,depends_on)
-        if not parent or parent.owner!=website.owner:
+        if not parent or parent.owner!=website.owner or parent.job_type == "research":
             raise ValueError("Dependency must be an existing job owned by this workspace")
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     if key:
@@ -121,7 +121,7 @@ def claim():
         jobs = session.scalars(
             select(Job)
             .where(Job.status == "queued", Job.cancel_requested.is_(False),Job.job_type.not_in(control.disabled),
-                   Job.website_id.not_in(control.disabled_websites),
+                   or_(Job.job_type == "research", Job.website_id.not_in(control.disabled_websites)),
                    or_(control.enabled,Job.manual_release.is_(True)),
                    or_(Job.depends_on.is_(None),select(parent.id).where(parent.id==Job.depends_on,parent.status=='completed').exists()))
             .order_by((Job.priority + (now - Job.created_at) / settings().priority_aging_seconds).desc(),Job.created_at)
@@ -230,6 +230,8 @@ def recover_expired():
             )
             job.retry_count += 1
             if job.status in TERMINAL:
+                if job.job_type == "research":
+                    job.execution_state = {k: v for k, v in job.execution_state.items() if k != "research_checkpoint"}
                 job.completed_at = now
                 job.error_message = (
                     "Worker lease expired; manual review required" if unsafe else "Worker recovery limit reached"
@@ -263,7 +265,16 @@ def heartbeat(job_id, token):
         return bool(changed)
 
 
-def owned_job(session, job_id, token):
+def owned_job(session, job_id, token, *, write=False):
+    if write and session.get_bind().dialect.name == "sqlite":
+        # SQLite ignores FOR UPDATE. Acquire its write lock before reading a
+        # lease that will guard changes to another row.
+        changed = session.execute(update(Job).where(
+            Job.id == job_id, Job.lease_token == token, Job.lease_until > time.time(),
+            Job.status.not_in(TERMINAL),
+        ).values(lease_token=token)).rowcount
+        if not changed:
+            raise InterruptedError("Worker lease lost")
     job = session.scalar(select(Job).where(Job.id==job_id).with_for_update())
     if not job or job.lease_token != token or job.lease_until <= time.time() or job.status in TERMINAL:
         raise InterruptedError("Worker lease lost")
@@ -326,6 +337,11 @@ def cleanup():
         child=aliased(Job)
         retained=select(child.depends_on).where(child.depends_on.is_not(None))
         session.execute(delete(Job).where(Job.status.in_(TERMINAL), Job.completed_at < cutoff,Job.id.not_in(retained)))
+        from .db import ResearchConversation, ResearchTask
+        session.execute(delete(ResearchConversation).where(
+            ResearchConversation.updated_at < cutoff,
+            ~select(ResearchTask.job_id).where(ResearchTask.conversation_id == ResearchConversation.id).exists(),
+        ))
     root = settings().artifact_dir
     if root.exists():
         for path in list(root.glob("*.png")) + list(root.glob("*.bin")):

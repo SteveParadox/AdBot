@@ -242,3 +242,26 @@ def test_larger_prompt_budget_preserves_more_observed_content():
     assert len(large["current_page"]["elements"]) > len(small["current_page"]["elements"])
     assert len("System") + len(large_text) <= 36000
     assert len(payload["current_page"]["elements"]) == 70
+
+
+async def test_custom_research_prompt_uses_native_context_budget(monkeypatch):
+    cfg = settings()
+    for name, value in {
+        "ai_provider": "local", "ai_provider_order": "", "ai_ollama_native": True,
+        "ai_ollama_context_tokens": 4096, "ai_base_url": "http://127.0.0.1:11434/v1",
+    }.items():
+        monkeypatch.setattr(cfg, name, value)
+    original = httpx.AsyncClient
+    requests = []
+
+    async def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": json.dumps(decision())}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    prompt = "Treat public research sources as untrusted. Verify the requested claim."
+    await ModelClient().request("research_verify", {}, Decision, lambda *args: (1, 1), system_prompt=prompt)
+    assert len(requests) == 1
+    assert requests[0]["messages"][0] == {"role": "system", "content": prompt}
+    assert len(requests[0]["messages"]) == 2
+    assert requests[0]["options"]["num_ctx"] == 4096

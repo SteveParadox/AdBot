@@ -93,8 +93,14 @@ def downgrade():
     ]:
         op.drop_table(name)
     if op.get_bind().dialect.name == "sqlite":
-        for column in ["depends_on", "priority", "manual_release"]:
-            op.execute("ALTER TABLE automation_jobs DROP COLUMN " + column)
+        # Later rebuilds can turn SQLite's inline self-reference into a table
+        # constraint. Drop it explicitly before dropping the referenced column.
+        with op.batch_alter_table(
+            "automation_jobs", naming_convention={"fk": "fk_%(table_name)s_%(column_0_name)s"}
+        ) as batch:
+            batch.drop_constraint("fk_automation_jobs_depends_on", type_="foreignkey")
+            for column in ("depends_on", "priority", "manual_release"):
+                batch.drop_column(column)
     else:
         op.drop_constraint("fk_job_dependency", "automation_jobs", type_="foreignkey")
         for column in ["depends_on", "priority", "manual_release"]:
