@@ -131,8 +131,8 @@ def ranked_chunks(chunks, objective, title, entities=(), criteria=()):
     return leaders + [item for item in ranked if item not in leaders]
 
 
-def capture_evidence(observation, store, step_id, entities, criteria):
-    if len(store) >= 40:
+def capture_evidence(observation, store, step_id, entities, criteria, *, max_records=40):
+    if len(store) >= max_records:
         return 0
     if (observation.get("http_status") or 0) >= 400:
         return 0
@@ -154,7 +154,7 @@ def capture_evidence(observation, store, step_id, entities, criteria):
                       )]})
         seen.add(key)
         added += 1
-        if added == 4 or len(store) >= 40:
+        if added == 4 or len(store) >= max_records:
             break
     return added
 
