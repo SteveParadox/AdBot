@@ -315,7 +315,13 @@ async def test_last_provider_failure_revisits_recovered_primary(cloud, monkeypat
 
 
 async def test_all_cooling_providers_report_earliest_retry_without_dispatch(cloud, monkeypatch):
+    from app import provider_quota
+    from app.agent import model as agent_model
     from app.provider_quota import cooldown, identity
+
+    # This checks ordering and remaining cooldown, independent of SQLite I/O latency.
+    monkeypatch.setattr(provider_quota, "time", SimpleNamespace(time=lambda: 1000))
+    monkeypatch.setattr(agent_model, "time", SimpleNamespace(monotonic=lambda: 1000))
     for index, (base, key, _) in enumerate(cloud.model_providers()):
         cooldown(identity(base, key.get_secret_value()), 10 + index * 10)
 
@@ -324,7 +330,7 @@ async def test_all_cooling_providers_report_earliest_retry_without_dispatch(clou
 
     with pytest.raises(ModelProvidersUnavailable) as captured:
         await ModelClient().request("decide", {}, Reply, no_charge)
-    assert 8 < captured.value.retry_after <= 10
+    assert captured.value.retry_after == 10
     assert [item["provider"] for item in captured.value.failures] == cloud.ai_provider_order.split(",")
 
 
