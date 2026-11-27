@@ -11,7 +11,7 @@ control. The execution boundary checks target semantics, allowed URLs, the query
 and the exact attested POST endpoint when applicable.
 
 The worker captures ranked passages by heading and retains literal quotes and
-stable IDs. Exact compound requests separated by ellipses or paragraph breaks
+stable IDs. Exact compound requests separated by ellipses, sentences or paragraphs
 can yield several evidence IDs, with each passage checked against authorized
 observations. Synthesis cites the stored IDs. Verification tests objective
 coverage and paraphrased claims, and can split a context-limited request by

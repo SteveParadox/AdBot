@@ -456,6 +456,8 @@ async def test_vision_fallback_only_sends_screenshot_to_compatible_model(cloud, 
 
 @pytest.mark.browser
 async def test_browser_task_waits_for_provider_recovery_without_replanning(client, target, cloud, fixture_server, monkeypatch):  # noqa: F811
+    import time
+    from app.agent import model as model_module
     from app.agent import runner as runner_module
     from app.db import ProviderQuota, transaction
     from app.jobs import claim
@@ -466,10 +468,13 @@ async def test_browser_task_waits_for_provider_recovery_without_replanning(clien
     original, failures, decide_payloads, waits = httpx.AsyncClient, [], [], []
     fixture_transport = httpx.ASGITransport(app=fixture_model)
     recovered = False
+    provider_clock_offset = 0.0
+    monkeypatch.setattr(model_module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + provider_clock_offset))
 
     async def expire_cooldowns(delay):
-        nonlocal recovered
+        nonlocal recovered, provider_clock_offset
         waits.append(delay)
+        provider_clock_offset += delay + 0.05
         with transaction() as session:
             session.execute(update(ProviderQuota).values(cooldown_until=0))
         recovered = True

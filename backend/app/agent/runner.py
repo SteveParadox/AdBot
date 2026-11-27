@@ -281,11 +281,10 @@ class AgentRunner(Runner):
         requested = (decision.source_quote or text).strip()
         if not requested:
             raise ValueError("Provide source text for the evidence")
-        passages = [requested]
-        if decision.source_quote:
-            passages.extend(part.strip() for part in re.split(r"\s*(?:\.{3}|\u2026|\n\s*\n)\s*", requested) if part.strip())
-        if len(passages) > 9:
-            raise ValueError("Extract at most eight source passages at a time")
+        parts = [part.strip() for part in re.split(
+            r"\s*(?:\.{3}|\u2026|\n\s*\n)\s*|(?<=[.!?])\s+(?!\.{3}|\u2026)", requested,
+        ) if part.strip()] if decision.source_quote else []
+        passages = [requested, *parts] if 2 <= len(parts) <= 8 else [requested]
         patterns = {part: re.compile(r"\s+".join(map(re.escape, part.split())), re.IGNORECASE)
                     for part in passages}
         query = {word[:6] for word in terms(text) if len(word) > 2}
@@ -338,6 +337,8 @@ class AgentRunner(Runner):
             await database_call(historical_sources)
         matches = resolved() or ([best[1]] if best[1] else [])
         if not matches:
+            if len(parts) > 8:
+                raise ValueError("Extract at most eight source passages at a time")
             raise ValueError("Source text was not found in this task's authorized observations; cite exact passages separately")
         known = {(row["url"], row["quote"]): row for row in self.memory["evidence"]}
         additions, result = [], {}

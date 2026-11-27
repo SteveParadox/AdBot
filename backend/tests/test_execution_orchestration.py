@@ -56,14 +56,15 @@ def test_reconcile_only_eligible_blocked_collection(objective, reason, verified,
     assert (verify["status"] == "completed") == (expected == "completed")
 
 
-async def test_compound_quote_retains_independent_exact_passages():
+@pytest.mark.parametrize("joiner", [" ... ", " ", "\n\n"])
+async def test_compound_quote_retains_independent_exact_passages(joiner):
     runner = object.__new__(AgentRunner)
     runner.memory = {"evidence": []}
     first, second = "Amber Relay records local audio.", "Offline storage holds 20 hours."
     page = {"url": "https://example.test", "text": f"{first}\nHeading\n{second}"}
     decision = Decision(decision="EXTRACT", observation="Two sections", reason="Collect exact text",
                         confidence=1, expected_result="Two distinct sources", text="Recording and storage",
-                        source_quote=f"{first} ... {second}")
+                        source_quote=f"{first}{joiner}{second}")
     result = await runner.extract(decision, page, 1)
     assert [row["quote"] for row in result["passages"]] == [first, second]
     assert len(set(result["evidence_ids"])) == 2

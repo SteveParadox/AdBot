@@ -196,7 +196,7 @@ def execution_intent(objective):
     """Advisory routing metadata. The original specification remains authoritative."""
     hints = (
         ("form_interaction", r"\b(?:fill|submit|register|sign up)\b"),
-        ("document_retrieval", r"\b(?:download|retrieve)\b.*\b(?:file|document|pdf)\b"),
+        ("document_retrieval", r"\b(?:download|retrieve|document|pdf)\b"),
         ("comparison", r"\b(?:compare|versus)\b|\bcomparison\s+(?:of|between)\b"),
         ("structured_extraction", r"\b(?:list|collect|extract)\b"),
         ("search", r"\b(?:search|find|look up)\b"),
