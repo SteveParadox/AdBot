@@ -21,7 +21,7 @@ type Evidence = { id: string; url: string; quote: string; step_id: number; sourc
 type Claim = { text: string; evidence_ids: string[] };
 type Task = Job & {
   planning?: Planning;
-  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
+  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number; remaining_pages?: number };
   objective: string;
   execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
     directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
@@ -96,6 +96,13 @@ type Config = {
   session_persistence: boolean;
   max_tabs: number;
   max_concurrency: number;
+  max_agent_browser_concurrency?: number;
+  default_target_max_pages?: number;
+  default_target_max_duration_seconds?: number;
+  max_request_chars?: number;
+  max_output_tokens?: number;
+  collection_max_rows?: number;
+  classification_max_calls?: number;
 };
 type Metrics = {
   tasks: number;
@@ -271,8 +278,8 @@ export default function AgentPanel({
           allowed_domains: [parsed.hostname],
           authorized,
           configuration: {
-            max_pages: 30,
-            max_duration_seconds: 900,
+            max_pages: config.data?.default_target_max_pages ?? 30,
+            max_duration_seconds: config.data?.default_target_max_duration_seconds ?? 900,
             screenshots: true,
             delay_seconds: 1,
           },
@@ -359,8 +366,14 @@ export default function AgentPanel({
           <p className="hint">
             Limits: {config.data?.max_steps} steps,{" "}
             {config.data?.max_tokens.toLocaleString()} tokens,{" "}
-            {config.data?.max_tabs} tabs, {config.data?.max_concurrency}{" "}
-            concurrent jobs.
+            {config.data?.max_tabs} tabs, {config.data?.max_agent_browser_concurrency ?? config.data?.max_concurrency}{" "}
+            configured concurrent agent/browser jobs (actual availability depends on resources).
+          </p>
+          <p className="hint">
+            New targets: {config.data?.default_target_max_pages ?? 30} pages,{" "}
+            {(config.data?.default_target_max_duration_seconds ?? 900) / 60} minutes. Existing targets keep their own configured limits.
+            {" "}Model request: {config.data?.max_request_chars?.toLocaleString() ?? "server default"} characters; output: {config.data?.max_output_tokens?.toLocaleString() ?? "server default"} tokens.
+            {" "}Collection: {config.data?.collection_max_rows?.toLocaleString() ?? "server default"} rows, {config.data?.classification_max_calls ?? "server default"} classification batches.
           </p>
         </details>
         {!config.data?.configured && (
@@ -759,7 +772,7 @@ function AgentDetail({
             {t.prompt_tokens + t.completion_tokens} tokens · {t.model_calls}{" "}
             model calls
           </span>
-          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
+          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining{t.budget.remaining_pages !== undefined ? ` · ${t.budget.remaining_pages} pages remaining` : ""}</span>}
         </div>
         {t.execution && t.execution.strategy !== "general" && (
           <p className="hint">
