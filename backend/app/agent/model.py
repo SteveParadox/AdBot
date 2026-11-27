@@ -590,7 +590,8 @@ class ModelClient:
                     }
                 # Keep smaller native Ollama contexts and ordinary browser decisions
                 # from losing most of their input window to an oversized output reserve.
-                output_limit = min(cfg.ai_max_output_tokens, 2048) if native or (kind == "decide" and cfg.reasoning_effort_for(kind) == "low") else cfg.ai_max_output_tokens
+                compact_output = native or (kind == "decide" and cfg.reasoning_effort_for(kind) == "low")
+                output_limit = min(cfg.ai_max_output_tokens, 2048) if compact_output else cfg.ai_max_output_tokens
                 if native:
                     provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
                 else:
@@ -639,6 +640,7 @@ class ModelClient:
                         provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
                     else:
                         provider_body["max_tokens"] = output_limit
+                provider_estimate = estimate()
                 if context_limit is not None and provider_estimate + output_limit > context_limit:
                     if rebuild(context_limit):
                         provider_estimate = estimate()
