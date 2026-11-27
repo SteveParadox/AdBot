@@ -11,7 +11,7 @@ test("semantic form controls produce verified readable diagnostics", async ({pag
   await page.getByRole("button",{name:"AI Agent",exact:true}).click();
   await page.getByLabel("Agent target").selectOption(site.id);
   await page.getByLabel("Natural-language objective").fill("Search Backend Engineer jobs, enable remote only, then sort newest and cite the confirmation.");
-  await page.getByLabel("Allow form input and search").check();
+  await page.getByLabel("Allow general form input").check();
   await page.getByRole("button",{name:"Start agent task"}).click();
   await expect(page.getByRole("heading",{name:"Verified task result"})).toBeVisible({timeout:60000});
   const diagnostics = page.getByRole("group", { name: "Semantic interaction diagnostics" });

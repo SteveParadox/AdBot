@@ -15,6 +15,10 @@ from .semantics import METADATA
 from .semantic_observer import native_semantics
 
 
+class NavigationFailed(RuntimeError):
+    pass
+
+
 class Controller:
     def __init__(self, runner, context, page, memory):
         self.runner, self.context, self.page = runner, context, page
@@ -25,6 +29,7 @@ class Controller:
         self.memory = memory
         self.mutation = None
         self.egress_grant = None
+        self.search_scope = None
         self.creating = False
         self.crashed_pages = set()
         context.on("page", self.popup)
@@ -64,7 +69,7 @@ class Controller:
         if not self.creating:
             asyncio.create_task(page.close())
 
-    async def observe(self):
+    async def observe(self, *, directory=False, structure=False, research=False):
         self.check_page()
         self.prune_tabs()
         planning = self.memory.get("planning", {})
@@ -72,12 +77,19 @@ class Controller:
             (n for n in planning.get("plan", {}).get("subtasks", []) if n["id"] == planning.get("active_subtask")), {}
         )
         data = await self.observer.observe(
-            self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", "")
+            self.page, self.active, getattr(self.runner, "objective", "") + " " + active.get("description", ""),
+            **({"directory": directory} if directory else {}),
+            **({"structure": structure} if structure else {}),
+            **({"research": True} if research else {}),
         )
+        if research or structure == "enumeration":
+            response = self.runner.response_for(self.page)
+            data["http_status"] = response.status if response and response.url == data["url"] else None
         data["tabs"] = [
             {"tab_id": key, "url": tab["page"].url, "purpose": tab["purpose"]} for key, tab in self.tabs.items()
         ]
-        data["screenshot_path"] = await self.runner.screenshot(self.page)
+        data["screenshot_path"] = (await self.runner.screenshot(self.page)
+                                   if not directory or self.runner.options.get("visual_reasoning") else None)
         return data
 
     async def navigate(self, url):
@@ -88,7 +100,7 @@ class Controller:
         with self.engine.phase("loading", url=url):
             _, _, error = await self.runner.visit(self.page, url)
         if error:
-            raise RuntimeError("Navigation failed: " + error)
+            raise NavigationFailed("Navigation failed: " + error)
         self.tabs[self.active]["history"].append(self.page.url)
 
     def needs_review(self, decision, mode):
@@ -110,28 +122,69 @@ class Controller:
 
     async def route(self, route):
         request = route.request
+        issued_grant = None
         try:
             self.runner.policy.check(request.url, navigation=request.is_navigation_request())
             if request.method not in {"GET", "HEAD"}:
-                permit = self.mutation
-                actual = urlsplit(request.url)
-                if (
-                    not permit
-                    or time.monotonic() > permit["until"]
-                    or (permit["method"] is not None and request.method != permit["method"])
-                    or (
-                        permit["destination"] is not None
-                        and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                scope = getattr(self, "search_scope", None)
+                if scope is not None:
+                    from .search import approved_post_payload
+
+                    if (request.method != "POST" or time.monotonic() >= scope["until"]
+                            or request.redirected_from is not None or request.frame != scope["page"].main_frame
+                            or scope["remaining"] <= 0 or self.egress_grant is not None
+                            or not approved_post_payload(request.url, request.headers.get("content-type", ""),
+                                                         request.post_data, scope["query"], scope["endpoints"])):
+                        scope["blocked"] += 1
+                        raise PolicyError("Request is outside the approved search-only POST scope")
+                    await self.runner.permitted(request.url)
+                    if (self.search_scope is not scope or time.monotonic() >= scope["until"]
+                            or scope["remaining"] <= 0 or self.egress_grant is not None):
+                        raise PolicyError("Search request authorization expired or was consumed")
+                    scope["remaining"] -= 1
+                    scope["approved"] += 1
+                    # The forward proxy only sees individual HTTP requests. HTTPS
+                    # goes through CONNECT, so it must not reserve an HTTP grant.
+                    if urlsplit(request.url).scheme == "http":
+                        issued_grant = ("POST", request.url, min(scope["until"], time.monotonic() + 5))
+                        self.egress_grant = issued_grant
+                    # Playwright routes the first request in a redirect chain.
+                    # Fetch through the browser context's proxy without following
+                    # redirects, and never hand a redirect back to the browser.
+                    response = await route.fetch(
+                        max_redirects=0, timeout=max(1, int((scope["until"] - time.monotonic()) * 1000))
                     )
-                ):
-                    raise PolicyError("This request requires an active click submission")
-                self.egress_grant = (request.method, request.url, time.monotonic() + 5)
-                self.mutation = None
+                    try:
+                        if 300 <= response.status < 400 and response.headers.get("location"):
+                            scope["blocked"] += 1
+                            raise PolicyError("Redirects are blocked for approved POST search")
+                        await route.fulfill(response=response)
+                    finally:
+                        await response.dispose()
+                    return
+                else:
+                    permit = self.mutation
+                    actual = urlsplit(request.url)
+                    if (
+                        not permit
+                        or time.monotonic() > permit["until"]
+                        or (permit["method"] is not None and request.method != permit["method"])
+                        or (
+                            permit["destination"] is not None
+                            and (actual.scheme, actual.netloc, actual.path) != permit["destination"]
+                        )
+                    ):
+                        raise PolicyError("This request requires an active click submission")
+                    self.egress_grant = (request.method, request.url, time.monotonic() + 5)
+                    self.mutation = None
             if request.is_navigation_request():
                 await self.runner.permitted(request.url)
             await route.continue_()
         except Exception:
             await route.abort("blockedbyclient")
+        finally:
+            if issued_grant is not None and self.egress_grant is issued_grant:
+                self.egress_grant = None
 
     def allow_proxy_method(self, method, url):
         grant = self.egress_grant
@@ -149,7 +202,7 @@ class Controller:
             "form": {k: live["form"][k] for k in ("method", "action")} if live["form"] else None,
         }
 
-    async def act(self, decision, options, approved=False):
+    async def act(self, decision, options, approved=False, *, read_only=False, prefer_navigation=False):
         self.check_page()
         self.prune_tabs()
         action = decision.decision
@@ -187,11 +240,39 @@ class Controller:
                 raise ValueError("Target changed since observation; inspect and replan")
             if element["disabled"]:
                 raise ValueError("Element is disabled")
+            if (prefer_navigation and read_only and action == "CLICK" and live.get("href")
+                    and element.get("role") == "link" and not live.get("form")
+                    and decision.input_method == "auto" and not decision.expected_text
+                    and not urlsplit(live["href"]).fragment
+                    and not self.needs_review(decision, "autonomous")):
+                ordinary = await locator.evaluate(
+                    "e=>e.matches('a[href]:not([download]):not([onclick]):not([role=button])') "
+                    "&& (!e.target || e.target==='_self') && !e.closest('form,dialog,[role=dialog]')",
+                    timeout=self.engine.timeout_ms,
+                )
+                if ordinary:
+                    # Recheck the live binding after the extra DOM inspection.
+                    if await self.inspect_target(locator) != live:
+                        raise ValueError("Target changed before direct navigation; reobserve")
+                    await self.navigate(live["href"])
+                    return {"navigation_direct": True, "interaction": {
+                        "changed": self.page.url != before_url, "verified": self.page.url != before_url,
+                        "verification": "Authorized ordinary hyperlink navigated directly",
+                    }}
             if action == "CLICK" and element["role"] in {"checkbox", "radio", "switch", "option"}:
                 if not options.get("allow_form_input", False):
                     raise ValueError("Enable form input before changing a selection control")
                 if element["readonly"]:
                     raise ValueError("Read-only selection controls cannot be changed")
+            if action == "SEARCH" and read_only and options.get("allow_read_search"):
+                from .search import execute_scoped_search
+
+                result = await execute_scoped_search(self, decision, locator, element, binding, options)
+                if self.page.url != before_url:
+                    self.runner.policy.check(self.page.url)
+                    await self.runner.visit(self.page, self.page.url, navigate=False)
+                    self.tabs[self.active]["history"].append(self.page.url)
+                return result
             if action in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}:
                 if not options["allow_form_input"]:
                     raise ValueError("Enable form input when creating the task")
@@ -246,7 +327,10 @@ class Controller:
                     raise ValueError(
                         "Form validation is unresolved; inspect required fields and validation feedback before submission"
                     )
-                if form and form["method"] != "GET":
+                if read_only:
+                    if form:
+                        raise PermissionError("Directory pagination cannot submit forms")
+                elif form and form["method"] != "GET":
                     destination = urlsplit(await self.runner.permitted(form["action"]))
                     self.mutation = {
                         "method": form["method"],
@@ -258,7 +342,10 @@ class Controller:
                     # write during this click; revoke it as soon as the action ends.
                     self.mutation = {"method": None, "destination": None, "until": time.monotonic() + 5}
             try:
-                result = await self.engine.perform(self.page, decision, locator, self.active, binding=binding)
+                result = await self.engine.perform(
+                    self.page, decision, locator, self.active, binding=binding,
+                    require_content=read_only and action == "CLICK",
+                )
                 result["semantic"] = {
                     "role": element["role"],
                     "name": element["name"],

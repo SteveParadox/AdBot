@@ -3,7 +3,7 @@ import json
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -12,6 +12,8 @@ from ..db import AgentMemory, AgentStep, AgentTask, Job, PageVisit, Session, Web
 from ..jobs import make_job
 from ..api_support import Limit, Offset, Owner, collection, output, owned
 from .contracts import ReviewInput, TaskInput
+from .search import validate_post_endpoints
+from ..security import Policy
 
 router = APIRouter(prefix="/api/agent", tags=["autonomous agent"])
 
@@ -26,23 +28,64 @@ def task_for(session, identifier, owner):
 
 def task_output(job, task):
     elapsed = max(0, (job.completed_at or time.time()) - job.started_at) if job.started_at else 0
+    directory = task.memory.get("directory") or {}
+    structured = task.memory.get("structured_capture") or {}
+    records = directory.get("records", {})
+    route = task.memory.get("execution_route") or {}
+    entity = route.get("entity") or directory.get("entity") or ""
+    result = task.result or {}
+    verification = result.get("verification") or {}
+    planning = task.memory.get("planning")
+    # Earlier semantic inventories had no source-type gate. Preserve the stored
+    # run for inspection without presenting its matches as verified.
+    if entity.startswith("semantic:") and result.get("directory") and verification.get("complete") and not verification.get("dimensions"):
+        result = {**result, "partial": True, "verification": {**verification, "complete": False,
+                  "historical_unverified": True, "explanation": "This run did not verify the requested source type."}}
+        if planning and planning.get("plan"):
+            nodes = [
+                {**node, "status": "blocked", "outcome": "The requested source type was unverified."}
+                if node["kind"] == "verify" else node for node in planning["plan"].get("subtasks", [])
+            ]
+            planning = {**planning, "plan": {**planning["plan"], "subtasks": nodes}}
     return output(job) | {
         "traffic_kind": "automated",
         "automation_session_id": job.id,
         "objective": task.objective,
         "mode": task.mode,
         "options": task.options,
-        "result": task.result,
+        "result": result,
         "pending_step_id": task.pending_step_id,
-        "memory": task.memory,
+        "memory": {**task.memory, "planning": planning} if planning else task.memory,
         "prompt_tokens": task.prompt_tokens,
         "completion_tokens": task.completion_tokens,
         "model_calls": task.model_calls,
         "model_latency_ms": task.model_latency_ms,
-        "planning": task.memory.get("planning"),
+        "planning": planning,
+        "execution": {
+            "strategy": "structured_discovery" if structured else route.get(
+                "name", (task.memory.get("planning") or {}).get("route")
+                or ("directory_collection" if directory.get("pages") else "general"),
+            ),
+            "entity": entity or None,
+            "collection_kind": directory.get("collection_kind"),
+            "collection_url": structured.get("source_url") or directory.get("collection_url"),
+            "unique_records": len(structured["records"]) if structured else len(records),
+            "matched_records": (len(result.get("structured_records", [])) if structured and verification.get("complete") else
+                                sum(row.get("classification") == "match" for row in records.values())),
+            "advertised_total": (structured["expected_count"] if structured else
+                                 directory["totals"][0] if len(directory.get("totals", [])) == 1 else None),
+            "directory_pages": len(directory.get("pages", [])),
+            "recovery_actions": directory.get("recovery_actions", 0),
+            "classification_calls": (structured.get("classification_calls", 0) if structured else
+                                     directory.get("classification_calls", 0)),
+            "prevented_repetitions": task.memory.get("prevented_repetitions", 0) + directory.get("repeated_pages", 0),
+            "evidence_count": (len(task.result.get("evidence", [])) if task.result else
+                               len(task.memory.get("evidence", [])) + sum(row.get("classification") == "match" for row in records.values())),
+        },
         "budget": {
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, job.snapshot["configuration"]["max_duration_seconds"] - elapsed),
+            "remaining_pages": max(0, job.snapshot["configuration"]["max_pages"] - job.pages_visited),
             "remaining_tokens": max(0, task.options["max_tokens"] - task.prompt_tokens - task.completion_tokens),
         },
     }
@@ -62,26 +105,41 @@ def configuration(owner: Owner):
         "provider_rpm": cfg.ai_provider_rpm,
         "provider_tpm": cfg.ai_provider_tpm,
         "memory_enabled": cfg.agent_memory_enabled,
-        "visual_reasoning": cfg.agent_visual_reasoning,
+        "visual_reasoning": cfg.vision_available(),
         "session_persistence": cfg.browser_session_persistence,
         "max_tabs": cfg.agent_max_tabs,
         "max_concurrency": cfg.max_concurrency,
+        "max_agent_browser_concurrency": min(cfg.max_concurrency, cfg.max_browser_sessions, cfg.max_concurrent_agents),
+        "default_target_max_pages": cfg.agent_default_target_max_pages,
+        "default_target_max_duration_seconds": cfg.agent_default_target_max_duration_seconds,
+        "max_request_chars": cfg.ai_max_request_chars,
+        "max_output_tokens": cfg.ai_max_output_tokens,
+        "collection_max_rows": cfg.agent_collection_max_rows,
+        "classification_max_calls": cfg.agent_classification_max_calls,
+        "max_evidence_records": cfg.agent_max_evidence_records,
+        "ollama_context_tokens": cfg.ai_ollama_context_tokens,
+        "model_timeout_seconds": cfg.ai_timeout_seconds,
+        "primary_fallback_timeout_seconds": cfg.ai_primary_fallback_timeout_seconds,
     }
+
+
+def resolved_task_options(data: TaskInput, cfg):
+    vision = cfg.vision_available()
+    if data.visual_reasoning is True and not vision:
+        raise HTTPException(422, "No configured vision-capable model is available")
+    if data.session_persistence is True and not cfg.browser_session_persistence:
+        raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
+    options = data.model_dump(exclude={"priority", "depends_on"})
+    options["visual_reasoning"] = vision if data.visual_reasoning is None else data.visual_reasoning
+    options["session_persistence"] = bool(cfg.browser_session_persistence) if data.session_persistence is None else data.session_persistence
+    # Distinguish automatic budgets from explicit smaller budgets in request hashes.
+    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens) if data.max_tokens is not None else cfg.agent_max_tokens
+    return options
 
 
 @router.post("/tasks", status_code=201)
 def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | None, Header(max_length=160)] = None):
     cfg = settings()
-    if cfg.ai_provider == "disabled":
-        raise HTTPException(503, "Configure an AI provider on the server before starting an agent task")
-    if data.visual_reasoning and not cfg.agent_visual_reasoning:
-        raise HTTPException(422, "Visual reasoning is not enabled by the server")
-    if data.session_persistence and not cfg.browser_session_persistence:
-        raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
-    options = data.model_dump(exclude={"priority", "depends_on"})
-    options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
-    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens)
-    options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
     request_values = (
         data.model_dump(exclude={"priority", "depends_on"})
         if not data.priority and not data.depends_on
@@ -91,17 +149,46 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
         if request_values.get(optional) is None:
             request_values.pop(optional, None)
     digest = hashlib.sha256(json.dumps(request_values, sort_keys=True).encode()).hexdigest()
+    accepted_digests = {digest}
+    # Requests made before capability defaults changed had false for omitted flags.
+    # Only permit legacy replay when the caller actually omitted the new defaults.
+    old_defaults = dict(request_values)
+    for flag in ("visual_reasoning", "session_persistence", "allow_downloads"):
+        if flag not in data.model_fields_set:
+            old_defaults[flag] = False
+    replay_values = [request_values, old_defaults]
+    if data.max_tokens is None:
+        # Earlier clients omitted the budget and were hashed with 60,000 tokens.
+        replay_values += [{**values, "max_tokens": 60000} for values in replay_values]
+    for values in replay_values:
+        accepted_digests.add(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest())
+        if data.allow_search_input and not data.approved_post_search:
+            legacy_values = {k: v for k, v in values.items()
+                             if k not in {"allow_search_input", "approved_post_search"}}
+            accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
     try:
         with transaction() as session:
             website = owned(session, Website, data.website_id, owner)
             if idempotency_key:
                 previous = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
                 if previous:
-                    if previous.job_type != "agent" or previous.payload_hash != digest:
+                    if previous.job_type != "agent" or previous.payload_hash not in accepted_digests:
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
+            options = resolved_task_options(data, cfg)
+            options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
+            options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
+            try:
+                validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
             from .planning import specification, initial_plan
+            from .routing import directory_intent
 
+            if cfg.ai_provider == "disabled" and not directory_intent(
+                data.objective, options, bool(data.dataset_id or website.configuration.get("extraction_dataset_id"))
+            ):
+                raise HTTPException(503, "This task requires a configured AI provider")
             job = make_job(
                 session, website, priority=data.priority, depends_on=data.depends_on, dataset_id=data.dataset_id
             )
@@ -133,7 +220,7 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
     except IntegrityError:
         with Session() as session:
             old = session.scalar(select(Job).where(Job.owner == owner, Job.idempotency_key == idempotency_key))
-            if old and old.job_type == "agent" and old.payload_hash == digest:
+            if old and old.job_type == "agent" and old.payload_hash in accepted_digests:
                 return task_output(old, session.get(AgentTask, old.id))
         raise HTTPException(409, "Concurrent task creation conflict; retry with the same key") from None
 
@@ -151,7 +238,8 @@ def preview(data: TaskInput, owner: Owner):
             if dataset.website_id != website.id:
                 raise HTTPException(422, "Dataset must belong to the selected website")
         try:
-            options = data.model_dump()
+            options = resolved_task_options(data, settings())
+            validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             dataset_id = data.dataset_id or website.configuration.get("extraction_dataset_id")
             if dataset_id:
                 from ..db import Dataset, ExtractionSchema
@@ -192,12 +280,15 @@ def task(identifier: str, owner: Owner):
 
 
 @router.get("/tasks/{identifier}/steps")
-def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0):
+def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0,
+          newest_first: bool = False, through_number: Annotated[int | None, Query(ge=1)] = None):
     with Session() as session:
         task_for(session, identifier, owner)
-        return collection(
-            session, select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id).order_by(AgentStep.number), offset, limit
-        )
+        order = AgentStep.number.desc() if newest_first else AgentStep.number.asc()
+        query = select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id)
+        if through_number is not None:
+            query = query.where(AgentStep.number <= through_number)
+        return collection(session, query.order_by(order), offset, limit)
 
 
 @router.post("/tasks/{identifier}/review")

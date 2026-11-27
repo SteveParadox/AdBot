@@ -40,6 +40,8 @@ class Observer:
         self.document = self.page = self.tab_id = None
         self.generation = 0
         self.secrets = []
+        self.directory_cache = None
+        self.structural_groups = {}
 
     def safe_text(self, text):
         for secret in self.secrets:
@@ -55,7 +57,7 @@ class Observer:
             return {k: self.sanitize(v) for k, v in value.items()}
         return value
 
-    async def observe(self, page, tab_id, goal="", _retry=0):
+    async def observe(self, page, tab_id, goal="", _retry=0, *, directory=False, structure=False, research=False):
         start = time.perf_counter()
         await asyncio.gather(*(h.dispose() for h in self.bindings.values()), return_exceptions=True)
         self.bindings, self.registry, self.private_targets = {}, {}, {}
@@ -67,11 +69,55 @@ class Observer:
                 pass
         if not same_document:
             if self.document is not None:
+                if self.directory_cache is not None and self.page is not None and not self.page.is_closed():
+                    try:
+                        await self.document.evaluate("s=>{s.watch?.disconnect();s.events?.abort()}")
+                    except BrowserError:
+                        pass
                 await self.document.dispose()
+            self.directory_cache = None
             self.document = await page.evaluate_handle("({document,nodes:new WeakMap(),next:0})")
             self.generation += 1
         self.page, self.tab_id = page, tab_id
         data = await page.evaluate(DOM)
+        if research:
+            from .research import READ_RESEARCH, terms
+
+            data["research_chunks"] = await page.evaluate(READ_RESEARCH, sorted(terms(goal))[:100])
+        if structure:
+            from ..config import settings
+            from .structure import READ_STRUCTURE
+
+            structural_groups = await page.evaluate(READ_STRUCTURE, {
+                "rows": min(250, settings().agent_collection_batch_rows), "nodes": 1000,
+                "individual": structure == "enumeration",
+            })
+        directory_cache_hit = False
+        if directory:
+            from ..config import settings
+            from .directory import READ_DIRECTORY, directory_link, pagination_element
+            limit = settings().agent_collection_batch_rows
+            arguments = {"limit": limit, "table": directory in {"table", "table rows"}}
+            stamp = await self.document.evaluate(r"""s=>{
+                if(!s.watch) {
+                    s.revision=0;
+                    s.watch=new MutationObserver(()=>s.revision++);
+                    s.watch.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true});
+                    s.events=new AbortController();
+                    for(const event of ['input','change','scroll','resize','load'])
+                        addEventListener(event,()=>s.revision++,{capture:true,signal:s.events.signal});
+                }
+                if(s.watch.takeRecords().length)s.revision++;
+                return [location.href,document.readyState,s.revision,scrollX,scrollY,innerWidth,innerHeight];
+            }""")
+            key = (tab_id, stamp, limit, arguments["table"])
+            cached = self.directory_cache
+            if cached is not None and cached[0] == key and time.monotonic() - cached[1] < 0.75:
+                data["directory"] = cached[2]
+                directory_cache_hit = True
+            else:
+                data["directory"] = await page.evaluate(READ_DIRECTORY, arguments)
+                self.directory_cache = (key, time.monotonic(), data["directory"])
         secrets = data.pop("sensitive_values")
         self.secrets = secrets
 
@@ -97,13 +143,29 @@ class Observer:
                 e["role"] not in {"dialog", "alertdialog"},
                 not e["focused"],
                 not e["actionable"],
+                bool(directory) and not pagination_element(e),
+                not (bool(research or structure or directory) and e.get("role") in {"searchbox", "textbox", "combobox"}
+                     and (e.get("search_interface", {}).get("search_semantics")
+                          or e.get("form", {}) and e["form"].get("search"))),
                 -relevance,
                 not e["in_view"],
                 e["role"] == "link",
                 e["index"],
             )
 
-        candidates = sorted((e for e in all_elements if not e["sensitive"]), key=priority)[:80]
+        # A directory-only observation deliberately binds few controls. When
+        # the scan found no batch, retain ordinary discovery controls instead.
+        compact_directory = bool(directory and data.get("directory"))
+        limit = 12 if compact_directory else 80
+        eligible = [element for element in all_elements if not element["sensitive"]]
+        if compact_directory:
+            # Bind forward controls and directory routes. Record extraction reads
+            # the visible cards directly, so their individual links need no handles.
+            entity = directory if isinstance(directory, str) else None
+            eligible = [element for element in eligible if element["role"] in {"dialog", "alertdialog"} or (
+                element["visible"] and (pagination_element(element) or directory_link(element, entity))
+            )]
+        candidates = sorted(eligible, key=priority)[:limit]
         semaphore = asyncio.Semaphore(8)
 
         async def inspect(element):
@@ -157,11 +219,11 @@ class Observer:
         if not coherent:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
             if _retry < 1:
-                return await self.observe(page, tab_id, goal, _retry=1)
+                return await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure, research=research)
             raise ValueError("Page changed repeatedly during semantic observation; no coherent evidence available")
         if len(inspected) < len(candidates) and _retry < 1:
             await asyncio.gather(*(item[2].dispose() for item in inspected), return_exceptions=True)
-            retried = await self.observe(page, tab_id, goal, _retry=1)
+            retried = await self.observe(page, tab_id, goal, _retry=1, directory=directory, structure=structure, research=research)
             retried["observation_metrics"]["read_attempts"] = 2
             retried["observation_metrics"]["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
             return retried
@@ -177,6 +239,13 @@ class Observer:
             ).encode()
         ).hexdigest()
         data = clean(data)
+        self.structural_groups = {}
+        if structure and not any(dialog.get("visible") for dialog in data.get("dialogs", [])):
+            from .structure import summarize_structure
+
+            groups = clean(structural_groups)
+            self.structural_groups = {group["id"]: group for group in groups}
+            data["record_groups"] = summarize_structure(groups, goal if structure == "enumeration" else None)
         data["accessibility"] = "\n".join(
             f"- {e['role']} {json.dumps(e['name'])}" for e in data["elements"] if e["visible"]
         )[:6000]
@@ -192,11 +261,15 @@ class Observer:
         data["fingerprint"] = fingerprint(data)
         states = {
             e["node_token"]: {
-                k: e[k] for k in ("role", "name", "focused", "expanded", "checked", "selected", "invalid", "value")
+                k: e[k] for k in ("role", "name", "focused", "expanded", "pressed", "checked", "selected", "invalid", "value")
             }
             for e in data["elements"]
         }
-        data["semantic_changes"] = [v for k, v in states.items() if self.previous.get(k) != v][:12]
+        previous = self.previous if same_document else {}
+        data["semantic_changes"] = [v for k, v in states.items() if previous.get(k) != v][:12]
+        data["removed_controls"] = [
+            {"role": value["role"], "name": value["name"]} for key, value in previous.items() if key not in states
+        ][:8]
         self.previous = states
         data["focus"] = next((e["element_id"] for e in data["elements"] if e["focused"]), None)
         data["dialogs"] = [
@@ -212,10 +285,11 @@ class Observer:
         data["observation_metrics"] = {
             "candidates": len(all_elements),
             "included": len(data["elements"]),
-            "truncated": data.pop("candidate_limit") or sum(not e["sensitive"] for e in all_elements) > 80,
+            "truncated": data.pop("candidate_limit") or sum(not e["sensitive"] for e in all_elements) > limit,
             "withheld_sensitive": sum(e["sensitive"] for e in all_elements),
             "changed_during_inspection": len(candidates) - len(data["elements"]),
             "read_attempts": _retry + 1,
+            "collection_cache_hit": directory_cache_hit,
             "native_semantics": sum(e["semantic_source"] == "playwright_aria" for e in data["elements"]),
             "duration_ms": round((time.perf_counter() - start) * 1000, 2),
         }
@@ -283,6 +357,8 @@ class Observer:
         current = await handle.evaluate(METADATA)
         role, name, _ = native_semantics(await locator.aria_snapshot(timeout=1500), current)
         keys = ("disabled", "readonly", "href", "form", "expanded", "checked", "selected", "value", "blocked_by_modal")
+        if decision.decision == "SEARCH":
+            keys = (*keys, "search_interface", "controls", "active_descendant")
         if role != element["role"] or name != element["name"] or any(current[k] != element[k] for k in keys):
             raise ValueError("Target changed since observation; reobserve")
         if not current["actionable"]:

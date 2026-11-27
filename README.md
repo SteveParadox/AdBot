@@ -163,6 +163,8 @@ permissions/actions, observe captures and inspect verified/cited results. See [a
 
 The agent now exposes a task preview, dependency plan, recovery history and checked browser profile.
 For structured artifacts, select an owned extraction dataset and JSON/CSV output in **AI Agent**.
+Simple exhaustive directory requests can collect and verify visible records without model calls. See the [execution engine architecture and configuration](docs/execution-engine/ARCHITECTURE.md).
+
 See the [planning and browser compatibility report](docs/agent-planning/REPORT.md) for API details,
 measured before/after results, operating instructions and remaining limits.
 

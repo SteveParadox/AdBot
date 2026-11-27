@@ -2,7 +2,7 @@ import { useJobEvents } from "./useJobEvents";
 import { JobFailure } from "./JobFailure";
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BrainCircuit, Play, ArrowLeft, RefreshCw } from "lucide-react";
+import { BrainCircuit, Play, ArrowLeft, RefreshCw, LoaderCircle } from "lucide-react";
 import { queryApi,
   api,
   type Collection,
@@ -17,12 +17,16 @@ type Run = (
   action: () => Promise<unknown>,
   success?: () => void,
 ) => Promise<void>;
-type Evidence = { id: string; url: string; quote: string; step_id: number };
+type Evidence = { id: string; url: string; quote: string; step_id: number; source_url?: string };
 type Claim = { text: string; evidence_ids: string[] };
 type Task = Job & {
   planning?: Planning;
-  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
+  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number; remaining_pages?: number };
   objective: string;
+  execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
+    directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
+    entity?: string | null; collection_kind?: string | null;
+    classification_calls?: number };
   mode: string;
   options: {
     success_criteria: string[];
@@ -31,9 +35,11 @@ type Task = Job & {
   };
   result: {
     artifact?: { format: string; download_url: string };
+    partial?: boolean;
     claims?: Claim[];
     evidence?: Evidence[];
-    verification?: { complete: boolean; explanation: string };
+    structured_records?: { fields: Record<string, string>; source_url: string; step_id: number }[];
+    verification?: { complete: boolean; explanation: string; dimensions?: Record<string, boolean>; historical_unverified?: boolean; missing_criteria?: string[] };
   };
   pending_step_id: number | null;
   memory: Record<string, unknown>;
@@ -48,7 +54,8 @@ type Step = {
   status: string;
   observation: SemanticObservationData & {
     url: string;
-    screenshot_path: string;
+    screenshot_path: string | null;
+    tab_id?: string;
     tabs?: { tab_id: string; url: string; purpose: string }[];
     elements?: { element_id: string; name: string; role: string }[];
   };
@@ -60,8 +67,11 @@ type Step = {
     target?: { element_id: string };
   };
   outcome: {
+    live_observation?: Step["observation"];
+    url_changed?: boolean;
+    content_changed?: boolean | null;
     semantic?: SemanticAction;
-    trace?: { phase: string; started_at: number; duration_ms: number; status: string }[];
+    trace?: { phase: string; started_at?: number; duration_ms?: number; status?: string }[];
     interaction?: SemanticInteraction & { changed: boolean; scroll?: {y: number; height: number} | null };
     [key: string]: unknown;
   };
@@ -88,6 +98,17 @@ type Config = {
   session_persistence: boolean;
   max_tabs: number;
   max_concurrency: number;
+  max_agent_browser_concurrency?: number;
+  default_target_max_pages?: number;
+  default_target_max_duration_seconds?: number;
+  max_request_chars?: number;
+  max_output_tokens?: number;
+  collection_max_rows?: number;
+  classification_max_calls?: number;
+  max_evidence_records?: number;
+  ollama_context_tokens?: number;
+  model_timeout_seconds?: number;
+  primary_fallback_timeout_seconds?: number;
 };
 type Metrics = {
   tasks: number;
@@ -99,6 +120,85 @@ type Metrics = {
 };
 const finished = (status: string) =>
   ["completed", "failed", "cancelled"].includes(status);
+
+export function DecisionStatus({ status, decision, verified }: {
+  status: string;
+  decision?: Step["decision"];
+  verified?: boolean;
+}) {
+  if (status === "completed") return <p className="hint"><strong>Completed</strong>{verified && " · Result verified"}</p>;
+  if (status === "unverified") return <p className="hint"><strong>Unverified</strong> · Historical source type was not verified</p>;
+  if (status === "failed") return <p className="hint"><strong>Failed</strong></p>;
+  if (status === "cancelled") return <p className="hint"><strong>Cancelled</strong></p>;
+  if (status === "queued") return <p className="hint"><strong>Queued</strong> · Waiting for the worker</p>;
+  if (status === "paused") return <p className="hint"><strong>Paused</strong></p>;
+  if (status === "waiting_user") return <p className="hint"><strong>Waiting for your review</strong></p>;
+  return <>
+    <p className="hint"><strong>{decision?.decision || "Observing"}</strong>{decision?.reason && ` · ${decision.reason}`}</p>
+    {decision?.expected_result && <p>{decision.expected_result}</p>}
+  </>;
+}
+
+export function PageChanges({ url, content }: { url?: boolean; content?: boolean | null }) {
+  if (typeof url !== "boolean" && typeof content !== "boolean") return null;
+  return <p className="hint">
+    {typeof url === "boolean" && (url ? "URL changed" : "URL unchanged")}
+    {typeof url === "boolean" && " · "}
+    {typeof content === "boolean" ? (content ? "Page content changed" : "Page content unchanged") : "Content change not measured"}
+  </p>;
+}
+
+export function BrowserPreview({ capture, token, status, directory }: {
+  capture?: string | null; token: string; status: string; directory?: boolean;
+}) {
+  if (capture) return <PreviewImage key={capture} capture={capture} token={token} />;
+  return <Empty text={finished(status) ? "No browser capture was recorded for this run." :
+    directory ? "The browser preview is captured when collection finishes." : "Waiting for a browser capture."} />;
+}
+
+function StructuredRecords({ records }: { records: NonNullable<Task["result"]["structured_records"]> }) {
+  const columns = Object.keys(records[0].fields);
+  return <div className="table-wrap">
+    <table>
+      <caption>Captured records</caption>
+      <thead><tr>{columns.map((column) => <th key={column} scope="col">{column}</th>)}<th scope="col">Source</th></tr></thead>
+      <tbody>{records.map((record, index) => <tr key={`${record.step_id}-${index}`}>
+        {columns.map((column) => <td key={column}>{record.fields[column]}</td>)}
+        <td className="url">{record.source_url}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function PreviewImage({ capture, token }: { capture: string; token: string }) {
+  const [image, setImage] = useState<string>();
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    let blobUrl: string | undefined;
+    fetch("/api/artifacts/" + encodeURIComponent(capture), {
+      headers: { Authorization: "Bearer " + token },
+      signal: controller.signal,
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error("Preview unavailable");
+        return r.blob();
+      })
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        blobUrl = URL.createObjectURL(blob);
+        setImage(blobUrl);
+      })
+      .catch(() => { if (!controller.signal.aborted) setUnavailable(true); });
+    return () => {
+      controller.abort();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [capture, token]);
+  if (unavailable) return <Empty text="The browser capture is unavailable or has expired." />;
+  if (!image) return <Empty text="Loading browser capture…" />;
+  return <img className="agent-preview" src={image} alt="Current agent browser page" onError={() => setUnavailable(true)} />;
+}
 
 export default function AgentPanel({
   token,
@@ -122,9 +222,15 @@ export default function AgentPanel({
   const [formInput, setFormInput] = useState(false),
     [authorized, setAuthorized] = useState(false),
     [memory, setMemory] = useState(true),
-    [vision, setVision] = useState(false),
-    [persist, setPersist] = useState(false);
-  const [downloads, setDownloads] = useState(false);
+    [vision, setVision] = useState(true),
+    [persist, setPersist] = useState(true);
+  const [downloads, setDownloads] = useState(true);
+  const [readSearch, setReadSearch] = useState(true);
+  const [postSearchUrl, setPostSearchUrl] = useState("");
+  const [postSearchField, setPostSearchField] = useState("q");
+  const [postSearchVerified, setPostSearchVerified] = useState(false);
+  const approvedPostSearch = mode === "autonomous" && readSearch && postSearchVerified && postSearchUrl.trim()
+    ? [{ url: postSearchUrl.trim(), query_field: postSearchField.trim(), verified_read_only: true }] : [];
   const [priority, setPriority] = useState(0);
   const [dependency, setDependency] = useState("");
   const [dataset, setDataset] = useState("");
@@ -136,15 +242,20 @@ export default function AgentPanel({
     queryFn: ({signal}) => queryApi<Collection<{ id: string; name: string; website_id: string }>>("/extraction/datasets", token, signal),
     enabled: Boolean(website),
   });
-  const taskOptions = {
-    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
-    max_steps: maxSteps, allow_form_input: formInput,
-    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
-  };
   const config = useQuery({
     queryKey: ["agent-config", token],
     queryFn: ({signal}) => queryApi<Config>("/agent/config", token, signal),
   });
+  const taskOptions = {
+    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
+    max_steps: Math.min(maxSteps, config.data?.max_steps ?? 500),
+    memory_enabled: memory,
+    visual_reasoning: vision && Boolean(config.data?.visual_reasoning),
+    session_persistence: persist && Boolean(config.data?.session_persistence),
+    allow_form_input: formInput, allow_search_input: readSearch,
+    approved_post_search: approvedPostSearch,
+    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
+  };
   const metrics = useQuery({
     queryKey: ["agent-metrics", token],
     queryFn: ({signal}) => queryApi<Metrics>("/agent/metrics", token, signal),
@@ -168,6 +279,7 @@ export default function AgentPanel({
   function submit(e: FormEvent) {
     e.preventDefault();
     run(async () => {
+      const parsedDatasetQuery = datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery);
       let identifier = website;
       if (!identifier) {
         const parsed = new URL(url);
@@ -177,8 +289,8 @@ export default function AgentPanel({
           allowed_domains: [parsed.hostname],
           authorized,
           configuration: {
-            max_pages: 30,
-            max_duration_seconds: 900,
+            max_pages: config.data?.default_target_max_pages ?? 30,
+            max_duration_seconds: config.data?.default_target_max_duration_seconds ?? 900,
             screenshots: true,
             delay_seconds: 1,
           },
@@ -190,22 +302,11 @@ export default function AgentPanel({
         token,
         "POST",
         {
+          ...taskOptions,
           website_id: identifier,
           priority,
           depends_on: dependency || null,
-          objective,
-          success_criteria: criteria.split("\n").filter((s) => s.trim()),
-          mode,
-          max_steps: Math.min(maxSteps, config.data?.max_steps || 500),
-          max_tokens: config.data?.max_tokens || 60000,
-          memory_enabled: memory,
-          visual_reasoning: vision,
-          session_persistence: persist,
-          allow_form_input: formInput,
-          allow_downloads: downloads,
-          dataset_id: dataset || null,
-          output_format: outputFormat || null,
-          dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery),
+          dataset_query: parsedDatasetQuery,
         },
         { "Idempotency-Key": crypto.randomUUID() },
       );
@@ -263,14 +364,20 @@ export default function AgentPanel({
           <p className="hint">
             Limits: {config.data?.max_steps} steps,{" "}
             {config.data?.max_tokens.toLocaleString()} tokens,{" "}
-            {config.data?.max_tabs} tabs, {config.data?.max_concurrency}{" "}
-            concurrent jobs.
+            {config.data?.max_tabs} tabs, {config.data?.max_agent_browser_concurrency ?? config.data?.max_concurrency}{" "}
+            configured concurrent agent/browser jobs (actual availability depends on resources).
+          </p>
+          <p className="hint">
+            New targets: {config.data?.default_target_max_pages ?? 30} pages,{" "}
+            {(config.data?.default_target_max_duration_seconds ?? 900) / 60} minutes. Existing targets keep their own configured limits.
+            {" "}Model request: {config.data?.max_request_chars?.toLocaleString() ?? "server default"} characters; output: {config.data?.max_output_tokens?.toLocaleString() ?? "server default"} tokens.
+            {" "}Collection: {config.data?.collection_max_rows?.toLocaleString() ?? "server default"} rows, {config.data?.classification_max_calls ?? "server default"} classification batches.
+            {" "}Evidence: {config.data?.max_evidence_records ?? "server default"} records. Model timeout: {config.data?.model_timeout_seconds ?? "server default"} seconds; failover timeout: {config.data?.primary_fallback_timeout_seconds ?? "server default"} seconds.
           </p>
         </details>
         {!config.data?.configured && (
           <div role="status" className="alert error">
-            The AI provider is disabled. Configure a model before starting a
-            task.
+            The AI provider is disabled. Visible directory and table collection can run with supported objectives.
           </div>
         )}
         <form onSubmit={submit} onChange={() => setPreview(null)}>
@@ -378,16 +485,39 @@ export default function AgentPanel({
                 checked={formInput}
                 onChange={(e) => setFormInput(e.target.checked)}
               />
-              Allow form input and search
+              Allow general form input
             </label>
+            <label>
+              <input type="checkbox" checked={readSearch} disabled={mode !== "autonomous"}
+                onChange={(e) => setReadSearch(e.target.checked)} />
+              Allow read-only site search in autonomous tasks
+            </label>
+            {mode === "autonomous" && readSearch && (
+              <details>
+                <summary>Approved read-only POST search (optional)</summary>
+                <p>Only configure a search endpoint you have verified is non-mutating. Exact URL and a single query field are required.</p>
+                <label>Endpoint URL
+                  <input type="url" value={postSearchUrl} placeholder="https://example.com/api/search"
+                    onChange={(e) => { setPostSearchUrl(e.target.value); setPostSearchVerified(false); }} />
+                </label>
+                <label>Query field
+                  <input value={postSearchField} onChange={(e) => { setPostSearchField(e.target.value); setPostSearchVerified(false); }} />
+                </label>
+                <label>
+                  <input type="checkbox" checked={postSearchVerified} disabled={!postSearchUrl.trim() || !postSearchField.trim()}
+                    onChange={(e) => setPostSearchVerified(e.target.checked)} />
+                  I have verified this exact POST endpoint is read-only
+                </label>
+              </details>
+            )}
             <label>
               <input
                 type="checkbox"
-                checked={vision}
+                checked={vision && Boolean(config.data?.visual_reasoning)}
                 disabled={!config.data?.visual_reasoning}
                 onChange={(e) => setVision(e.target.checked)}
               />
-              Vision-capable model
+              Visual reasoning (when a compatible model is configured)
             </label>
             <label>
               <input
@@ -400,11 +530,11 @@ export default function AgentPanel({
             <label>
               <input
                 type="checkbox"
-                checked={persist}
+                checked={persist && Boolean(config.data?.session_persistence)}
                 disabled={!config.data?.session_persistence}
                 onChange={(e) => setPersist(e.target.checked)}
               />
-              Encrypted browser session
+              Encrypted browser session (when a key is configured)
             </label>
           </div>
           {!website && (
@@ -419,11 +549,11 @@ export default function AgentPanel({
             </label>
           )}
           <div className="agent-submit-actions">
-          <Button type="submit" disabled={busy || !config.data?.configured}>
+          <Button type="submit" disabled={busy || !config.data}>
             <Play size={15} />
             Start agent task
           </Button>
-          <Button type="button" variant="outline" disabled={busy || !website || objective.length < 8} onClick={() => run(async () => {
+          <Button type="button" variant="outline" disabled={busy || !config.data || !website || objective.length < 8} onClick={() => run(async () => {
             setPreview(await api<Planning>("/agent/preview", token, "POST", { ...taskOptions, dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery), website_id: website }));
           })}>Preview task understanding</Button>
           </div>
@@ -481,7 +611,7 @@ export default function AgentPanel({
                     </td>
                     <td>{t.mode}</td>
                     <td>
-                      <Badge status={t.status} />
+                      <Badge status={t.result.verification?.historical_unverified ? "unverified" : t.status} />
                     </td>
                     <td>{t.prompt_tokens + t.completion_tokens}</td>
                     <td>
@@ -528,6 +658,20 @@ export default function AgentPanel({
   );
 }
 
+export function AgentTaskActivity({ status }: { status?: Job["status"] }) {
+  const label = status === undefined ? "Loading agent task…" : status === "running" ? "Thinking…" : null;
+  return (
+    <p className="agent-task-activity" role="status">
+      {label && (
+        <>
+          <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          <span>{label}</span>
+        </>
+      )}
+    </p>
+  );
+}
+
 function AgentDetail({
   id,
   token,
@@ -545,60 +689,45 @@ function AgentDetail({
     queryKey: ["agent-task", id, token],
     queryFn: ({signal}) => queryApi<Task>("/agent/tasks/" + id, token, signal),
   });
+  const historyPageSize = 100;
+  const [history, setHistory] = useState<{ page: number; through: number } | null>(null);
+  const historyPage = history?.page ?? 0;
   const steps = useQuery({
     queryKey: ["agent-steps", id, token],
     queryFn: ({signal}) =>
-      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token, signal),
+      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&newest_first=true`, token, signal),
   });
+  const olderSteps = useQuery({
+    queryKey: ["agent-steps", id, token, history],
+    queryFn: ({signal}) => queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&offset=${historyPage * historyPageSize}&newest_first=true&through_number=${history?.through}`, token, signal),
+    enabled: history !== null,
+  });
+  const displayedSteps = historyPage ? olderSteps : steps;
   const events = useJobEvents(id, token, task.data?.status, ["agent-task", "agent-steps"], 100);
-  const latest = steps.data?.items.at(-1),
+  const latest = steps.data?.items[0],
     pending = steps.data?.items.find(
       (s) => s.id === task.data?.pending_step_id,
     );
-  const imageEvent = [...events]
-    .reverse()
-    .find((e) => typeof e.details.screenshot_path === "string");
-  const capture =
-    (imageEvent?.details.screenshot_path as string | undefined) ||
-    latest?.observation.screenshot_path;
-  const [image, setImage] = useState<string | null>(null),
-    [answer, setAnswer] = useState("");
-  useEffect(() => {
-    if (!capture) return;
-    const controller = new AbortController();
-    let blobUrl: string | undefined;
-    fetch("/api/artifacts/" + capture, {
-      headers: { Authorization: "Bearer " + token },
-      signal: controller.signal,
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error("Preview unavailable");
-        return r.blob();
-      })
-      .then((blob) => {
-        blobUrl = URL.createObjectURL(blob);
-        setImage(blobUrl);
-      })
-      .catch(() => {});
-    return () => {
-      controller.abort();
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-    };
-  }, [capture, token]);
+  const live = latest?.outcome?.live_observation ?? latest?.observation;
+  const capture = live?.screenshot_path;
+  const previewUrl = live?.url;
+  const [answer, setAnswer] = useState("");
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const memory = useQuery({
+    queryKey: ["agent-task-memory", id, token, task.data?.status],
+    queryFn: async ({signal}) => (await queryApi<Task>("/agent/tasks/" + id, token, signal)).memory,
+    enabled: memoryOpen,
+  });
   if (task.error)
     return (
       <p className="error" role="alert">
         {task.error.message}
       </p>
     );
-  if (!task.data) return <Empty text="Loading agent task…" />;
   const t = task.data;
-  return (
+  const shownStatus = t?.result.verification?.historical_unverified ? "unverified" : t?.status;
+  const details = t && (
     <>
-      <Button variant="ghost" onClick={back}>
-        <ArrowLeft size={15} />
-        All agent tasks
-      </Button>
       <section className="panel form-panel">
         <div className="panel-heading">
           <div>
@@ -607,7 +736,7 @@ function AgentDetail({
               {t.mode} · {t.id}
             </p>
           </div>
-          <Badge status={t.status} />
+          <Badge status={shownStatus ?? t.status} />
         </div>
         <div className="button-row">
           {!finished(t.status) && (
@@ -645,8 +774,23 @@ function AgentDetail({
             {t.prompt_tokens + t.completion_tokens} tokens · {t.model_calls}{" "}
             model calls
           </span>
-          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
+          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining{t.budget.remaining_pages !== undefined ? ` · ${t.budget.remaining_pages} pages remaining` : ""}</span>}
         </div>
+        {t.execution && t.execution.strategy !== "general" && (
+          <p className="hint">
+            Strategy {t.execution.strategy.replaceAll("_", " ")}
+            {t.execution.entity && ` · ${t.execution.entity.replace(/^semantic:/, "")}`}
+            {t.execution.collection_kind && ` · Source catalog ${t.execution.collection_kind}`}
+          </p>
+        )}
+        {t.execution && ["directory_collection", "table_extraction"].includes(t.execution.strategy) && (
+          <p className="hint">
+            {t.execution.unique_records}{t.execution.advertised_total != null ? ` of ${t.execution.advertised_total}` : ""} records read
+            {` ? ${t.execution.matched_records} matches ? ${t.execution.evidence_count} citations`}
+            {` ? ${t.execution.directory_pages} batches ? ${t.execution.recovery_actions ?? 0} recovery actions`}
+          </p>
+        )}
+        {Boolean(t.execution?.prevented_repetitions) && <p className="hint">{t.execution?.prevented_repetitions} repeated actions or pages detected</p>}
         <JobFailure failure={t.failure} />
         {t.error_message && (
           <p className="error" role="alert">
@@ -724,48 +868,38 @@ function AgentDetail({
             <div>
               <h2>Browser preview</h2>
               <p className="url">
-                {latest?.observation.url || "Waiting for browser"}
+                {previewUrl || (finished(t.status) ? "No browser observation recorded" : "Waiting for browser")}
               </p>
             </div>
             <RefreshCw size={15} />
           </div>
-          {image ? (
-            <img
-              className="agent-preview"
-              src={image}
-              alt="Current agent browser page"
-            />
-          ) : (
-            <Empty text="A real browser capture will appear after the first observation." />
-          )}
+          <BrowserPreview capture={capture} token={token} status={t.status}
+            directory={["directory_collection", "table_extraction"].includes(t.execution?.strategy || "")} />
         </section>
         <section className="panel form-panel">
           <h2>Current decision</h2>
-          <p className="hint">
-            <strong>{latest?.decision.decision || "Observing"}</strong> ·{" "}
-            {latest?.decision.reason || "Waiting for the worker"}
-          </p>
-          <p>Expected: {latest?.decision.expected_result || "—"}</p>
+          <DecisionStatus status={shownStatus ?? t.status} decision={latest?.decision} verified={t.result.verification?.complete} />
           <h2 className="agent-subheading">Tabs and context</h2>
-          {latest?.observation.tabs?.map((tab) => (
+          {live?.tabs?.map((tab) => (
             <p className="hint url" key={tab.tab_id}>
-              <strong>{tab.tab_id}</strong> {tab.purpose}
+              <strong>{tab.tab_id}</strong> {tab.purpose}{tab.tab_id === live.tab_id && " (active)"}
               <br />
               {tab.url}
             </p>
           ))}
-          <details>
+          <details onToggle={(event) => setMemoryOpen(event.currentTarget.open)}>
             <summary>Session memory</summary>
-            <pre className="agent-json">
-              {JSON.stringify(t.memory, null, 2)}
-            </pre>
+            {memoryOpen && (memory.error ? <p className="error" role="alert">{memory.error.message}</p> :
+              memory.data ? <pre className="agent-json">{JSON.stringify(memory.data, null, 2)}</pre> :
+              <Empty text="Loading saved session memory…" />)}
           </details>
-          <SemanticObservation observation={latest?.observation} />
+          <SemanticObservation observation={live} />
         </section>
       </div>
-      {t.status === "completed" && t.result.verification?.complete && t.result.claims && (
+      {((t.status === "completed" && t.result.verification?.complete) || t.result.partial) && t.result.claims && (
         <section className="panel form-panel">
-          <h2>Verified task result</h2>
+          <h2>{t.result.verification?.historical_unverified ? "Unverified historical result" :
+            t.result.partial ? "Partial task result" : "Verified task result"}</h2>
           {t.status === "completed" && t.result.artifact && <Button disabled={busy} onClick={() => run(async () => {
             const response = await fetch(t.result.artifact!.download_url, { headers: { Authorization: "Bearer " + token } });
             if (!response.ok) throw new Error("Export unavailable or expired");
@@ -774,6 +908,19 @@ function AgentDetail({
             setTimeout(() => URL.revokeObjectURL(url), 1000);
           })}>Download verified artifact</Button>}
           <p className="hint">{t.result.verification?.explanation}</p>
+          {t.result.verification?.dimensions && <ul className="hint">
+            {Object.entries(t.result.verification.dimensions).map(([name, passed]) =>
+              <li key={name}>{name.replaceAll("_", " ")} · {passed ? "Verified" : "Unverified"}</li>
+            )}
+          </ul>}
+          {!!t.result.structured_records?.length && <StructuredRecords records={t.result.structured_records} />}
+          {t.result.partial && t.result.claims.length === 0 && !t.result.structured_records?.length && <p>No verified matches were collected.</p>}
+          {!!t.result.verification?.missing_criteria?.length && (
+            <div>
+              <p>Unverified criteria</p>
+              <ul>{t.result.verification.missing_criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+            </div>
+          )}
           {t.result.claims.map((claim, index) => (
             <div className="agent-claim" key={index}>
               <p>{claim.text}</p>
@@ -795,13 +942,22 @@ function AgentDetail({
           <h2>Observed actions and verification</h2>
           <p className="hint">These metrics describe automated sessions only. Filter X-AdBot-Automation or the AdBotMonitor user agent in your site analytics to exclude this traffic from visitor reports.</p>
         </div>
-        {steps.error && (
+        {displayedSteps.error && (
           <p role="alert" className="error">
-            {steps.error.message}
+            {displayedSteps.error.message}
           </p>
         )}
+        <div className="button-row">
+          <Button variant="outline" disabled={!history}
+            onClick={() => setHistory(current => current && current.page > 1 ? { ...current, page: current.page - 1 } : null)}>Newer steps</Button>
+          <span className="hint">Page {historyPage + 1} · {displayedSteps.data?.total ?? steps.data?.total ?? 0} recorded steps</span>
+          <Button variant="outline" disabled={!latest || (historyPage + 1) * historyPageSize >= (displayedSteps.data?.total ?? 0)}
+            onClick={() => {
+              if (latest) setHistory(current => ({ page: (current?.page ?? 0) + 1, through: current?.through ?? latest.number }));
+            }}>Older steps</Button>
+        </div>
         <div className="event-list">
-          {steps.data?.items.map((step) => (
+          {[...(displayedSteps.data?.items ?? [])].reverse().map((step) => (
             <div className="event" key={step.id}>
               <span className="step-number">{step.number}</span>
               <div>
@@ -811,6 +967,7 @@ function AgentDetail({
                 </strong>
                 <p className="hint">{step.decision.reason}</p>
                 <small className="url">{step.observation.url}</small>
+                <PageChanges url={step.outcome.url_changed} content={step.outcome.content_changed} />
                 <InteractionOutcome interaction={step.outcome.interaction} />
                 <SemanticTrace semantic={step.outcome.semantic} interaction={step.outcome.interaction} resolution={step.outcome.trace?.find(s => s.phase === "resolution")} />
                 {typeof step.outcome.error === "string" && <p className="error" role="status">{step.outcome.error}</p>}
@@ -818,8 +975,10 @@ function AgentDetail({
                   <summary>Interaction trace · automated session</summary>
                   <table className="interaction-trace"><thead><tr><th scope="col">Phase</th><th scope="col">Started (UTC)</th><th scope="col">Duration</th><th scope="col">Status</th></tr></thead>
                     <tbody>{step.outcome.trace.map((span, i) => <tr key={i}>
-                      <td>{span.phase}</td><td>{new Date(span.started_at * 1000).toISOString().slice(11, 23)}</td>
-                      <td>{Math.round(span.duration_ms)} ms</td><td>{span.status}</td>
+                      <td>{span.phase}</td><td>{typeof span.started_at === "number" && Number.isFinite(span.started_at)
+                        ? new Date(span.started_at * 1000).toISOString().slice(11, 23) : "Unavailable"}</td>
+                      <td>{typeof span.duration_ms === "number" && Number.isFinite(span.duration_ms)
+                        ? `${Math.round(span.duration_ms)} ms` : "Unavailable"}</td><td>{span.status || "Unrecorded"}</td>
                     </tr>)}</tbody></table>
                 </details>}
                 <details>
@@ -845,6 +1004,17 @@ function AgentDetail({
           </pre>
         </details>
       </section>
+    </>
+  );
+
+  return (
+    <>
+      <Button variant="ghost" onClick={back}>
+        <ArrowLeft size={15} />
+        All agent tasks
+      </Button>
+      <AgentTaskActivity status={t?.status} />
+      {details}
     </>
   );
 }

@@ -702,6 +702,15 @@ footer {
 .spin {
   animation: spin 1s linear infinite;
 }
+.agent-task-activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.agent-task-activity:empty {
+  position: absolute;
+}
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1010,6 +1019,9 @@ footer {
   }
   .stat:hover {
     transform: none;
+  }
+  .agent-task-activity .spin {
+    animation: none;
   }
 }
 /* Keep icon-only controls readable inside flex buttons. */

@@ -3,6 +3,8 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ..schemas import Strict
+from .structure import RecordCapture
+from .search import ApprovedPostSearch
 
 
 class Target(Strict):
@@ -12,6 +14,10 @@ class Target(Strict):
 class Claim(Strict):
     text: str = Field(min_length=1, max_length=2000)
     evidence_ids: list[str] = Field(min_length=1, max_length=20)
+
+
+class AnswerDraft(Strict):
+    claims: list[Claim] = Field(max_length=6, description="Answer claims citing stored evidence. Return an empty list if evidence is insufficient.")
 
 
 class Decision(Strict):
@@ -37,6 +43,7 @@ class Decision(Strict):
         "GO_BACK",
         "WAIT",
         "EXTRACT",
+        "CAPTURE_RECORDS",
         "SUMMARIZE",
         "ASK_USER",
         "COMPLETE",
@@ -51,8 +58,10 @@ class Decision(Strict):
     text: str | None = Field(
         None,
         max_length=4000,
-        description="REQUIRED for EXTRACT: the exact visible quote. Also required for TYPE, SEARCH, ASK_USER and FAIL. Omit for other actions.",
+        description="For EXTRACT, an excerpt or paraphrase about observed content. Supply source_quote when known. Also required for TYPE, SEARCH, ASK_USER and FAIL.",
     )
+    source_quote: str | None = Field(None, min_length=1, max_length=4000,
+                                     description="For EXTRACT paraphrases, observed source text supporting the paraphrase.")
     tab_id: str | None = Field(None, max_length=36)
     reason: str = Field(min_length=1, max_length=1000)
     confidence: float = Field(ge=0, le=1)
@@ -88,9 +97,14 @@ class Decision(Strict):
     option: str | None = Field(
         None, min_length=1, max_length=200, description="Exact observed native option label or value; never invented."
     )
+    capture: RecordCapture | None = None
 
     @model_validator(mode="after")
     def parameters(self):
+        if self.source_quote is not None and self.decision != "EXTRACT":
+            raise ValueError("source_quote is only supported for EXTRACT")
+        if (self.decision == "CAPTURE_RECORDS") != (self.capture is not None):
+            raise ValueError("Only CAPTURE_RECORDS accepts an observed group and field mapping")
         if (
             self.decision in {"CLICK", "TYPE", "SEARCH", "DOWNLOAD", "HOVER", "FOCUS", "SELECT_OPTION", "SET_CHECKED"}
             and self.target is None
@@ -140,12 +154,14 @@ class TaskInput(Strict):
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
     mode: Literal["assisted", "autonomous", "supervised"] = "supervised"
     max_steps: int = Field(500, ge=1, le=500)
-    max_tokens: int = Field(60000, ge=2000, le=1000000)
+    max_tokens: int | None = Field(None, ge=2000, le=1000000)
     memory_enabled: bool = True
-    visual_reasoning: bool = False
-    session_persistence: bool = False
+    visual_reasoning: bool | None = None
+    session_persistence: bool | None = None
     allow_form_input: bool = False
-    allow_downloads: bool = False
+    allow_search_input: bool = True
+    approved_post_search: list[ApprovedPostSearch] = Field(default_factory=list, max_length=8)
+    allow_downloads: bool = True
     dataset_id: str | None = Field(None, max_length=36)
     output_format: Literal["answer", "json", "csv"] | None = None
     dataset_query: DatasetQuery | None = None

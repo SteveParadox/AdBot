@@ -7,11 +7,22 @@ The literal user contract is immutable across planning, compaction and recovery.
 import hashlib
 import json
 import re
+from graphlib import TopologicalSorter
 from typing import Literal
 
 from pydantic import Field, model_validator
 
 from ..schemas import Strict
+from .routing import execution_intent, select_route
+
+_NO_DOWNLOAD = re.compile(
+    r"\b(?:do\s+not|never|must\s+not|don['’]t|mustn['’]t|avoid|without|no)\s+"
+    r"(?:(?:any|file|automatic|automatically)\s+)*download(?:s|ing)?\b", re.I,
+)
+
+
+def download_forbidden(objective, criteria):
+    return any(_NO_DOWNLOAD.search(text) for text in (objective, *criteria))
 
 
 class Ambiguity(Strict):
@@ -131,15 +142,22 @@ def specification(objective, criteria, options, domains):
                 "quote": objective[:500],
             }
         )
+    from .discovery import read_search_permission
+
+    intent = execution_intent(objective)
     return {
         "objective": objective,
+        "execution_intent": intent,
         "instruction_clauses": clauses[:32],
         "constraints": constraints[:32],
         "success_criteria": list(criteria),
         "allowed_domains": list(domains),
         "permissions": {
             "form_input": bool(options.get("allow_form_input")),
-            "downloads": bool(options.get("allow_downloads")),
+            **({"read_search": read_search_permission(objective, options, intent["category"], criteria)}
+               if "allow_search_input" in options else {}),
+            "downloads": bool(options.get("allow_downloads")) and not download_forbidden(objective, criteria),
+            **({"approved_post_search": options["approved_post_search"]} if options.get("approved_post_search") else {}),
         },
         "output_format": requested,
         "ambiguities": ambiguities,
@@ -153,7 +171,9 @@ def specification(objective, criteria, options, domains):
                     options.get("allow_form_input"),
                     options.get("allow_downloads"),
                     requested,
-                ] + ([options["dataset_query"]] if options.get("dataset_query") is not None else []),
+                ] + ([options["dataset_query"]] if options.get("dataset_query") is not None else [])
+                + ([options["allow_search_input"], options.get("mode")] if "allow_search_input" in options else [])
+                + ([options["approved_post_search"]] if options.get("approved_post_search") else []),
                 sort_keys=True,
             ).encode()
         ).hexdigest(),
@@ -162,8 +182,22 @@ def specification(objective, criteria, options, domains):
 
 def needs_model_plan(spec):
     return len(spec["success_criteria"]) > 1 or bool(
-        re.search(r"\b(export|exclude|compare|sort|unless|if|then|latest|first|top)\b", spec["objective"], re.I)
+        re.search(r"\b(export|exclude|compare|sort|unless|if|then|latest|first|top)\b"
+                  r"|\b(?:multiple|independent|several|different|\d+) sources\b",
+                  spec["objective"], re.I)
     )
+
+
+def can_reconcile_read_denial(state, node):
+    spec = state["specification"]
+    return (node["kind"] in {"research", "collect"}
+            and node["outcome"] == "Task does not authorize form input"
+            and state.get("research_evidence_required")
+            and not re.search(
+                r"(?:^\s*(?:please\s+)?|\b(?:and|then)\s+)"
+                r"(?:fill|submit|send|register|sign up|purchase|buy|delete|log in|upload)\b",
+                spec["objective"], re.I,
+            ))
 
 
 def initial_plan(spec, max_steps=500, dataset=False):
@@ -233,6 +267,12 @@ def initial_plan(spec, max_steps=500, dataset=False):
         "stagnant": 0,
         "previous_progress": None,
     }
+    route = select_route(spec["objective"], spec, dataset)
+    state["route"] = route.name
+    if route.entity:
+        state["plan"]["intent"]["entities"] = [route.entity.removeprefix("semantic:")]
+    if route.name != "general":
+        state["plan"]["subtasks"][0]["description"] = route.guidance
     if spec["output_format"] in {"csv", "json"} and not dataset:
         state["warnings"].append(
             "Export requires a configured, owned extraction dataset. Read-only research may continue."
@@ -287,17 +327,47 @@ def ready(state):
     return [n for n in nodes if n["status"] in {"pending", "active"} and set(n["dependencies"]) <= done]
 
 
-def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False):
-    for node in state["plan"]["subtasks"]:
-        if node["status"] in {"failed", "blocked"}:
+def evaluate(state, observation, evidence, dataset_count=0, artifact=False, verified=False,
+             *, collection_complete=None, source_verified=None):
+    research_ids = collect_ids = None
+    research_ready = collect_ready = True
+    requirements = state.get("research_requirements")
+    if requirements is not None:
+        from .research import coverage
+
+        entities, criteria = requirements["entities"], requirements["criteria"]
+        hints = coverage(evidence, entities, criteria)
+        by_entity = hints["entities"]
+        by_criterion = hints["criteria"]
+        research_ready = bool(evidence) and all(by_entity.values()) and (
+            bool(entities) or not criteria or any(by_criterion.values())
+        )
+        research_ids = set().union(*(map(set, by_entity.values()))) if entities else {row["id"] for row in evidence}
+        collect_ready = research_ready and all(
+            ids and all(set(ids).intersection(subject_ids) for subject_ids in by_entity.values())
+            for ids in by_criterion.values()
+        )
+        collect_ids = research_ids & set().union(*map(set, by_criterion.values())) if criteria else research_ids
+    nodes = {node["id"]: node for node in state["plan"]["subtasks"]}
+    completed = {node["id"] for node in nodes.values() if node["status"] == "completed"}
+    for identifier in TopologicalSorter({key: node["dependencies"] for key, node in nodes.items()}).static_order():
+        node = nodes[identifier]
+        action_denial = (
+            node["status"] == "blocked" and verified and bool(evidence) and can_reconcile_read_denial(state, node)
+        )
+        if node["status"] in {"failed", "blocked"} and not action_denial:
             continue
-        if not set(node["dependencies"]) <= {n["id"] for n in state["plan"]["subtasks"] if n["status"] == "completed"}:
+        if not set(node["dependencies"]) <= completed:
             continue
         satisfied = (
             node["kind"] == "research"
             and observation.get("url", "").startswith(("http://", "https://"))
+            and source_verified is not False
+            and (not state.get("research_evidence_required") or bool(evidence))
+            and (research_ready or verified)
             or node["kind"] == "collect"
-            and bool(evidence)
+            and (bool(evidence) if collection_complete is None else collection_complete)
+            and (collect_ready or verified)
             or node["kind"] == "dataset"
             and dataset_count > 0
             or node["kind"] == "export"
@@ -307,7 +377,9 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
         )
         if satisfied:
             node["status"] = "completed"
-            node["evidence_ids"] = [e["id"] for e in evidence][:40]
+            completed.add(identifier)
+            selected = research_ids if node["kind"] == "research" else collect_ids if node["kind"] == "collect" else None
+            node["evidence_ids"] = [e["id"] for e in evidence if verified or selected is None or e["id"] in selected][:40]
             node["outcome"] = (
                 "Verified completion"
                 if node["kind"] == "verify"
@@ -315,11 +387,16 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
             )
     available = ready(state)
     state["active_subtask"] = available[0]["id"] if available else None
+    for node in nodes.values():
+        if node["status"] == "active" and node["id"] != state["active_subtask"]:
+            node["status"] = "pending"
     if available:
         available[0]["status"] = "active"
 
 
 def guard(state, decision, observation):
+    from .discovery import search_control, search_forbidden, search_query_allowed
+
     nodes = ready(state)
     if decision.subtask_id and decision.subtask_id not in {n["id"] for n in nodes}:
         raise ValueError("Requested subtask has unfinished dependencies or is no longer active")
@@ -342,17 +419,28 @@ def guard(state, decision, observation):
     if re.search(prohibition + r"(?:submit|send|buy|purchase|apply|delete)\b", restrictions):
         if activation and not target.get("href"):
             raise PermissionError("Explicit task prohibition blocks this interaction")
-    if decision.decision == "DOWNLOAD" and re.search(prohibition + r"download\b", restrictions):
+    if decision.decision == "DOWNLOAD" and download_forbidden(
+        state["specification"]["objective"], state["specification"]["success_criteria"]
+    ):
         raise PermissionError("Explicit task prohibition blocks downloads")
+    spec = state["specification"]
+    post_search = spec["permissions"].get("approved_post_search", [])
+    if (decision.decision == "SEARCH" or decision.decision == "TYPE" and search_control(target, post_search)) and (
+        search_forbidden(spec["objective"], spec["success_criteria"])
+    ):
+        raise PermissionError("Explicit task prohibition blocks site search")
     ambiguities = state["specification"]["ambiguities"] + state["plan"]["intent"]["ambiguities"]
     if any(a["category"] == "clarify" for a in ambiguities):
-        if activation and not target.get("href") or decision.decision in {"EXPORT_DATASET", "COMPLETE"}:
+        if (activation and not target.get("href") or decision.decision in {"EXPORT_DATASET", "COMPLETE", "SEARCH"}):
             raise PermissionError("Critical task ambiguity requires clarification before this action")
     if (
         decision.decision in {"TYPE", "SEARCH", "SET_CHECKED", "SELECT_OPTION"}
         and not state["specification"]["permissions"]["form_input"]
     ):
-        raise PermissionError("Task does not authorize form input")
+        if not (decision.decision == "SEARCH" and state["specification"]["permissions"].get("read_search")
+                and search_control(target, post_search)
+                and search_query_allowed(state["specification"]["objective"], decision.text)):
+            raise PermissionError("Task does not authorize form input")
     if decision.decision == "DOWNLOAD" and not state["specification"]["permissions"]["downloads"]:
         raise PermissionError("Task does not authorize downloads")
     if active:
@@ -362,6 +450,8 @@ def guard(state, decision, observation):
 
 
 def classify_failure(exc):
+    from .model import ModelError
+
     message = str(exc).lower()
     if isinstance(exc, PermissionError) or any(
         s in message for s in ("authorization", "permission", "enable form", "policy", "denied", "captcha")
@@ -369,6 +459,12 @@ def classify_failure(exc):
         return "requires_authorization"
     if any(s in message for s in ("deadline", "budget exhausted", "lease lost", "session expired")):
         return "terminal"
+    if isinstance(exc, ModelError):
+        return "model_failure"
+    if any(s in message for s in ("source text was not found", "verification incomplete", "missing or unobserved evidence")):
+        return "evidence_deficiency"
+    if any(s in message for s in ("subtasks have not completed", "unfinished dependencies", "completion already failed")):
+        return "requires_replanning"
     if any(s in message for s in ("timeout", "network", "connection")):
         return "transient"
     if any(s in message for s in ("detached", "changed", "stale", "not visible", "disabled")):
@@ -376,12 +472,12 @@ def classify_failure(exc):
     return "recoverable"
 
 
-def replan(state, reason, observation):
+def replan(state, reason, observation, *, action_only=False):
     if len(state["replans"]) >= 20:
         raise RuntimeError("Plan recovery limit reached")
     active = next((n for n in state["plan"]["subtasks"] if n["id"] == state["active_subtask"]), None)
     category = classify_failure(reason)
-    if active:
+    if active and not action_only:
         retries = state.setdefault("retry_counts", {})
         retries[active["id"]] = retries.get(active["id"], 0) + 1
         active["status"] = (
@@ -392,7 +488,7 @@ def replan(state, reason, observation):
             else "pending"
         )
         active["outcome"] = str(reason)[:500]
-        if active["status"] == "pending":
+        if active["status"] == "pending" and not active["id"].startswith("recover_"):
             nodes = state["plan"]["subtasks"]
             if len(nodes) >= 20:
                 raise RuntimeError("Plan recovery node limit reached")
@@ -449,6 +545,7 @@ def track_progress(state, decision, observation, evidence_count):
 
 def context(state):
     return {
+        "complex_plan": bool(state.get("complex_plan")),
         "specification": state["specification"],
         "active_subtask": state["active_subtask"],
         "subtasks": [

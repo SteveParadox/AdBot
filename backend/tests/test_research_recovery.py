@@ -3,7 +3,6 @@
 import asyncio
 import time
 
-import pytest
 from redis.exceptions import ConnectionError
 
 from app.config import settings

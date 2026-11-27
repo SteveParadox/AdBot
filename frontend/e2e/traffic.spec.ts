@@ -58,6 +58,52 @@ test('one Strict Mode stream drives terminal task and step updates without snaps
  expect(await page.evaluate(()=>(window as any).__stream.active)).toBe(1);
 });
 
+test('agent task activity follows live status and respects reduced motion', async ({ page }) => {
+  const { job } = await fixture(page);
+  const detail = Promise.withResolvers<void>();
+  await page.route('**/api/agent/tasks/task-1', async (route) => {
+    await detail.promise;
+    await route.fulfill({ json: { ...job, status: 'queued' } });
+  }, { times: 1 });
+
+  await page.getByRole('button', { name: 'AI Agent', exact: true }).click();
+  await page.getByRole('button', { name: 'Inspect task' }).click();
+  const activity = page.locator('.agent-task-activity');
+  const spinner = activity.locator('svg');
+  const status = await activity.elementHandle();
+  try {
+    await expect(activity).toHaveText('Loading agent task…');
+  } finally {
+    detail.resolve();
+  }
+  await page.getByRole('heading', { name: job.objective }).waitFor();
+  await expect(activity).toBeEmpty();
+
+  async function updateStatus(id: number, nextStatus: string) {
+    const task = { ...job, status: nextStatus };
+    await page.evaluate((event) => (window as any).__stream.emit([event]), {
+      id, job_id: job.id, snapshot_batch: true, event_type: nextStatus,
+      message: nextStatus, details: {}, resource: { job: task, task },
+    });
+  }
+
+  await updateStatus(1, 'running');
+  await expect(activity).toHaveText('Thinking…');
+  expect(await status?.evaluate((element) => element.textContent)).toBe('Thinking…');
+  await expect(spinner).toHaveCSS('animation-name', 'spin');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(spinner).toHaveCSS('animation-name', 'none');
+  await expect(activity).toHaveText('Thinking…');
+
+  await updateStatus(2, 'waiting_user');
+  await expect(activity).toBeEmpty();
+  await updateStatus(3, 'running');
+  await expect(activity).toHaveText('Thinking…');
+  await updateStatus(4, 'completed');
+  await expect(activity).toBeEmpty();
+  await expect(spinner).toHaveCount(0);
+});
+
 test('visibility closes the stream and resumes with its replay cursor',async({page})=>{
  await fixture(page);
  await page.evaluate(()=>{(window as any).__stream.emit([{id:42,event_type:'progress',message:'ok',details:{}}]);});

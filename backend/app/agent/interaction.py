@@ -11,12 +11,14 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from .. import polymorph
 from .semantics import METADATA
 
+VISIBLE_TEXT = "document.body.innerText.slice(0,18000)"
+
 # Values participate in change detection but never appear in persisted traces.
 STATE = """() => JSON.stringify({url:location.href,ready:document.readyState,
- text:document.body.innerText.slice(0,18000),y:Math.round(scrollY),height:document.documentElement.scrollHeight,
+ text:VISIBLE_TEXT,y:Math.round(scrollY),height:document.documentElement.scrollHeight,
  focus:[document.activeElement?.tagName,document.activeElement?.id,document.activeElement?.getAttribute('aria-label')],
  controls:[...document.querySelectorAll('input,textarea,select,button,[role],[aria-expanded],[aria-busy]')].slice(0,250).map(e=>
- [e.tagName,e.type==='password'||e.type==='file'?'':e.value,e.checked,e.disabled,e===document.activeElement,e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('aria-activedescendant'),e.getAttribute('aria-busy'),!!e.getClientRects().length])})"""
+ [e.tagName,e.type==='password'||e.type==='file'?'':e.value,e.checked,e.disabled,e===document.activeElement,e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('aria-activedescendant'),e.getAttribute('aria-busy'),!!e.getClientRects().length])})""".replace("VISIBLE_TEXT", VISIBLE_TEXT)
 
 
 class ActionabilityTimeout(PlaywrightTimeout):
@@ -51,10 +53,17 @@ class InteractionEngine:
     async def state(self, page):
         return await page.evaluate(STATE)
 
-    async def changed(self, page, before):
-        with self.phase("waiting", condition="observable UI change", timeout_ms=self.timeout_ms):
+    async def changed(self, page, before, *, require_content=False):
+        predicate = f"before => ({STATE})() !== before"
+        argument = before
+        if require_content:
+            predicate = f"before => location.href !== before.url || {VISIBLE_TEXT} !== before.text"
+            state = json.loads(before)
+            argument = {key: state[key] for key in ("url", "text")}
+        condition = "URL or visible text change" if require_content else "observable UI change"
+        with self.phase("waiting", condition=condition, timeout_ms=self.timeout_ms):
             try:
-                await page.wait_for_function(f"before => ({STATE})() !== before", arg=before, timeout=self.timeout_ms)
+                await page.wait_for_function(predicate, arg=argument, timeout=self.timeout_ms)
                 return True
             except PlaywrightTimeout:
                 return False
@@ -70,7 +79,7 @@ class InteractionEngine:
             except PlaywrightTimeout as exc:
                 raise ActionabilityTimeout("Target could not receive pointer input before the action deadline") from exc
 
-    async def perform(self, page, decision, locator=None, tab_id="t1", binding=None):
+    async def perform(self, page, decision, locator=None, tab_id="t1", binding=None, *, require_content=False):
         self.dispatch_started = False
         action = decision.decision
         idempotent = False
@@ -213,7 +222,7 @@ class InteractionEngine:
                         )
             elif action != "WAIT":
                 raise ValueError("Unsupported interaction")
-        changed = False if idempotent else await self.changed(page, before)
+        changed = False if idempotent else await self.changed(page, before, require_content=require_content)
         focus_recovery = None
         if action == "PRESS_KEY" and decision.key in {"Tab", "Shift+Tab"}:
             dialogs = await self.dialogs(page)
@@ -312,6 +321,7 @@ class InteractionEngine:
                 history.pop()
             outcome = {
                 "changed": changed,
+                "content_changed": data["text"] != json.loads(before)["text"],
                 "verified": verified,
                 "verification": "expected text"
                 if decision.expected_text
@@ -323,6 +333,8 @@ class InteractionEngine:
                 if action == "SET_CHECKED"
                 else "selected option"
                 if action == "SELECT_OPTION"
+                else "URL or visible text change"
+                if require_content
                 else "observable UI change",
                 "state_digest": hashlib.sha256(after.encode()).hexdigest(),
                 "scroll": {"y": data["y"], "height": data["height"]},

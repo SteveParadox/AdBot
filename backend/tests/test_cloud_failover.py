@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from pydantic import BaseModel, SecretStr, ValidationError
+from PIL import Image
 
 from app.agent.model import ModelClient, ModelError, ModelProvidersUnavailable
 from app.config import Settings, settings
@@ -16,6 +17,94 @@ from test_browser import fixture_server  # noqa: F401
 
 class Reply(BaseModel):
     status: str
+
+
+async def test_schema_rejection_retries_once_with_local_validation(cloud, monkeypatch):
+    cloud.ai_model = "openai/gpt-oss-20b"
+    original = httpx.AsyncClient
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"message": "unsupported response_format json_schema"}})
+        return success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    model = ModelClient()
+    assert (await model.request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert requests[0]["response_format"]["type"] == "json_schema"
+    assert "max_completion_tokens" in requests[0] and "max_tokens" not in requests[0]
+    assert requests[1]["response_format"]["type"] == "json_object"
+    assert "schema" in json.loads(requests[1]["messages"][1]["content"])
+    await model.request("decide", {}, Reply, lambda *args: (1, 1))
+    assert len(requests) == 3 and requests[2]["response_format"]["type"] == "json_object"
+    assert all(request["model"] == cloud.ai_model for request in requests)
+
+
+async def test_truncation_retries_within_existing_output_ceiling(cloud, monkeypatch):
+    cloud.ai_max_output_tokens = 2200
+    original = httpx.AsyncClient
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {"content": "{"}}]})
+        return success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    assert (await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert len(requests) == 2
+    assert requests[0]["max_tokens"] < requests[1]["max_tokens"] <= cloud.ai_max_output_tokens
+    assert requests[0]["model"] == requests[1]["model"]
+
+
+async def test_exhausted_response_quota_is_shared_with_new_model_client(cloud, monkeypatch):
+    original = httpx.AsyncClient
+    hosts = []
+
+    def respond(request):
+        hosts.append(request.url.host)
+        response = success()
+        if request.url.host == "groq.test":
+            response.headers["x-ratelimit-remaining-requests"] = "0"
+            response.headers["x-ratelimit-reset-requests"] = "1m2s"
+        return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    for _ in range(2):
+        assert (await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))).status == "ok"
+    assert hosts == ["groq.test", "openrouter.test"]
+
+
+async def test_provider_context_rejection_rebuilds_before_retry(cloud, monkeypatch):
+    original = httpx.AsyncClient
+    requests, reservations = [], []
+    objective = "Compare two observed services"
+
+    async def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"code": "context_length_exceeded"}})
+        return success()
+
+    def account(prompt, completion, latency, reserve, receipt=None):
+        if reserve:
+            reservations.append((prompt, completion))
+            return (prompt, completion)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    page = {"text": "Distracting text " * 400, "research_chunks": [{"quote": "Evidence " * 35}] * 12,
+            "elements": [{"element_id": "observed1", "visible": True, "actionable": True, "name": "Related source"}]}
+    result = await ModelClient().request("decide", {"objective": objective, "current_page": page}, Reply, account)
+    assert result.status == "ok"
+    assert len(requests) == 2 and requests[0]["model"] == requests[1]["model"]
+    assert reservations[1][0] < reservations[0][0]
+    retry = json.loads(requests[1]["messages"][1]["content"])
+    assert retry["objective"] == objective and "schema" in retry
+    assert retry["current_page"]["elements"][0]["element_id"] == "observed1"
+    print(f"context recovery input estimates {reservations[0][0]} -> {reservations[1][0]} with {reservations[1][1]} output reserved")
 
 
 @pytest.fixture
@@ -53,7 +142,8 @@ async def test_chain_hands_off_each_failure_once_and_preserves_request(cloud, mo
         requests.append(body)
         assert request.url.path == "/v1/chat/completions"  # Never Ollama for remote fallbacks.
         if len(calls) <= failed:
-            assert request.extensions["timeout"]["read"] == 10
+            assert 0 < request.extensions["timeout"]["read"] <= min(8, cloud.ai_primary_fallback_timeout_seconds)
+            assert 0 < request.extensions["timeout"]["connect"] <= 3
             if isinstance(failure, int):
                 return httpx.Response(failure, headers={"retry-after": "3600"})
             if failure == "timeout":
@@ -260,6 +350,7 @@ async def test_last_provider_failure_revisits_recovered_primary(cloud, monkeypat
     from app import provider_quota
     clock, calls = [1000.0], []
     monkeypatch.setattr(provider_quota, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr("app.agent.model.time", SimpleNamespace(monotonic=lambda: clock[0]))
     original = httpx.AsyncClient
 
     async def respond(request):
@@ -283,7 +374,13 @@ async def test_last_provider_failure_revisits_recovered_primary(cloud, monkeypat
 
 
 async def test_all_cooling_providers_report_earliest_retry_without_dispatch(cloud, monkeypatch):
+    from app import provider_quota
+    from app.agent import model as agent_model
     from app.provider_quota import cooldown, identity
+
+    # This checks ordering and remaining cooldown, independent of SQLite I/O latency.
+    monkeypatch.setattr(provider_quota, "time", SimpleNamespace(time=lambda: 1000))
+    monkeypatch.setattr(agent_model, "time", SimpleNamespace(monotonic=lambda: 1000))
     for index, (base, key, _) in enumerate(cloud.model_providers()):
         cooldown(identity(base, key.get_secret_value()), 10 + index * 10)
 
@@ -292,7 +389,7 @@ async def test_all_cooling_providers_report_earliest_retry_without_dispatch(clou
 
     with pytest.raises(ModelProvidersUnavailable) as captured:
         await ModelClient().request("decide", {}, Reply, no_charge)
-    assert 8 < captured.value.retry_after <= 10
+    assert captured.value.retry_after == 10
     assert [item["provider"] for item in captured.value.failures] == cloud.ai_provider_order.split(",")
 
 
@@ -372,22 +469,54 @@ async def test_provider_wait_remains_cancellable(monkeypatch):
 
 
 @pytest.mark.parametrize("provider,reasoning_field", [("groq", "reasoning_effort"), ("openrouter", "reasoning")])
-async def test_gpt_oss_uses_configured_reasoning_budget(cloud, monkeypatch, provider, reasoning_field):
+@pytest.mark.parametrize("configured,purpose,effort", [
+    ("auto", "decide", "medium"), ("auto", "verify", "high"), ("low", "verify", "low"),
+])
+async def test_gpt_oss_uses_configured_reasoning_budget(cloud, monkeypatch, provider, reasoning_field,
+                                                       configured, purpose, effort):
     monkeypatch.setattr(cloud, "ai_provider", provider)
     monkeypatch.setattr(cloud, "ai_provider_order", provider)
     monkeypatch.setattr(cloud, "ai_model", "openai/gpt-oss-120b")
+    monkeypatch.setattr(cloud, "ai_reasoning_effort", configured)
     original = httpx.AsyncClient
     async def respond(request):
         body = json.loads(request.content)
-        expected = {"effort": "low"} if provider == "openrouter" else "low"
+        expected = {"effort": effort} if provider == "openrouter" else effort
         assert body[reasoning_field] == expected
         return success()
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
-    await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))
+    await ModelClient().request(purpose, {}, Reply, lambda *args: (1, 1))
+
+
+@pytest.mark.parametrize("screenshot_exists", [True, False])
+async def test_vision_fallback_only_sends_screenshot_to_compatible_model(cloud, monkeypatch, tmp_path, screenshot_exists):
+    monkeypatch.setattr(cloud, "ai_model", "vision-fixture")
+    monkeypatch.setattr(cloud, "ai_vision_models", "groq:vision-fixture")
+    screenshot = tmp_path / "observation.png"
+    if screenshot_exists:
+        with Image.new("RGB", (24, 24)) as picture:
+            picture.save(screenshot)
+    contents = []
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        contents.append(json.loads(request.content)["messages"][1]["content"])
+        return httpx.Response(503) if len(contents) == 1 else success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1), image_path=screenshot)
+    assert len(contents) == 2 and isinstance(contents[1], str)
+    if screenshot_exists:
+        assert contents[0][0]["text"] == contents[1]
+        assert contents[0][1]["type"] == "image_url"
+    else:
+        assert contents[0] == contents[1]
 
 
 @pytest.mark.browser
 async def test_browser_task_waits_for_provider_recovery_without_replanning(client, target, cloud, fixture_server, monkeypatch):  # noqa: F811
+    import time
+    from app.agent import model as model_module
     from app.agent import runner as runner_module
     from app.db import ProviderQuota, transaction
     from app.jobs import claim
@@ -398,10 +527,13 @@ async def test_browser_task_waits_for_provider_recovery_without_replanning(clien
     original, failures, decide_payloads, waits = httpx.AsyncClient, [], [], []
     fixture_transport = httpx.ASGITransport(app=fixture_model)
     recovered = False
+    provider_clock_offset = 0.0
+    monkeypatch.setattr(model_module, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + provider_clock_offset))
 
     async def expire_cooldowns(delay):
-        nonlocal recovered
+        nonlocal recovered, provider_clock_offset
         waits.append(delay)
+        provider_clock_offset += delay + 0.05
         with transaction() as session:
             session.execute(update(ProviderQuota).values(cooldown_until=0))
         recovered = True
@@ -449,12 +581,14 @@ async def test_browser_task_waits_for_provider_recovery_without_replanning(clien
 
 
 async def test_retry_after_on_server_errors_is_preserved(cloud, monkeypatch):
+    # Verify the provider's delay independently of host/SQLite scheduling time.
+    monkeypatch.setattr("app.agent.model.time", SimpleNamespace(monotonic=lambda: 1000.0))
     original = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(
         lambda request: httpx.Response(503, headers={"retry-after": "120"})), **kw))
     with pytest.raises(ModelProvidersUnavailable) as captured:
         await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))
-    assert captured.value.retry_after > 118
+    assert 120 <= captured.value.retry_after <= 120.25
 
 
 async def test_paused_model_request_keeps_original_deadline():
@@ -467,3 +601,24 @@ async def test_paused_model_request_keeps_original_deadline():
     runner.deadline = time.time() + 5.01
     with pytest.raises(ModelDeadlineExceeded, match="while paused"):
         await runner.ask_model("decide", {}, Reply)
+
+
+async def test_context_window_skips_incompatible_provider_without_spending_budget(cloud, monkeypatch):
+    monkeypatch.setattr(cloud, "ai_context_windows", {"groq": 256})
+    calls, reservations = [], []
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        calls.append(request.url.host)
+        return success()
+
+    def account(prompt, completion, latency, reserve, receipt=None):
+        if reserve:
+            reservations.append(receipt["provider_index"])
+            return (prompt, completion)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    model = ModelClient()
+    await model.request("decide", {}, Reply, account)
+    assert calls == ["openrouter.test"]
+    assert reservations == [1]

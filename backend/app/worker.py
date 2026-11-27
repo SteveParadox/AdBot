@@ -204,6 +204,24 @@ async def _execute(job_id, token):
                         runner.persist(session)
                     if kind == "research" and job.status in {"completed", "failed", "cancelled"}:
                         job.execution_state = {k: v for k, v in job.execution_state.items() if k != "research_checkpoint"}
+                    if kind == "agent" and job.status in {"failed", "cancelled"}:
+                        task = session.get(AgentTask, job_id)
+                        directory = task.memory.get("directory", {})
+                        captured = task.memory.get("structured_capture")
+                        if task.memory.get("research_partial"):
+                            task.result = task.memory["research_partial"]
+                        elif captured and (task.memory.get("execution_route") or {}).get("name") != "enumeration":
+                            task.result = {
+                                "strategy": "structured_discovery", "partial": True, "claims": [],
+                                "structured_records": list(captured["records"].values()),
+                                "evidence": task.memory.get("evidence", []),
+                                "verification": {"complete": False, "explanation": error or "Structured discovery stopped before verification"},
+                            }
+                        elif directory.get("entity") or directory.get("pages"):
+                            from .agent.directory import directory_result
+                            task.result = directory_result(directory, error or "Directory collection stopped before verification")
+                            emit(session, job_id, "agent_partial_result", "Directory evidence preserved",
+                                 records=task.result["directory"]["unique_records"])
                     job.completed_at = None if job.status == "queued" else time.time()
                     if not error and job.status == "completed":
                         job.execution_state = {k: v for k, v in job.execution_state.items() if k != "failure"}

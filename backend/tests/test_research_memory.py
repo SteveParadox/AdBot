@@ -1,6 +1,6 @@
 """Regression tests for deterministic, conversation-scoped research memory."""
 
-from app.research.contracts import Mode, Question, route
+from app.research.contracts import Question, route
 from app.research.memory import build_context, relevant_turns
 
 
