@@ -14,6 +14,15 @@ from pydantic import Field, model_validator
 from ..schemas import Strict
 from .routing import select_route
 
+_NO_DOWNLOAD = re.compile(
+    r"\b(?:do\s+not|never|must\s+not|don['’]t|mustn['’]t|avoid|without|no)\s+"
+    r"(?:(?:any|file|automatic|automatically)\s+)*download(?:s|ing)?\b", re.I,
+)
+
+
+def download_forbidden(objective, criteria):
+    return any(_NO_DOWNLOAD.search(text) for text in (objective, *criteria))
+
 
 class Ambiguity(Strict):
     detail: str = Field(min_length=1, max_length=500)
@@ -171,7 +180,7 @@ def specification(objective, criteria, options, domains):
             "form_input": bool(options.get("allow_form_input")),
             **({"read_search": read_search_permission(objective, options, intent["category"], criteria)}
                if "allow_search_input" in options else {}),
-            "downloads": bool(options.get("allow_downloads")),
+            "downloads": bool(options.get("allow_downloads")) and not download_forbidden(objective, criteria),
             **({"approved_post_search": options["approved_post_search"]} if options.get("approved_post_search") else {}),
         },
         "output_format": requested,
@@ -408,7 +417,9 @@ def guard(state, decision, observation):
     if re.search(prohibition + r"(?:submit|send|buy|purchase|apply|delete)\b", restrictions):
         if activation and not target.get("href"):
             raise PermissionError("Explicit task prohibition blocks this interaction")
-    if decision.decision == "DOWNLOAD" and re.search(prohibition + r"download\b", restrictions):
+    if decision.decision == "DOWNLOAD" and download_forbidden(
+        state["specification"]["objective"], state["specification"]["success_criteria"]
+    ):
         raise PermissionError("Explicit task prohibition blocks downloads")
     ambiguities = state["specification"]["ambiguities"] + state["plan"]["intent"]["ambiguities"]
     if any(a["category"] == "clarify" for a in ambiguities):

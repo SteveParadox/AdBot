@@ -279,7 +279,7 @@ maximum session duration.
 | GET | `/api/agent/config` | Sanitized provider readiness and limits |
 | POST / GET | `/api/agent/tasks` | Enqueue / paginate tasks |
 | GET | `/api/agent/tasks/{id}` | Status, objective, usage, memory and result |
-| GET | `/api/agent/tasks/{id}/steps` | Observations, decisions and actual outcomes |
+| GET | `/api/agent/tasks/{id}/steps` | Observations, decisions and outcomes. Set `newest_first=true` for newest first and `through_number` to keep older pages stable as new steps arrive. |
 | POST | `/api/agent/tasks/{id}/review` | Approve/decline the pending step and supply a reply |
 | GET / DELETE | `/api/agent/memories` / `/api/agent/memories/{id}` | Inspect / forget reusable knowledge |
 | GET | `/api/agent/metrics` | Success, duration, step and usage metrics |

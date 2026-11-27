@@ -880,6 +880,23 @@ def test_unavailable_capabilities_are_not_granted(client, target, agent_config, 
             assert result.status_code == 422, result.text
 
 
+def test_server_session_opt_out_after_task_creation(client, target, agent_config, monkeypatch):
+    from app.agent.runner import AgentRunner
+
+    monkeypatch.setattr(agent_config, "browser_session_persistence", True)
+    headers = {"Idempotency-Key": "persistent-task"}
+    body = {"website_id": target["id"], "objective": "Read current documentation.", "session_persistence": True}
+    task = client.post("/api/agent/tasks", json=body, headers=headers).json()
+    with transaction() as session:
+        session.get(AgentTask, task["id"]).encrypted_session = "old-encrypted-state"
+    monkeypatch.setattr(agent_config, "browser_session_persistence", False)
+    replay = client.post("/api/agent/tasks", json=body, headers=headers)
+    assert replay.status_code == 201 and replay.json()["id"] == task["id"]
+    runner = AgentRunner(*claim())
+    assert runner.options["session_persistence"] is False
+    assert "storage_state" not in runner.context_options()
+
+
 def test_vision_model_compatibility_and_adaptive_reasoning(agent_config, monkeypatch):
     monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
     monkeypatch.setattr(agent_config, "ai_vision_models", "local:fixture-model-not-live-llm")
@@ -991,7 +1008,10 @@ def test_step_history_newest_first_and_pagination(client, target, agent_config):
     latest = client.get(url + "?limit=100&newest_first=true").json()
     assert latest["items"][0]["number"] == 105
     assert latest["items"][-1]["number"] == 6
-    older = client.get(url + "?limit=100&offset=100&newest_first=true").json()
+    with transaction() as session:
+        session.add(AgentStep(job_id=task["id"], number=106, observation={}, decision={}, outcome={}))
+    older = client.get(url + "?limit=100&offset=100&newest_first=true&through_number=105").json()
+    assert older["total"] == 105
     assert [step["number"] for step in older["items"]] == [5, 4, 3, 2, 1]
     assert client.get(url + "?newest_first=true", headers=OTHER_AUTH).status_code == 404
 
@@ -1004,6 +1024,8 @@ def test_ollama_context_configuration(agent_config, monkeypatch):
     assert agent_config.ollama_context_for("example") == 4096
     monkeypatch.setattr(agent_config, "ai_context_windows", {"example": 65536})
     assert agent_config.ollama_context_for("example") == 16384
+    monkeypatch.setattr(agent_config, "ai_context_windows", {"local": 8192, "example": 4096})
+    assert agent_config.ollama_context_for("example") == 4096
 
 
 def test_research_evidence_budget_is_configurable():

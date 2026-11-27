@@ -451,21 +451,24 @@ class ModelClient:
         except ModelError:
             request_text = bounded_request_text(system, kind, payload, schema, cfg.ai_max_request_chars, reduced=True)
         content = request_text
-        if image_path:
+        if image_path and cfg.vision_available():
             from PIL import Image
             import io
 
-            with Image.open(image_path) as picture:
-                picture.thumbnail((1000, 750))
-                stream = io.BytesIO()
-                picture.convert("RGB").save(stream, format="JPEG", quality=65)
-            content = [
-                {"type": "text", "text": request_text},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(stream.getvalue()).decode()},
-                },
-            ]
+            try:
+                with Image.open(image_path) as picture:
+                    picture.thumbnail((1000, 750))
+                    stream = io.BytesIO()
+                    picture.convert("RGB").save(stream, format="JPEG", quality=65)
+                content = [
+                    {"type": "text", "text": request_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(stream.getvalue()).decode()},
+                    },
+                ]
+            except OSError:
+                logger.warning("Agent screenshot unavailable; continuing with text observation")
         body = {
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
             "max_tokens": cfg.ai_max_output_tokens,
@@ -514,7 +517,7 @@ class ModelClient:
                 endpoint = base.rstrip("/") + "/chat/completions"
                 provider_body = {**body, "model": model}
                 provider_name = provider_names[provider_index]
-                if image_path and not cfg.supports_vision(provider_name, model, native=native):
+                if isinstance(content, list) and not cfg.supports_vision(provider_name, model, native=native):
                     # Fallback providers may be text-only; do not forward screenshots to them.
                     provider_body["messages"] = [{"role": "system", "content": system},
                                                  {"role": "user", "content": request_text}]
@@ -625,7 +628,6 @@ class ModelClient:
                     provider_body["messages"][1]["content"] = original
                     return False
 
-                provider_estimate = estimate()
                 unavailable = False
                 has_fallback = position + 1 < len(provider_indices)
                 next_provider_index = provider_indices[position + 1] if has_fallback else 0

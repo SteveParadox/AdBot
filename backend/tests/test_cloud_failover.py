@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from pydantic import BaseModel, SecretStr, ValidationError
+from PIL import Image
 
 from app.agent.model import ModelClient, ModelError, ModelProvidersUnavailable
 from app.config import Settings, settings
@@ -82,7 +83,7 @@ async def test_chain_hands_off_each_failure_once_and_preserves_request(cloud, mo
         requests.append(body)
         assert request.url.path == "/v1/chat/completions"  # Never Ollama for remote fallbacks.
         if len(calls) <= failed:
-            assert request.extensions["timeout"]["read"] == 10
+            assert request.extensions["timeout"]["read"] == cloud.ai_primary_fallback_timeout_seconds
             assert request.extensions["timeout"]["connect"] == 3
             if isinstance(failure, int):
                 return httpx.Response(failure, headers={"retry-after": "3600"})
@@ -403,18 +404,48 @@ async def test_provider_wait_remains_cancellable(monkeypatch):
 
 
 @pytest.mark.parametrize("provider,reasoning_field", [("groq", "reasoning_effort"), ("openrouter", "reasoning")])
-async def test_gpt_oss_uses_configured_reasoning_budget(cloud, monkeypatch, provider, reasoning_field):
+@pytest.mark.parametrize("configured,purpose,effort", [
+    ("auto", "decide", "medium"), ("auto", "verify", "high"), ("low", "verify", "low"),
+])
+async def test_gpt_oss_uses_configured_reasoning_budget(cloud, monkeypatch, provider, reasoning_field,
+                                                       configured, purpose, effort):
     monkeypatch.setattr(cloud, "ai_provider", provider)
     monkeypatch.setattr(cloud, "ai_provider_order", provider)
     monkeypatch.setattr(cloud, "ai_model", "openai/gpt-oss-120b")
+    monkeypatch.setattr(cloud, "ai_reasoning_effort", configured)
     original = httpx.AsyncClient
     async def respond(request):
         body = json.loads(request.content)
-        expected = {"effort": "low"} if provider == "openrouter" else "low"
+        expected = {"effort": effort} if provider == "openrouter" else effort
         assert body[reasoning_field] == expected
         return success()
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
-    await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1))
+    await ModelClient().request(purpose, {}, Reply, lambda *args: (1, 1))
+
+
+@pytest.mark.parametrize("screenshot_exists", [True, False])
+async def test_vision_fallback_only_sends_screenshot_to_compatible_model(cloud, monkeypatch, tmp_path, screenshot_exists):
+    monkeypatch.setattr(cloud, "ai_model", "vision-fixture")
+    monkeypatch.setattr(cloud, "ai_vision_models", "groq:vision-fixture")
+    screenshot = tmp_path / "observation.png"
+    if screenshot_exists:
+        with Image.new("RGB", (24, 24)) as picture:
+            picture.save(screenshot)
+    contents = []
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        contents.append(json.loads(request.content)["messages"][1]["content"])
+        return httpx.Response(503) if len(contents) == 1 else success()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    await ModelClient().request("decide", {}, Reply, lambda *args: (1, 1), image_path=screenshot)
+    assert len(contents) == 2 and isinstance(contents[1], str)
+    if screenshot_exists:
+        assert contents[0][0]["text"] == contents[1]
+        assert contents[0][1]["type"] == "image_url"
+    else:
+        assert contents[0] == contents[1]
 
 
 @pytest.mark.browser

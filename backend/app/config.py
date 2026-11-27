@@ -159,8 +159,11 @@ class Settings(BaseSettings):
                    for index, (_, _, model) in enumerate(self.model_providers()))
 
     def ollama_context_for(self, model: str) -> int:
-        configured = self.ai_context_windows.get("local", self.ai_context_windows.get(model, self.ai_ollama_context_tokens))
-        return min(configured, self.ai_ollama_context_tokens)
+        return min(
+            self.ai_ollama_context_tokens,
+            self.ai_context_windows.get("local", self.ai_ollama_context_tokens),
+            self.ai_context_windows.get(model, self.ai_ollama_context_tokens),
+        )
 
     def reasoning_effort_for(self, purpose: str) -> str:
         if self.ai_reasoning_effort != "auto":

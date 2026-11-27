@@ -3,7 +3,7 @@ import json
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -140,9 +140,6 @@ def resolved_task_options(data: TaskInput, cfg):
 @router.post("/tasks", status_code=201)
 def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | None, Header(max_length=160)] = None):
     cfg = settings()
-    options = resolved_task_options(data, cfg)
-    options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
-    options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
     request_values = (
         data.model_dump(exclude={"priority", "depends_on"})
         if not data.priority and not data.depends_on
@@ -178,6 +175,9 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
                     if previous.job_type != "agent" or previous.payload_hash not in accepted_digests:
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
+            options = resolved_task_options(data, cfg)
+            options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
+            options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
             try:
                 validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             except ValueError as exc:
@@ -281,13 +281,14 @@ def task(identifier: str, owner: Owner):
 
 @router.get("/tasks/{identifier}/steps")
 def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0,
-          newest_first: bool = False):
+          newest_first: bool = False, through_number: Annotated[int | None, Query(ge=1)] = None):
     with Session() as session:
         task_for(session, identifier, owner)
         order = AgentStep.number.desc() if newest_first else AgentStep.number.asc()
-        return collection(
-            session, select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id).order_by(order), offset, limit
-        )
+        query = select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id)
+        if through_number is not None:
+            query = query.where(AgentStep.number <= through_number)
+        return collection(session, query.order_by(order), offset, limit)
 
 
 @router.post("/tasks/{identifier}/review")

@@ -240,16 +240,20 @@ export default function AgentPanel({
     queryFn: ({signal}) => queryApi<Collection<{ id: string; name: string; website_id: string }>>("/extraction/datasets", token, signal),
     enabled: Boolean(website),
   });
-  const taskOptions = {
-    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
-    max_steps: maxSteps, allow_form_input: formInput, allow_search_input: readSearch,
-    approved_post_search: approvedPostSearch,
-    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
-  };
   const config = useQuery({
     queryKey: ["agent-config", token],
     queryFn: ({signal}) => queryApi<Config>("/agent/config", token, signal),
   });
+  const taskOptions = {
+    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
+    max_steps: Math.min(maxSteps, config.data?.max_steps ?? 500),
+    memory_enabled: memory,
+    visual_reasoning: vision && Boolean(config.data?.visual_reasoning),
+    session_persistence: persist && Boolean(config.data?.session_persistence),
+    allow_form_input: formInput, allow_search_input: readSearch,
+    approved_post_search: approvedPostSearch,
+    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
+  };
   const metrics = useQuery({
     queryKey: ["agent-metrics", token],
     queryFn: ({signal}) => queryApi<Metrics>("/agent/metrics", token, signal),
@@ -273,6 +277,7 @@ export default function AgentPanel({
   function submit(e: FormEvent) {
     e.preventDefault();
     run(async () => {
+      const parsedDatasetQuery = datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery);
       let identifier = website;
       if (!identifier) {
         const parsed = new URL(url);
@@ -295,24 +300,11 @@ export default function AgentPanel({
         token,
         "POST",
         {
+          ...taskOptions,
           website_id: identifier,
           priority,
           depends_on: dependency || null,
-          objective,
-          success_criteria: criteria.split("\n").filter((s) => s.trim()),
-          mode,
-          max_steps: Math.min(maxSteps, config.data?.max_steps || 500),
-          max_tokens: config.data?.max_tokens || 60000,
-          memory_enabled: memory,
-          visual_reasoning: vision && Boolean(config.data?.visual_reasoning),
-          session_persistence: persist && Boolean(config.data?.session_persistence),
-          allow_form_input: formInput,
-          allow_search_input: readSearch,
-          approved_post_search: approvedPostSearch,
-          allow_downloads: downloads,
-          dataset_id: dataset || null,
-          output_format: outputFormat || null,
-          dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery),
+          dataset_query: parsedDatasetQuery,
         },
         { "Idempotency-Key": crypto.randomUUID() },
       );
@@ -559,7 +551,7 @@ export default function AgentPanel({
             <Play size={15} />
             Start agent task
           </Button>
-          <Button type="button" variant="outline" disabled={busy || !website || objective.length < 8} onClick={() => run(async () => {
+          <Button type="button" variant="outline" disabled={busy || !config.data || !website || objective.length < 8} onClick={() => run(async () => {
             setPreview(await api<Planning>("/agent/preview", token, "POST", { ...taskOptions, dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery), website_id: website }));
           })}>Preview task understanding</Button>
           </div>
@@ -696,16 +688,17 @@ function AgentDetail({
     queryFn: ({signal}) => queryApi<Task>("/agent/tasks/" + id, token, signal),
   });
   const historyPageSize = 100;
-  const [historyPage, setHistoryPage] = useState(0);
+  const [history, setHistory] = useState<{ page: number; through: number } | null>(null);
+  const historyPage = history?.page ?? 0;
   const steps = useQuery({
     queryKey: ["agent-steps", id, token],
     queryFn: ({signal}) =>
       queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&newest_first=true`, token, signal),
   });
   const olderSteps = useQuery({
-    queryKey: ["agent-steps", id, token, historyPage],
-    queryFn: ({signal}) => queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&offset=${historyPage * historyPageSize}&newest_first=true`, token, signal),
-    enabled: historyPage > 0,
+    queryKey: ["agent-steps", id, token, history],
+    queryFn: ({signal}) => queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&offset=${historyPage * historyPageSize}&newest_first=true&through_number=${history?.through}`, token, signal),
+    enabled: history !== null,
   });
   const displayedSteps = historyPage ? olderSteps : steps;
   const events = useJobEvents(id, token, task.data?.status, ["agent-task", "agent-steps"], 100);
@@ -959,9 +952,13 @@ function AgentDetail({
           </p>
         )}
         <div className="button-row">
-          <Button variant="outline" disabled={historyPage === 0} onClick={() => setHistoryPage(p => Math.max(0, p - 1))}>Newer steps</Button>
-          <span className="hint">Page {historyPage + 1} · {steps.data?.total ?? 0} recorded steps</span>
-          <Button variant="outline" disabled={(historyPage + 1) * historyPageSize >= (steps.data?.total ?? 0)} onClick={() => setHistoryPage(p => p + 1)}>Older steps</Button>
+          <Button variant="outline" disabled={!history}
+            onClick={() => setHistory(current => current && current.page > 1 ? { ...current, page: current.page - 1 } : null)}>Newer steps</Button>
+          <span className="hint">Page {historyPage + 1} · {displayedSteps.data?.total ?? steps.data?.total ?? 0} recorded steps</span>
+          <Button variant="outline" disabled={!latest || (historyPage + 1) * historyPageSize >= (displayedSteps.data?.total ?? 0)}
+            onClick={() => {
+              if (latest) setHistory(current => ({ page: (current?.page ?? 0) + 1, through: current?.through ?? latest.number }));
+            }}>Older steps</Button>
         </div>
         <div className="event-list">
           {[...(displayedSteps.data?.items ?? [])].reverse().map((step) => (

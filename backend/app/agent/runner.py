@@ -42,7 +42,11 @@ class AgentRunner(Runner):
         with transaction() as session:
             job = owned_job(session, self.id, self.token)
             task = session.get(AgentTask, self.id)
-            self.options = task.options
+            self.options = {
+                **task.options,
+                "session_persistence": bool(task.options.get("session_persistence")
+                                            and settings().browser_session_persistence),
+            }
             self.deadline = job.started_at + self.cfg["max_duration_seconds"]
             self.objective, self.mode = task.objective, task.mode
             self.memory = {
