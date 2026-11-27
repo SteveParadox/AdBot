@@ -315,7 +315,8 @@ _NO_SEARCH = re.compile(
 MAX_SEARCH_ATTEMPTS = 8
 
 
-def read_search_permission(objective, options, _intent=None, criteria=()):
+def read_search_permission(objective, options, intent=None, criteria=()):
+    """Derive search permission from task options. Intent remains advisory."""
     return (options.get("mode") == "autonomous" and options.get("allow_search_input") is True
             and not search_forbidden(objective, criteria))
 
