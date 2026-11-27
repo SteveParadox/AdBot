@@ -43,6 +43,23 @@ it("ignores older patches and updates membership of status-filtered job pages", 
   handler.dispose(); client.clear();
 });
 
+it("keeps the newest live agent step and its observation at the top of a full history page", () => {
+  const client = createQueryClient();
+  const key = ["agent-steps", "one", "a"];
+  const history = [...Array(100)].map((_, index) => ({id: 100 - index, number: 100 - index}));
+  client.setQueryData(key, {items: history, total: 100});
+  const handler = createWorkspaceEventHandler(client, "a");
+  const live = {url: "https://example.test/product", tab_id: "product", screenshot_path: "new.png"};
+  handler.receive([event(3, "agent_action_completed", {resource: {job, steps: [
+    {id: 101, number: 101, status: "succeeded", outcome: {live_observation: live}},
+  ]}}), event(2)]);
+  const result = client.getQueryData<{items: typeof history; total: number}>(key)!;
+  expect(result.items[0]).toMatchObject({number: 101, outcome: {live_observation: live}});
+  expect(result.items.map(step => step.number)).toEqual([...Array(100)].map((_, index) => 101 - index));
+  expect(result.total).toBe(101);
+  handler.dispose(); client.clear();
+});
+
 it("coalesces extraction writes by dataset and flushes terminal changes immediately", async () => {
   vi.useFakeTimers(); const client = createQueryClient();
   const invalidate = vi.spyOn(client,"invalidateQueries");

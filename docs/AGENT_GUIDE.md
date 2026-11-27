@@ -157,16 +157,27 @@ Playwright role/name locators. The model returns a strict JSON decision; a
 controlled action registry executes it. No generated Python, JavaScript or CSS
 selector is executed. Re-observation records actual outcomes before continuing.
 
-Navigation, click, type, GET search, scrolling, tab open/switch/close, back,
+Navigation, click, type, site search, scrolling, tab open/switch/close, back,
 observe, wait, quote extraction, cited summarization, bounded download, ask-user,
-complete and fail actions are supported. Search is limited to observed GET
-search forms. Form input must be enabled for a task. Secret/payment/file inputs
+complete and fail actions are supported. In autonomous mode, **Allow read-only
+site search** uses observed native GET forms, eligible scripted search controls,
+and explicitly verified, exact POST endpoints with a single query field.
+The option is enabled by default and can be disabled per task. It applies to
+ordinary questions and general objectives. Queries use words from the objective,
+and the worker validates the live target and request. **Allow general form
+input** governs ordinary typing and selections. Secret/payment/file inputs
 are unavailable. Clicks do not request approval. An observed non-GET form click
 permits one matching method and destination through the request boundary. A
 JavaScript button without a non-GET form permits one policy-checked write during
 the click, expiring after five seconds or when the action finishes. Other assisted
 actions and explicit ASK_USER questions still wait for a response.
 Review approval is rejected as stale when the observed page or form state changes.
+
+Informational objectives can use a short discovery, capture, synthesis and
+verification flow. Objectives with multiple criteria or explicit multi-source
+requirements can use the full planner. A failed search may lead to another
+observed source. When verification supports only part of the objective, the
+dashboard labels the retained excerpts as a partial task result.
 
 Downloads use explicitly observed links through the validated proxy, enforce
 allowlists and redirect checks, and stop at 10 MiB. Files are stored as generated

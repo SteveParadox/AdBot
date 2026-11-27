@@ -1,5 +1,64 @@
 ﻿# Evidence-driven execution
 
+## Informational research and recovery
+
+Routing and the plan specification share objective recognition. A straightforward
+question gets a short research path. A brief ambiguous subject can receive one
+structured lookup assessment. A topic classification never changes permissions.
+Read-only search is derived from the saved autonomous task option and explicit
+constraints. It uses the Playwright observation and live binding for the specific
+control. The execution boundary checks target semantics, allowed URLs, the query
+and the exact attested POST endpoint when applicable.
+
+The worker captures ranked passages by heading and retains literal quotes and
+stable IDs. Exact compound requests separated by ellipses or paragraph breaks
+can yield several evidence IDs, with each passage checked against authorized
+observations. Synthesis cites the stored IDs. Verification tests objective
+coverage and paraphrased claims, and can split a context-limited request by
+criterion while keeping all citations for each claim. Previously verified
+excerpts can be published as partial results if the whole answer cannot be
+verified.
+
+An action denial can trigger alternative navigation without changing the
+original objective. Dependency evaluation uses topological order. A legacy
+research or collection checkpoint blocked by a form-input denial can reconcile
+when verification and evidence satisfy the read-side task. Hard failures and
+mandatory authorization retain their gates. Failed completion signatures limit
+retries based on the evidence and normalized claims.
+
+Research uses an adaptive finalization reserve inside the configured token and
+time budgets. Lightweight decisions can use lower automatic reasoning effort.
+The provider adapter preserves structured validation and emits fixed diagnostic
+categories for identifiable HTTP request rejections. It does not retain provider
+error bodies in task logs. The live dashboard reads URL, screenshot, semantic
+controls and active tab from a common step observation. The 100-row live cache
+uses newest-first ordering and paginated history keeps its own cursor.
+
+The implementation follows checkpoint dependency recovery, live locator
+validation and bounded observation patterns. [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence),
+[Playwright locators](https://playwright.dev/docs/locators), [Browser Use](https://github.com/browser-use/browser-use/blob/main/AGENTS.md)
+and [Stagehand](https://github.com/browserbase/stagehand).
+
+### Loopback research benchmark
+
+The same local Chromium fixtures and OpenAI-compatible model double ran against
+the baseline merge `2f3a8af` and the orchestration branch. Timing covers worker
+execution. Fixture token usage estimates serialized characters divided by four.
+Live-provider tokenization, reasoning and latency will vary.
+
+| Interface | Baseline calls / tokens / seconds | Updated calls / tokens / seconds | Baseline to updated result |
+| --- | --- | --- | --- |
+| Native GET search | 7 / 22,780 / 13.91 | 2 / 1,334 / 6.02 | 3 failed completions to verified, zero failed completions |
+| Scripted AJAX search | 7 / 22,196 / 10.78 | 2 / 1,321 / 3.73 | 3 failed completions to verified, zero failed completions |
+| Search with no results and an observed fallback link | 7 / 22,796 / 8.20 | 5 / 10,513 / 11.64 | 3 failed completions to verified, zero failed completions |
+
+The fallback fixture took longer after the change because the updated worker
+actually submitted the authorized search and waited for its outcome before
+following the observed link. All updated runs stayed below 90 seconds and 25,000
+estimated tokens. Direct search needed only synthesis and verification calls.
+The historical live-provider HTTP 400 cannot be attributed to a particular
+request field from status alone.
+
 ## Discovery on unfamiliar websites
 
 The general planner can inspect and capture a previously unknown record shape in an authorized browser. The observer identifies native tables, ARIA grids and repeated visible sibling structures using browser semantics. It provides short examples, nearby headings, observed field labels and counts. The planner selects a region for the objective, assigns fields to the observed segments and chooses a record identity. It uses the existing browser actions for navigation, pagination and scrolling. Native selections and forms retain their existing permission gates.

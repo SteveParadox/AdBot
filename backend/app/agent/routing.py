@@ -154,6 +154,19 @@ class RouteAssessment(Strict):
     entity_phrase: str = Field(max_length=160)
 
 
+class InformationalAssessment(Strict):
+    informational: bool
+    subject: str = Field(max_length=160)
+
+
+def ambiguous_subject(objective):
+    """A bare subject may be a lookup or shorthand for an unspecified operation."""
+    return (bool(re.fullmatch(r"[\w][\w .+-]{0,159}", objective.strip()))
+            and 1 <= len(words(objective)) <= 6
+            and not set(words(objective)) & (_INVENTORY | _SCOPE_MODIFIERS | _EXHAUSTIVE
+                                             | {"login", "password", "buy", "pay", "register", "upload", "open"}))
+
+
 def assessed_entity(objective, assessment):
     """A model may locate literal wording. Deterministic checks still own eligibility."""
     phrase = assessment.entity_phrase.strip()
@@ -171,6 +184,37 @@ def assessed_entity(objective, assessment):
     return "semantic:" + phrase
 
 
+def informational_question(objective):
+    return bool(re.match(
+        r"\s*(?:please\s+)?(?:tell me about|what (?:is|are|does)|how (?:does|do|much|many)"
+        r"|who (?:developed|created|built|makes|made|is)|where (?:can|do|is|are)"
+        r"|is|are)\s+\S", objective, re.I,
+    ))
+
+
+def execution_intent(objective):
+    """Advisory routing metadata. The original specification remains authoritative."""
+    hints = (
+        ("form_interaction", r"\b(?:fill|submit|register|sign up)\b"),
+        ("document_retrieval", r"\b(?:download|retrieve)\b.*\b(?:file|document|pdf)\b"),
+        ("comparison", r"\b(?:compare|versus)\b|\bcomparison\s+(?:of|between)\b"),
+        ("structured_extraction", r"\b(?:list|collect|extract)\b"),
+        ("search", r"\b(?:search|find|look up)\b"),
+        ("research", r"\b(?:research|summarize|explain|verify)\b"),
+        ("navigation", r"\b(?:navigate|open|visit|go to)\b"),
+    )
+    operation = requested_operation(objective)
+    strategy = {"enumeration": "structured_extraction", "comparison": "comparison",
+                "recommendation": "research"}.get(operation) or ("informational" if informational_question(objective) else None) or next(
+        (name for name, pattern in hints if re.search(pattern, objective, re.I)), "general",
+    )
+    quantifiers = re.findall(
+        r"\b(?:all|every|first|latest|cheapest|highest rated|at least \d+|exactly \d+|between \d+ and \d+)\b",
+        objective, re.I,
+    )
+    return {"category": strategy, "quantifiers": list(dict.fromkeys(word.casefold() for word in quantifiers))}
+
+
 def select_route(objective, options, has_dataset=False):
     entity = directory_intent(objective, options, has_dataset)
     if entity:
@@ -179,7 +223,8 @@ def select_route(objective, options, has_dataset=False):
     operation = requested_operation(objective)
     if has_dataset or options.get("output_format") in {"json", "csv"}:
         return ExecutionRoute("configured_extraction", "Use the configured dataset phases and verify the requested record scope and export.")
-    if terms & {"then", "afterwards"} or ("workflow" in terms and not operation):
+    if (terms & {"then", "afterwards"} or ("workflow" in terms and not operation)
+            or re.search(r"\band\s+(?:submit|send|register|sign up|purchase|delete|upload)\b", objective, re.I)):
         return ExecutionRoute("workflow", "Execute the ready step and preserve its dependencies. Verify each requested outcome.")
     if operation == "enumeration":
         if exhaustive_request(objective):
@@ -192,14 +237,15 @@ def select_route(objective, options, has_dataset=False):
         return ExecutionRoute("comparison", "Gather independent sources for each entity and requested criterion. Identify missing evidence for either side.")
     if operation == "recommendation":
         return ExecutionRoute("research", "Gather relevant options and compare their observed merits against the requested ranking or recommendation criteria.")
-    if terms & {"download", "pdf", "document", "retrieve"}:
-        return ExecutionRoute("document_retrieval", "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")
-    if terms & {"fill", "submit", "register"}:
-        return ExecutionRoute("form_interaction", "Resolve the visible input and honor form permissions and approval gates. Verify the observed outcome.")
-    if terms & {"research", "summarize", "explain", "verify", "cite", "find", "search"} or re.search(
-        r"\blook\s+up\b", objective, re.I
-    ):
+    intent = execution_intent(objective)["category"]
+    if intent == "informational":
+        return ExecutionRoute("informational", "Find a relevant authorized source and answer with verified passages.")
+    if intent == "document_retrieval":
+        return ExecutionRoute(intent, "Locate the observed document link, confirm identity, and use DOWNLOAD only when requested and authorized.")
+    if intent == "form_interaction":
+        return ExecutionRoute(intent, "Resolve the visible input and honor form permissions and approval gates. Verify the observed outcome.")
+    if intent in {"research", "search"}:
         return ExecutionRoute("research", "Find relevant evidence, distinguish direct observations from inference, and cite each supported answer.")
-    if terms & {"navigate", "open", "visit"}:
-        return ExecutionRoute("navigation", "Prefer a uniquely relevant observed link and verify the destination.")
+    if intent == "navigation":
+        return ExecutionRoute(intent, "Prefer a uniquely relevant observed link and verify the destination.")
     return ExecutionRoute("general", "Follow the original requirements and available controls.")

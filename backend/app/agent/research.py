@@ -53,7 +53,7 @@ READ_RESEARCH = r"""(query) => {
  return [...snippets.values()].sort((a,b)=>b.score-a.score).map(({heading,quote,row})=>({heading,quote,row}));
 }"""
 
-STOP = set("a an the to and or of in on for from with about against versus compare comparison research find show list give all each what which is are please".split())
+STOP = set("a an the to and or of in on for from with about against versus compare comparison research find show list give all each what which is are please tell me can does do how who where".split())
 
 
 def terms(value):

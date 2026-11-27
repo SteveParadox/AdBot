@@ -293,17 +293,19 @@ def compact_page(observation, objective, *, elements, groups, actions=(), form_i
     return page
 
 
-def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=None, handoff=False):
-    """Never reserve already spent tokens; preserve a small finalization reserve."""
+def task_token_allowance(maximum, spent, *, fallback_reserve, primary, purpose=None, handoff=False,
+                         finalization_estimate=None):
+    """Reserve remaining tokens for verification and, when needed, provider handoff."""
     remaining = max(0, maximum - spent)
     final = (min(4000, maximum // 10, remaining // 2) if purpose == "decide" else
              min(2000, maximum // 20, remaining // 3) if purpose == "classify" else 0)
+    if purpose == "decide" and finalization_estimate is not None:
+        final = min(finalization_estimate, maximum // 3, remaining // 2)
     available = remaining - final
     fallback = min(fallback_reserve, maximum // 3, available // 3) if primary and not handoff else 0
     return max(0, available - fallback), fallback, final
 
 
-_READ_INTENTS = {"structured_extraction", "research", "comparison", "search"}
 _NO_SEARCH = re.compile(
     r"\b(?:do\s+not|must\s+not|never|without|no|don['’]t|avoid)\s+"
     r"(?:(?:use|using|perform|performing|fill|filling)\s+)?(?:(?:the|a|any|site|website|read.only)\s+)*"
@@ -313,10 +315,13 @@ _NO_SEARCH = re.compile(
 MAX_SEARCH_ATTEMPTS = 8
 
 
-def read_search_permission(objective, options, intent, criteria=()):
+def read_search_permission(objective, options, _intent=None, criteria=()):
     return (options.get("mode") == "autonomous" and options.get("allow_search_input") is True
-            and intent in _READ_INTENTS
-            and not any(_NO_SEARCH.search(text) for text in [objective, *criteria]))
+            and not search_forbidden(objective, criteria))
+
+
+def search_forbidden(objective, criteria):
+    return any(_NO_SEARCH.search(text) for text in (objective, *criteria))
 
 
 def search_control(element, approved_posts=()):

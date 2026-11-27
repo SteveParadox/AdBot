@@ -15,6 +15,10 @@ from .semantics import METADATA
 from .semantic_observer import native_semantics
 
 
+class NavigationFailed(RuntimeError):
+    pass
+
+
 class Controller:
     def __init__(self, runner, context, page, memory):
         self.runner, self.context, self.page = runner, context, page
@@ -96,7 +100,7 @@ class Controller:
         with self.engine.phase("loading", url=url):
             _, _, error = await self.runner.visit(self.page, url)
         if error:
-            raise RuntimeError("Navigation failed: " + error)
+            raise NavigationFailed("Navigation failed: " + error)
         self.tabs[self.active]["history"].append(self.page.url)
 
     def needs_review(self, decision, mode):

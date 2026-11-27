@@ -88,8 +88,8 @@ export function createWorkspaceEventHandler(client: QueryClient, token: string) 
       if (data.steps?.length) void patch(["agent-steps", id, token], event.id, old => {
         const previous = old as Collection<Identified> | undefined;
         if (!previous) return old;
-        const merged = [...new Map([...previous.items, ...data.steps!].map(step => [step.id, step])).values()].sort((a, b) => a.number - b.number);
-        // The detail currently displays offset zero / limit 100. Do not shift its page.
+        const merged = [...new Map([...previous.items, ...data.steps!].map(step => [step.id, step])).values()].sort((a, b) => b.number - a.number);
+        // Match the live newest-first query. Historical pages have their own cache keys.
         return {...previous, items: merged.slice(0, 100), total: Math.max(previous.total, ...merged.map(step => step.number))};
       });
     } else if (!event.snapshot_batch) {
