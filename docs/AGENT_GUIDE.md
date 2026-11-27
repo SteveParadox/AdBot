@@ -82,8 +82,8 @@ The primary provider gets one request. Any HTTP response other than 200, timeout
 network failure, invalid response, schema mismatch, or exhausted primary token
 reserve immediately switches the same request to the fallback. The fallback uses
 the configured retry budget and separate 60-second timeout for local inference by
-default. Model responses are capped at 800 output tokens by default, which is
-enough for the structured action and verification JSON.
+default. Model responses have a 4,096-token upper limit by default; native Ollama,
+low-effort decisions and smaller known context windows receive smaller output reservations.
 If the fallback returns malformed JSON or a response that fails the action schema,
 it retries internally before the agent records a failed step.
 When fallback is enabled,
@@ -96,7 +96,7 @@ continue to trigger fallback as before.
 Rejected primary requests release their token reservation before fallback, so they
 do not consume the task token budget.
 
-The agent also bounds each serialized model request to 18,000 characters by
+The agent also bounds each serialized model request to 36,000 characters by
 default (`ADBOT_AI_MAX_REQUEST_CHARS`). It prioritizes the goal, current URL,
 visible page text, and controls, then removes supplementary accessibility and
 old-memory data if needed. This prevents oversized observations from reaching
@@ -140,8 +140,9 @@ authentication key, not the LLM key), and choose **AI Agent**.
 Existing target settings govern browser engine, headed/headless mode, robots
 handling, page limit, navigation timeout, session duration and allowed domains.
 Add needed resource hosts explicitly in **Websites → Configure**. New targets
-created from the agent panel allow only the starting hostname, use 30 pages and a
-900-second session budget. All clicks execute autonomously in every mode,
+created from the agent panel allow only the starting hostname and default to 100 pages
+and a 3,600-second session budget (operator-configurable). Existing registered targets
+retain their configured page and time budgets. All clicks execute autonomously in every mode,
 including consequential buttons and form submissions.
 
 Existing deployments with `ADBOT_AGENT_MAX_STEPS=30` must update that setting to
@@ -223,11 +224,15 @@ All names below have the `ADBOT_` prefix.
 | GROQ_BASE_URL / GROQ_API_KEY | Groq endpoint and secret |
 | AI_TIMEOUT_SECONDS | `30`; 1–120 seconds per HTTP request |
 | AI_RETRIES | `2`; bounded transport retries |
-| AI_MAX_OUTPUT_TOKENS | `1800`; maximum per model response |
+| AI_MAX_OUTPUT_TOKENS | `4096`; maximum per model response, reduced for constrained contexts |
+| AI_MAX_REQUEST_CHARS | `36000`; maximum serialized request characters |
 | AI_JSON_MODE | `true`; sends `response_format: json_object` |
 | AGENT_MAX_STEPS | `500`; server ceiling, max 500 |
-| AGENT_MAX_TOKENS | `60000`; token budget ceiling |
-| AGENT_MAX_TABS | `4`; maximum simultaneous tabs |
+| AGENT_MAX_TOKENS | `250000`; token budget ceiling; omitted API task budget inherits this ceiling |
+| AGENT_MAX_TABS | `6`; maximum simultaneous tabs |
+| AGENT_DEFAULT_TARGET_MAX_PAGES | `100`; new dashboard target page budget |
+| AGENT_DEFAULT_TARGET_MAX_DURATION_SECONDS | `3600`; new dashboard target time budget |
+| MAX_BROWSER_SESSIONS / MAX_CONCURRENT_AGENTS / MAX_CONCURRENCY | `2` each; retain host-aware concurrency controls |
 | AGENT_MAX_RETRIES | `3`; consecutive action/model recovery failures |
 | AGENT_MEMORY_ENABLED | `true`; permit reusable memories |
 | AGENT_VISUAL_REASONING | `true`; enable screenshot reasoning for compatible models |
@@ -287,7 +292,7 @@ exact pending `step_id` and reject stale/already answered requests.
   "objective": "Find the most recent AI release and cite its source.",
   "mode": "supervised",
   "max_steps": 20,
-  "max_tokens": 60000,
+  "max_tokens": 250000,
   "allow_form_input": false,
   "allow_downloads": false,
   "memory_enabled": true
