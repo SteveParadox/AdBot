@@ -128,9 +128,8 @@ def resolved_task_options(data: TaskInput, cfg):
     options = data.model_dump(exclude={"priority", "depends_on"})
     options["visual_reasoning"] = vision if data.visual_reasoning is None else data.visual_reasoning
     options["session_persistence"] = bool(cfg.browser_session_persistence) if data.session_persistence is None else data.session_persistence
-    # Keep the legacy schema default for request hashing, but omitted budgets inherit
-    # the deployment ceiling. Explicit smaller requests remain binding.
-    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens) if "max_tokens" in data.model_fields_set else cfg.agent_max_tokens
+    # Distinguish automatic budgets from explicit smaller budgets in request hashes.
+    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens) if data.max_tokens is not None else cfg.agent_max_tokens
     return options
 
 
@@ -156,9 +155,13 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
     for flag in ("visual_reasoning", "session_persistence", "allow_downloads"):
         if flag not in data.model_fields_set:
             old_defaults[flag] = False
-    accepted_digests.add(hashlib.sha256(json.dumps(old_defaults, sort_keys=True).encode()).hexdigest())
-    if data.allow_search_input and not data.approved_post_search:
-        for values in (request_values, old_defaults):
+    replay_values = [request_values, old_defaults]
+    if data.max_tokens is None:
+        # Earlier clients omitted the budget and were hashed with 60,000 tokens.
+        replay_values += [{**values, "max_tokens": 60000} for values in replay_values]
+    for values in replay_values:
+        accepted_digests.add(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest())
+        if data.allow_search_input and not data.approved_post_search:
             legacy_values = {k: v for k, v in values.items()
                              if k not in {"allow_search_input", "approved_post_search"}}
             accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
