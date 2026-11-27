@@ -30,6 +30,15 @@ def event_day(value, offset_minutes=0):
         return None
 
 
+def local_start(value, offset_minutes=0):
+    if not isinstance(value, str) or not event_day(value, offset_minutes):
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None  # date-only record has no observed kickoff time
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+        timezone(timedelta(minutes=offset_minutes or 0))).isoformat(timespec="minutes")
+
+
 def name(value):
     return plain(value.get("name"), 120) if isinstance(value, dict) else plain(value, 120)
 
@@ -56,7 +65,7 @@ def structured_events(tree):
             continue
         kinds = value.get("@type", [])
         kinds = [kinds] if isinstance(kinds, str) else kinds if isinstance(kinds, list) else []
-        event = any(isinstance(k, str) and k.rsplit("/", 1)[-1] in
+        event = any(isinstance(k, str) and ("/" not in k or k.startswith(("https://schema.org/", "http://schema.org/"))) and k.rsplit("/", 1)[-1] in
                     {"Event", "SportsEvent", "MusicEvent", "BusinessEvent", "EducationEvent",
                      "TheaterEvent", "Festival", "ExhibitionEvent", "SocialEvent"} for k in kinds)
         if event:

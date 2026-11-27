@@ -17,6 +17,12 @@ def comparison_subjects(question):
     return parts if all(parts) and parts[0].casefold() != parts[1].casefold() else []
 
 
+def mentions_subject(subject, text):
+    # Word boundaries also support short and punctuation-bearing names (R, C++).
+    pattern = re.escape(" ".join(subject.split()))
+    return bool(re.search(r"(?<!\w)" + pattern + r"(?!\w)", " ".join(text.split()), re.I))
+
+
 def definition_request(question):
     # Conservative single-word definitions; explicit modes, current requests
     # and conversation follow-ups take precedence at the router.

@@ -618,7 +618,7 @@ class Fetcher:
                         self.metrics["browser_launches"] += 1
                     rendered = await self.render_in_context(response)
                     document = await database_call(extract, rendered, shopping)
-                    return document if document.blocks or document.products or document.links else doc
+                    return document if document.blocks or document.products or document.links or document.metadata.get("schedule_events") else doc
             except PolicyError:
                 raise
             except (PlaywrightError, etree.LxmlError, TimeoutError, ValueError):

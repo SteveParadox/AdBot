@@ -111,7 +111,8 @@ def enqueue(data, owner, key, retry_of=None):
                 if original_task.conversation_id != thread.id:
                     raise HTTPException(409, "Retry must stay in the original conversation")
                 intent, mode = original_task.intent, Mode(original_task.mode)
-                snapshot["research_prior_queries"] = [q[:350] for q in original_task.result.get("queries", [])[:32] if isinstance(q, str)]
+                previous_queries = [*original_job.snapshot.get("research_prior_queries", []), *original_task.result.get("queries", [])]
+                snapshot["research_prior_queries"] = list(dict.fromkeys(q[:350] for q in previous_queries if isinstance(q, str)))[-32:]
                 snapshot["research_reference_at"] = original_job.snapshot.get("research_reference_at", original_task.created_at)
                 snapshot["research_history_before"] = original_job.snapshot.get(
                     "research_history_before", original_task.created_at
@@ -133,6 +134,10 @@ def enqueue(data, owner, key, retry_of=None):
             snapshot["research_semantic_route"] = semantic
             budget = (settings().research_budgets.get("auto") or
                       budget_for(Mode.QUICK if mode == Mode.DIRECT else mode)) if semantic else budget_for(mode)
+            if retry_of:
+                # Retry the effective strategy under the original authorized envelope.
+                from ..config import ResearchBudget
+                budget = ResearchBudget.model_validate(original_task.budget)
             snapshot["configuration"] = {"max_duration_seconds": budget.seconds}
             job = Job(owner=owner, job_type="research", website_id=None, idempotency_key=key, payload_hash=digest,
                       snapshot=snapshot)

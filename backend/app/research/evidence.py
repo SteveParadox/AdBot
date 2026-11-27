@@ -81,19 +81,25 @@ def pdf_evidence(doc, source, question):
     return list(unique.values())
 
 
-def text_evidence(doc, source, question, *, target_date=None, offset_minutes=None):
+def text_evidence(doc, source, question, *, target_date=None, offset_minutes=None, schedule=False):
     if doc.metadata.get("document_type") == "pdf":
         return pdf_evidence(doc, source, question)
-    from .schedule import event_day, schedule_request
+    from .schedule import event_day, local_start, schedule_request
     events = []
-    if schedule_request(question) or target_date:
+    if schedule or schedule_request(question) or target_date:
         for index, event in enumerate(doc.metadata.get("schedule_events", [])[:100]):
             day = event_day(event.get("startDate"), offset_minutes)
             if target_date and day != target_date:
                 continue
-            quote = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            observation = {**event, "local_date": day}
+            converted = local_start(event.get("startDate"), offset_minutes)
+            if converted:
+                observation["local_start"] = converted
+            quote = json.dumps(observation, ensure_ascii=False, separators=(",", ":"))
             if len(quote) <= 1000:
-                events.append(quote_record(source, quote, f"json-ld:event-{index + 1}", "structured"))
+                record = quote_record(source, quote, f"json-ld:event-{index + 1}", "structured")
+                record["event_observation"] = {"local_date": day, "original_start": event.get("startDate")}
+                events.append(record)
             if len(events) >= 24:
                 break
     keywords = terms(question) | terms(source["query"])

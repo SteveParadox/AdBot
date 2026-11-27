@@ -99,3 +99,46 @@ def test_layout_rejects_dropped_duplicate_and_invented_indexes():
     answer = arranged_report(claims, evidence, sources, Mode.DEEP, layout.model_dump())
     assert answer.index("Second finding") < answer.index("First finding")
     assert answer.count("https://example.com/report") == 2
+
+
+
+async def test_phase_search_limit_applies_to_provider_fallback():
+    instance = engine(Question(question="Research test"), semantic=False)
+    instance.phase_search_limit = 1
+    assert await instance.reserve_search()
+    assert not await instance.reserve_search()
+    instance.phase_search_limit = None
+    assert await instance.reserve_search()
+
+
+def test_schedule_date_is_not_publication_freshness():
+    instance = engine(Question(question="List league fixtures today"), intent="current")
+    assert instance.target_date
+    assert instance.freshness is None
+    assert engine(Question(question="List league fixtures today", freshness="day"), intent="current").freshness == "day"
+
+
+def test_short_and_punctuation_bearing_subjects():
+    from app.research.objectives import mentions_subject
+    assert mentions_subject("R", "R is a programming language.")
+    assert not mentions_subject("R", "Redis is a data store.")
+    assert mentions_subject("C++", "C++ has value semantics.")
+
+
+def test_structured_event_includes_derived_local_time():
+    from app.research.schedule import local_start
+    assert local_start("2026-11-27T23:30:00Z", 60) == "2026-11-28T00:30+01:00"
+    assert local_start("2026-11-27", 60) is None
+
+
+async def test_low_budget_skips_optional_semantic_routing(monkeypatch):
+    instance = engine(Question(question="Research test"))
+    instance.metrics["model_calls"] = instance.budget.calls - 2
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Must reserve synthesis/verification calls")
+
+    monkeypatch.setattr(instance, "ask", unexpected)
+    await instance.classify()
+    assert instance.route_done
+    assert instance.mode == Mode.QUICK

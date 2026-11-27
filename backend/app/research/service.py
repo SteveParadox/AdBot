@@ -142,9 +142,10 @@ class Research:
         self.target_date = relative_date(question.question, self.reference_at, question.utc_offset_minutes)
         self.comparison_subjects = comparison_subjects(question.question)
         self.coverage_required = self.mode == Mode.DEEP or (self.mode == Mode.TECHNICAL and comparison_request(question.question))
-        self.semantic_route_enabled = semantic_route
+        self.semantic_route_enabled = semantic_route and question.mode == Mode.AUTO and intent != "follow_up"
         self.route_done = False
         self.schedule_mode = schedule_request(question.question)
+        self.phase_search_limit = None
         self.recovery_started = False
         self.recovery_done = False
         self.recovery_base_claims = []
@@ -248,6 +249,10 @@ class Research:
     async def classify(self):
         if self.route_done or not self.semantic_route_enabled or self.resumed:
             return
+        # Never spend the last answer/verification calls on optional routing.
+        if self.budget.calls - self.metrics["model_calls"] < (2 if self.mode == Mode.DIRECT else 3):
+            self.route_done = True
+            return
         self.route_done = True
         before = self.model_failed
         decision = await self.ask("research_route", ROUTE, SemanticRoute, {
@@ -276,7 +281,7 @@ class Research:
             elif proposed != Mode.DIRECT and not self.budget.requests:
                 proposed = self.mode
             # Explicit comparisons should not lose objective coverage.
-            if self.comparison_subjects and proposed not in {Mode.DEEP, Mode.TECHNICAL}:
+            if self.comparison_subjects and self.mode not in {Mode.SHOPPING, Mode.FACT_CHECK} and proposed not in {Mode.DEEP, Mode.TECHNICAL}:
                 proposed = Mode.DEEP
             self.mode = proposed
             self.coverage_required = self.mode == Mode.DEEP or (self.mode == Mode.TECHNICAL and comparison_request(self.question.question))
@@ -289,7 +294,7 @@ class Research:
         await self.save_checkpoint()
 
     def can_recover(self):
-        return (not self.recovery_started and self.mode not in {Mode.DIRECT, Mode.SHOPPING}
+        return (not self.recovery_started and self.mode not in {Mode.DIRECT, Mode.SHOPPING, Mode.FACT_CHECK}
                 and self.budget.rounds > self.next_round
                 and self.budget.requests > self.search_count and self.budget.pages > self.page_count
                 and self.budget.calls - self.metrics["model_calls"] >= 2
@@ -297,11 +302,14 @@ class Research:
 
     def recovery_needed(self):
         facts = [claim for claim in self.claims if claim["kind"] != "excerpt"]
+        cited = {i for c in facts for i in c["evidence"] if i in self.evidence}
         return not facts or (self.gap_plan is not None and bool(self.gap_plan.unanswered(facts))) or (
-            self.independent_count() < 2 and self.result_quality == "partial")
+            self.result_quality == "partial" and (len(supporting_groups(cited, self.evidence, self.sources)) < 2
+                                                  or self.metrics.get("synthesis_evidence_remaining", 0) > 0))
 
     async def reserve_search(self):
-        if self.search_count >= self.budget.requests:
+        limit = self.budget.requests if self.phase_search_limit is None else min(self.budget.requests, self.phase_search_limit)
+        if self.search_count >= limit:
             return False
         self.search_count += 1
         await self.charge_usage(search_requests=1)
@@ -361,6 +369,9 @@ class Research:
             pending = self.gap_plan.questions
         for q in pending:
             topic = search_text(q.question).strip()
+            if q.question in self.comparison_subjects:
+                # Preserve workload/criteria rather than searching for a bare name.
+                topic = f"{topic} {plain}"
             suffix = ""
             if round_number:
                 suffix = (" independent conflicting findings" if q.status == "conflicting"
@@ -413,10 +424,17 @@ class Research:
                 "country": self.country, "freshness": self.freshness,
                 "evidence": evidence,
             }, cap=12)
-        self.gap_plan.apply(assessment, {row["id"] for row in evidence}, self.sources, self.evidence)
+        if assessment is None:
+            # No new verdict (budget exhausted or unavailable model) is not a
+            # reason to erase previous checks. New gaps remain missing.
+            self.metrics["coverage_skipped"] = self.metrics.get("coverage_skipped", 0) + 1
+            return
+        offered = offered_evidence(evidence, self.evidence)
+        self.gap_plan.apply(assessment, set(offered), self.sources, offered)
         for q in self.gap_plan.questions:
             if q.question in self.comparison_subjects and q.status == "covered":
-                if not any(terms(q.question) and terms(q.question) <= terms(self.evidence[i]["quote"]) for i in q.evidence):
+                from .objectives import mentions_subject
+                if not any(mentions_subject(q.question, offered[i]["quote"]) for i in q.evidence):
                     q.status, q.evidence = "missing", []
         self.coverage_rounds += 1
         await self.stage("coverage", "Assessing research subquestion coverage",
@@ -439,7 +457,10 @@ class Research:
             if round_number:
                 candidates = [f"{plain} official match calendar", f"{plain} dated event listings"]
             seen = {normalize(q) for q in self.queries} | self.prior_queries
-            return [q[:350] for q in candidates if normalize(q[:350]) not in seen][:2]
+            fresh = [q[:350] for q in candidates if normalize(q[:350]) not in seen]
+            if not fresh:
+                fresh = [q[:350] for q in candidates if normalize(q[:350]) not in {normalize(v) for v in self.queries}]
+            return fresh[:2]
         candidates = [f"{plain} {country_text}".strip()]
         if self.mode == Mode.TECHNICAL:
             candidates += [f"{plain} official documentation", f"{plain} benchmark comparison"]
@@ -631,7 +652,7 @@ class Research:
         async def retrieve(hit):
             async with self.semaphore:
                 await self.gate.wait()
-                return await fetcher.retrieve(hit, self.mode == Mode.SHOPPING, self.freshness)
+                return await fetcher.retrieve(hit, self.mode == Mode.SHOPPING, self.freshness or ("day" if self.schedule_mode else None))
         self.attempted.update(hit.canonical_url for hit in queued)
         self.page_count += len(queued)
         if queued:
@@ -665,7 +686,8 @@ class Research:
         self.sources[source["id"]] = source
         # Identical retail specifications are expected across retailers and
         # should not collapse independently observed offers.
-        self.independence.add(source, doc.blocks, compare_content=self.mode != Mode.SHOPPING)
+        fingerprint_blocks = [*doc.blocks, *(str(event) for event in doc.metadata.get("schedule_events", []))]
+        self.independence.add(source, fingerprint_blocks, compare_content=self.mode != Mode.SHOPPING)
         self.independence.apply(self.sources)
         self.metrics["shared_origin_sources"] = sum(
             bool(row.get("independence_assessment", {}).get("possible_shared_origin"))
@@ -673,7 +695,7 @@ class Research:
         )
         records = text_evidence(doc, source, self.contextual_question(),
                                 target_date=self.target_date if self.schedule_mode else None,
-                                offset_minutes=self.question.utc_offset_minutes)
+                                offset_minutes=self.question.utc_offset_minutes, schedule=self.schedule_mode)
         if self.mode == Mode.SHOPPING:
             products, structured = product_evidence(doc, source, self.country)
             structured_by_id = {item["id"]: item for item in structured}
@@ -722,6 +744,7 @@ class Research:
     def verification_context(self, rows):
         context = {"question": self.question.question, "freshness": self.freshness,
                    "target_date": self.target_date, "utc_offset_minutes": self.question.utc_offset_minutes or 0,
+                   "schedule": self.schedule_mode,
                    "publication_cutoff": (datetime.now(timezone.utc) - timedelta(days=WINDOWS[self.freshness])).isoformat() if self.freshness else None}
         if self.mode == Mode.SHOPPING:
             context["shopping_assessments"] = self.synthesis_payload(rows)["shopping_assessments"]
@@ -846,8 +869,11 @@ class Research:
         if self.mode == Mode.SHOPPING:
             preferred = {p["evidence_id"] for p in self.products[:8]}
             records.sort(key=lambda e: e["id"] not in preferred)
+        if self.schedule_mode:
+            records.sort(key=lambda e: not e.get("event_observation"))
+            preferred.update(e["id"] for e in records if e.get("event_observation"))
         if self.gap_plan:
-            preferred = {identifier for q in self.gap_plan.questions for identifier in q.evidence}
+            preferred.update(identifier for q in self.gap_plan.questions for identifier in q.evidence)
             records.sort(key=lambda e: e["id"] not in preferred)
         if self.mode != Mode.QUICK:
             await self.synthesize_batches(records, preferred)
@@ -927,6 +953,15 @@ class Research:
                 self.notes = list(dict.fromkeys([*self.notes, "Claims using expired retailer observations were omitted."]))
                 self.result_quality = "partial"
                 continue
+            events = [self.evidence[i].get("event_observation") for i in ids]
+            if self.schedule_mode and self.target_date and any(event and event.get("local_date") != self.target_date for event in events):
+                self.result_quality = "partial"
+                continue
+            groups = supporting_groups(ids, self.evidence, self.sources)
+            claim["independent_sources"] = len(groups)
+            if claim["kind"] == "conflict" and len(groups) < 2:
+                self.result_quality = "partial"
+                continue
             if self.freshness:
                 claim["freshness"] = claim_freshness(ids, self.evidence, self.sources, self.freshness)
             valid.append(claim)
@@ -946,6 +981,12 @@ class Research:
             if counts["stale"] or counts["mixed"] or counts["unknown"] or not valid:
                 self.result_quality = "partial"
         self.metrics["claims_verified"] = sum(c["kind"] != "excerpt" for c in valid)
+        cited = {i for c in valid if c["kind"] != "excerpt" for i in c["evidence"]}
+        if self.mode != Mode.DIRECT and cited and len(supporting_groups(cited, self.evidence, self.sources)) < 2:
+            self.result_quality = "partial"
+            note = "The answer relies on fewer than two potentially independent source groups."
+            if note not in self.notes:
+                self.notes.append(note)
 
     async def finish(self, answer):
         await self.stage("answering", "Generating the answer from checked findings")
@@ -999,6 +1040,10 @@ class Research:
                                 self.budget.seconds * .5)
         search_deadline = max(0.1, self.deadline - time.monotonic() - synthesis_reserve)
         if not self.search_done:
+            reserve_recovery = (self.mode not in {Mode.SHOPPING, Mode.FACT_CHECK} and self.budget.rounds > 1
+                                and self.budget.requests > 1 and self.budget.calls - self.metrics["model_calls"] >= 4)
+            if reserve_recovery:
+                self.phase_search_limit = self.budget.requests - 1
             try:
                 async with asyncio.timeout(search_deadline):
                     async with SharedCache(self.owner, self.conversation, self.metrics) as shared:
@@ -1012,7 +1057,7 @@ class Research:
                                     self.owner, self.metrics, max(0, self.budget.browsers - self.browser_count),
                                     self.reserve_browser, shared=shared, conversation=self.conversation
                                 ) as fetcher:
-                                    initial_rounds = self.budget.rounds - 1 if self.budget.rounds > 1 and self.mode not in {Mode.SHOPPING, Mode.FACT_CHECK} else self.budget.rounds
+                                    initial_rounds = self.budget.rounds - int(reserve_recovery)
                                     for round_number in range(self.next_round, initial_rounds):
                                         if self.page_count >= self.budget.pages:
                                             break
@@ -1022,7 +1067,7 @@ class Research:
                                             break
                                         queries = (await self.plan(round_number)
                                                    if pool.names and self.pending_ranked is None else [])
-                                        if self.budget.rounds > 1 and self.mode not in {Mode.SHOPPING, Mode.FACT_CHECK}:
+                                        if reserve_recovery:
                                             queries = queries[:max(0, self.budget.requests - self.search_count - 1)]
                                         if not queries and round_number and self.pending_ranked is None:
                                             break
@@ -1040,6 +1085,7 @@ class Research:
             except TimeoutError:
                 self.notes.append("The search and retrieval time budget elapsed.")
                 self.result_quality = "partial"
+            self.phase_search_limit = None
             self.search_done = True
             self.pending_ranked = None
             await self.save_checkpoint()
@@ -1091,6 +1137,7 @@ class Research:
         await self.cross_source_synthesis()
         self.audit_final_claims()
         await self.arrange_answer()
+        self.notes = list(dict.fromkeys(self.notes))
         return await self.finish(arranged_report(self.claims, self.evidence, self.sources, self.mode, self.layout))
 
     async def recover_after_synthesis(self):
@@ -1104,6 +1151,7 @@ class Research:
         if not self.recovery_needed() or not self.can_recover():
             return
         self.recovery_started = True
+        self.phase_search_limit = None
         self.initial_search = False
         self.metrics["recovery_attempts"] = 1
         self.recovery_base_claims = [c for c in self.claims if c["kind"] != "excerpt"]
@@ -1111,6 +1159,7 @@ class Research:
         await self.save_checkpoint()
         old_claims = list(self.recovery_base_claims)
         old_notes = list(self.notes)
+        evidence_before = set(self.evidence)
         try:
             # Leave a minimum synthesis/verification window inside the same deadline.
             async with asyncio.timeout(max(.1, (self.deadline - time.monotonic()) * .45)):
@@ -1134,7 +1183,7 @@ class Research:
         except TimeoutError:
             self.notes.append("The targeted recovery search reached its time allocation.")
             self.result_quality = "partial"
-        if self.budget.calls - self.metrics["model_calls"] >= 2 and self.deadline - time.monotonic() >= 3:
+        if set(self.evidence) != evidence_before and self.budget.calls - self.metrics["model_calls"] >= 2 and self.deadline - time.monotonic() >= 3:
             self.synthesis_state = None
             self.claims = []
             await self.synthesize()
@@ -1142,6 +1191,10 @@ class Research:
             if new_claims or old_claims:
                 self.claims = unique_claims([*old_claims, *new_claims])
             self.metrics["recovery_verified_claims"] = len(new_claims)
+            if new_claims:
+                self.notes = [note for note in self.notes if not note.startswith("The available evidence did not support a verified synthesis.")
+                              and not note.startswith("No accessible sources provided relevant evidence")]
+                self.notes.append("Additional findings were verified during targeted recovery.")
         else:
             self.notes = list(dict.fromkeys([*old_notes, *self.notes]))
             self.result_quality = "partial"

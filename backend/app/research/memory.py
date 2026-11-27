@@ -177,10 +177,16 @@ def build_context(question, history, intent, mode):
     country = country_from(text, question.country) or (old.get("country") if old else anchor.get("country"))
     if re.search(r"\b(?:any country|worldwide|globally|remove (?:the )?country)\b", text, re.I) and not question.country:
         country = None
-    freshness = question.freshness or next((name for name, pattern in FRESHNESS if re.search(pattern, text, re.I)), None)
+    from .schedule import schedule_request
+    from .objectives import RELATIVE
+    # "Fixtures today" asks about event dates, not articles published today.
+    event_day_only = bool(schedule_request(text) and RELATIVE.search(text) and not question.freshness
+                          and not re.search(r"\b(?:published|updated|last 24 hours|past 24 hours)\b", text, re.I))
+    freshness = question.freshness or (None if event_day_only else
+        next((name for name, pattern in FRESHNESS if re.search(pattern, text, re.I)), None))
     if not freshness:
         freshness = old.get("freshness") if old else anchor.get("freshness")
-    if not freshness and intent in {"news", "current"}:
+    if not freshness and not event_day_only and intent in {"news", "current"}:
         freshness = "week" if intent == "news" else "month"
     if re.search(r"\b(?:any date|no date limit|remove (?:the )?freshness)\b", text, re.I) and not question.freshness:
         freshness = None
@@ -217,6 +223,7 @@ def build_context(question, history, intent, mode):
         unresolved.append("budget currency or amount")
     return {
         "version": 1, "country": country, "freshness": freshness, "slots": slots,
+        "event_day_only": event_day_only,
         "topic": topic[:1400], "constraints": effective, "references": refs,
         "unresolved": unresolved, "source_urls": urls[:4], "turns": [compact_turn(t) for t in selected],
         "anchor_id": anchor.get("id"), "alternative": alternative,
