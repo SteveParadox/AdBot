@@ -103,6 +103,10 @@ type Config = {
   max_output_tokens?: number;
   collection_max_rows?: number;
   classification_max_calls?: number;
+  max_evidence_records?: number;
+  ollama_context_tokens?: number;
+  model_timeout_seconds?: number;
+  primary_fallback_timeout_seconds?: number;
 };
 type Metrics = {
   tasks: number;
@@ -374,6 +378,7 @@ export default function AgentPanel({
             {(config.data?.default_target_max_duration_seconds ?? 900) / 60} minutes. Existing targets keep their own configured limits.
             {" "}Model request: {config.data?.max_request_chars?.toLocaleString() ?? "server default"} characters; output: {config.data?.max_output_tokens?.toLocaleString() ?? "server default"} tokens.
             {" "}Collection: {config.data?.collection_max_rows?.toLocaleString() ?? "server default"} rows, {config.data?.classification_max_calls ?? "server default"} classification batches.
+            {" "}Evidence: {config.data?.max_evidence_records ?? "server default"} records. Model timeout: {config.data?.model_timeout_seconds ?? "server default"} seconds; failover timeout: {config.data?.primary_fallback_timeout_seconds ?? "server default"} seconds.
           </p>
         </details>
         {!config.data?.configured && (
@@ -690,20 +695,28 @@ function AgentDetail({
     queryKey: ["agent-task", id, token],
     queryFn: ({signal}) => queryApi<Task>("/agent/tasks/" + id, token, signal),
   });
+  const historyPageSize = 100;
+  const [historyPage, setHistoryPage] = useState(0);
   const steps = useQuery({
     queryKey: ["agent-steps", id, token],
     queryFn: ({signal}) =>
-      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token, signal),
+      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&newest_first=true`, token, signal),
   });
+  const olderSteps = useQuery({
+    queryKey: ["agent-steps", id, token, historyPage],
+    queryFn: ({signal}) => queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&offset=${historyPage * historyPageSize}&newest_first=true`, token, signal),
+    enabled: historyPage > 0,
+  });
+  const displayedSteps = historyPage ? olderSteps : steps;
   const events = useJobEvents(id, token, task.data?.status, ["agent-task", "agent-steps"], 100);
-  const latest = steps.data?.items.at(-1),
+  const latest = steps.data?.items[0],
     pending = steps.data?.items.find(
       (s) => s.id === task.data?.pending_step_id,
     );
   const imageEvent = [...events]
     .reverse()
     .find((e) => typeof e.details.screenshot_path === "string" && e.details.screenshot_path);
-  const capturedStep = [...(steps.data?.items || [])].reverse().find((s) => s.observation.screenshot_path);
+  const capturedStep = steps.data?.items.find((s) => s.observation.screenshot_path);
   const capture =
     (imageEvent?.details.screenshot_path as string | undefined) ||
     capturedStep?.observation.screenshot_path;
@@ -940,13 +953,18 @@ function AgentDetail({
           <h2>Observed actions and verification</h2>
           <p className="hint">These metrics describe automated sessions only. Filter X-AdBot-Automation or the AdBotMonitor user agent in your site analytics to exclude this traffic from visitor reports.</p>
         </div>
-        {steps.error && (
+        {displayedSteps.error && (
           <p role="alert" className="error">
-            {steps.error.message}
+            {displayedSteps.error.message}
           </p>
         )}
+        <div className="button-row">
+          <Button variant="outline" disabled={historyPage === 0} onClick={() => setHistoryPage(p => Math.max(0, p - 1))}>Newer steps</Button>
+          <span className="hint">Page {historyPage + 1} · {steps.data?.total ?? 0} recorded steps</span>
+          <Button variant="outline" disabled={(historyPage + 1) * historyPageSize >= (steps.data?.total ?? 0)} onClick={() => setHistoryPage(p => p + 1)}>Older steps</Button>
+        </div>
         <div className="event-list">
-          {steps.data?.items.map((step) => (
+          {[...(displayedSteps.data?.items ?? [])].reverse().map((step) => (
             <div className="event" key={step.id}>
               <span className="step-number">{step.number}</span>
               <div>
