@@ -441,10 +441,10 @@ async def test_quick_cold_warm_fixture_measurement(client, research, monkeypatch
     for _ in range(6):
         for cache in (QUERIES, DOCUMENTS, ROBOTS):
             cache.items.clear()
+        question = {"question": "What did the quantum processor experiment find?", "mode": "quick"}
         for label in measurements:
-            task = client.post(API + "/query", json={
-                "question": "What did the quantum processor experiment find?", "mode": "quick",
-            }).json()
+            task = client.post(API + "/query", json=question).json()
+            question["conversation_id"] = task["conversation_id"]
             await run_job(task["id"])
             result = client.get(f'{API}/tasks/{task["id"]}').json()["result"]
             assert result["claims"] and result["sources"]

@@ -61,6 +61,15 @@ def test_claim_freshness_is_per_claim_not_per_answer():
     assert claim_freshness(["c"], evidence, sources, "week", NOW) == "unknown"
 
 
+def test_offer_freshness_uses_the_retrieval_epoch_clock(monkeypatch):
+    from app.research import integrity
+
+    timestamp = 1_795_000_000.1234565
+    monkeypatch.setattr(integrity, "time", lambda: timestamp)
+    assert offer_is_current(timestamp)
+    assert not offer_is_current(timestamp + 0.001)
+
+
 def test_offer_expiry_and_origin_age():
     assert offer_is_current(NOW.timestamp() - 10, "2026-11-25", NOW)
     assert not offer_is_current(NOW.timestamp() - 121, None, NOW)

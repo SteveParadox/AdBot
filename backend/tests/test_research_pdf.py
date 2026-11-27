@@ -81,7 +81,8 @@ async def test_page_bound_is_reported():
     assert result["truncated"] is True
 
 
-@pytest.mark.parametrize("body", [b"not a PDF", b"%PDF-1.7\nbroken", b"%PDF-" + b"x" * MAX_BYTES])
+@pytest.mark.parametrize("body", [b"not a PDF", b"%PDF-1.7\nbroken", b"%PDF-" + b"x" * MAX_BYTES],
+                         ids=["non-pdf", "malformed-pdf", "oversized-pdf"])
 async def test_invalid_pdf_rejected(body):
     with pytest.raises(ValueError):
         await parse_pdf(body)
