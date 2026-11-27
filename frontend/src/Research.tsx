@@ -4,7 +4,7 @@ import { ArrowLeft, BookOpen, ExternalLink, Plus, Search, Send, Square } from "l
 import Markdown from "react-markdown";
 import { Button, Field } from "./ui";
 import remarkGfm from "remark-gfm";
-import { api, type Collection, type Event } from "./api";
+import { api, ApiError, type Collection, type Event } from "./api";
 import { subscribeEventStream, type StreamState } from "./useEventStream";
 import "./research.css";
 
@@ -228,6 +228,9 @@ export default function Research() {
   const [stream, setStream] = useState<StreamState>("closed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [startup, setStartup] = useState<"loading" | "ready" | "failed">("loading");
+  const [startupError, setStartupError] = useState("");
+  const [startupAttempt, setStartupAttempt] = useState(0);
   const active = tasks.find(t => !TERMINAL.has(t.status));
 
   const loadHistory = useCallback(async (signal?: AbortSignal) => {
@@ -238,6 +241,9 @@ export default function Research() {
   useEffect(() => {
     if (!token) return;
     const controller = new AbortController();
+    setStartup("loading");
+    setStartupError("");
+    setConfig(undefined);
     function expired() {
       sessionStorage.removeItem("adbot-token");
       setToken("");
@@ -249,13 +255,22 @@ export default function Research() {
       setThread(null);
     }
     window.addEventListener("adbot:auth-expired", expired);
-    Promise.all([
+    void Promise.allSettled([
       loadHistory(controller.signal),
       api<ProviderConfig>(`${ROOT}/providers`, token, "GET", undefined, undefined, controller.signal)
         .then(value => {if (!controller.signal.aborted) setConfig(value);}),
-    ]).catch(e => {if (!controller.signal.aborted) setError((e as Error).message);});
+    ]).then(results => {
+      if (controller.signal.aborted) return;
+      const failures = results.filter(result => result.status === "rejected");
+      if (!failures.length) {setStartup("ready"); return;}
+      const missingRoute = failures.some(({reason}) => reason instanceof ApiError && reason.status === 404);
+      setStartupError(missingRoute
+        ? "Research API not found (404). Update and restart the backend, and verify that the frontend proxy points to the correct AdBot API. Then retry."
+        : `Could not connect to the research API: ${failures[0].reason instanceof Error ? failures[0].reason.message : "Request failed"}`);
+      setStartup("failed");
+    });
     return () => {controller.abort(); window.removeEventListener("adbot:auth-expired", expired);};
-  }, [token, loadHistory]);
+  }, [token, loadHistory, startupAttempt]);
 
   const activeId = active?.id;
   useEffect(() => {
@@ -316,7 +331,7 @@ export default function Research() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!question.trim() || active || busy || mode === "website_agent") return;
+    if (!question.trim() || active || busy || mode === "website_agent" || startup !== "ready" || config?.enabled === false) return;
     setBusy(true);
     setError("");
     const data = {
@@ -375,6 +390,10 @@ export default function Research() {
           disabled={busy} onClick={() => void openThread(item.id)}>{item.title || "Untitled conversation"}</Button>)}
       </aside>
       <section className="research-chat" aria-label="Research conversation">
+        {startup === "loading" && <p role="status">Connecting to research API…</p>}
+        {startup === "failed" && <div className="research-error" role="alert"><p>{startupError}</p>
+          <Button variant="outline" onClick={() => {setStartup("loading"); setStartupError(""); setStartupAttempt(value => value + 1);}}>Retry connection</Button>
+        </div>}
         {config && !config.enabled && <p role="status" className="research-partial">Research is disabled. Ask the workspace operator to enable it.</p>}
         {config?.enabled && !config.providers.length && <p role="status" className="research-partial">No search providers are configured.</p>}
         {config?.enabled && !config.model_configured && <p role="status" className="research-partial">A model provider is needed for answer synthesis.</p>}
@@ -407,7 +426,7 @@ export default function Research() {
               <option value="month">Past month</option><option value="year">Past year</option>
             </select></Field>
             {mode === "website_agent" ? <Button asChild className="research-primary"><a href="/?tab=agent">Open Website Agent</a></Button> :
-              <Button type="submit" className="research-primary" disabled={busy || !!active || !question.trim() || config?.enabled === false}><Send size={16}/> Send</Button>}
+              <Button type="submit" className="research-primary" disabled={busy || !!active || !question.trim() || startup !== "ready" || config?.enabled === false}><Send size={16}/> Send</Button>}
           </div>
         </form>
       </section>
