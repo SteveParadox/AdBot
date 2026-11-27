@@ -103,3 +103,26 @@ test("loads older turns in a saved research conversation", async ({page}) => {
   await expect(page.getByRole("heading", {name: question})).toBeVisible();
   await expect(page.getByRole("button", {name: "Load earlier turns"})).toHaveCount(0);
 });
+
+test("reports missing research API routes and reconnects after backend recovery", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem("adbot-token", "fixture-workspace-token"));
+  let available = false;
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route(`**${root}/conversations`, route => available
+    ? route.fulfill({json: {items: [], total: 0}})
+    : route.fulfill({status: 404, json: {detail: "Not Found"}}));
+  await page.route(`**${root}/providers`, route => available
+    ? route.fulfill({json: {enabled: true, model_configured: true, providers: [{name: "searxng"}]}})
+    : route.fulfill({status: 404, json: {detail: "Not Found"}}));
+  await page.goto("/research");
+  await expect(page.getByRole("heading", {name: "Web Research"})).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("Research API not found (404)");
+  await page.getByLabel("Question").fill("Check connectivity");
+  await expect(page.getByRole("button", {name: "Send"})).toBeDisabled();
+  available = true;
+  await page.getByRole("button", {name: "Retry connection"}).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", {name: "Send"})).toBeEnabled();
+  expect(errors).toEqual([]);
+});
