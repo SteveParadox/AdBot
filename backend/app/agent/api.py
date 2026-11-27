@@ -3,7 +3,7 @@ import json
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -85,6 +85,7 @@ def task_output(job, task):
         "budget": {
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, job.snapshot["configuration"]["max_duration_seconds"] - elapsed),
+            "remaining_pages": max(0, job.snapshot["configuration"]["max_pages"] - job.pages_visited),
             "remaining_tokens": max(0, task.options["max_tokens"] - task.prompt_tokens - task.completion_tokens),
         },
     }
@@ -104,24 +105,41 @@ def configuration(owner: Owner):
         "provider_rpm": cfg.ai_provider_rpm,
         "provider_tpm": cfg.ai_provider_tpm,
         "memory_enabled": cfg.agent_memory_enabled,
-        "visual_reasoning": cfg.agent_visual_reasoning,
+        "visual_reasoning": cfg.vision_available(),
         "session_persistence": cfg.browser_session_persistence,
         "max_tabs": cfg.agent_max_tabs,
         "max_concurrency": cfg.max_concurrency,
+        "max_agent_browser_concurrency": min(cfg.max_concurrency, cfg.max_browser_sessions, cfg.max_concurrent_agents),
+        "default_target_max_pages": cfg.agent_default_target_max_pages,
+        "default_target_max_duration_seconds": cfg.agent_default_target_max_duration_seconds,
+        "max_request_chars": cfg.ai_max_request_chars,
+        "max_output_tokens": cfg.ai_max_output_tokens,
+        "collection_max_rows": cfg.agent_collection_max_rows,
+        "classification_max_calls": cfg.agent_classification_max_calls,
+        "max_evidence_records": cfg.agent_max_evidence_records,
+        "ollama_context_tokens": cfg.ai_ollama_context_tokens,
+        "model_timeout_seconds": cfg.ai_timeout_seconds,
+        "primary_fallback_timeout_seconds": cfg.ai_primary_fallback_timeout_seconds,
     }
+
+
+def resolved_task_options(data: TaskInput, cfg):
+    vision = cfg.vision_available()
+    if data.visual_reasoning is True and not vision:
+        raise HTTPException(422, "No configured vision-capable model is available")
+    if data.session_persistence is True and not cfg.browser_session_persistence:
+        raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
+    options = data.model_dump(exclude={"priority", "depends_on"})
+    options["visual_reasoning"] = vision if data.visual_reasoning is None else data.visual_reasoning
+    options["session_persistence"] = bool(cfg.browser_session_persistence) if data.session_persistence is None else data.session_persistence
+    # Distinguish automatic budgets from explicit smaller budgets in request hashes.
+    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens) if data.max_tokens is not None else cfg.agent_max_tokens
+    return options
 
 
 @router.post("/tasks", status_code=201)
 def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | None, Header(max_length=160)] = None):
     cfg = settings()
-    if data.visual_reasoning and not cfg.agent_visual_reasoning:
-        raise HTTPException(422, "Visual reasoning is not enabled by the server")
-    if data.session_persistence and not cfg.browser_session_persistence:
-        raise HTTPException(422, "Encrypted session persistence is not enabled by the server")
-    options = data.model_dump(exclude={"priority", "depends_on"})
-    options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
-    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens)
-    options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
     request_values = (
         data.model_dump(exclude={"priority", "depends_on"})
         if not data.priority and not data.depends_on
@@ -132,10 +150,22 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
             request_values.pop(optional, None)
     digest = hashlib.sha256(json.dumps(request_values, sort_keys=True).encode()).hexdigest()
     accepted_digests = {digest}
-    if data.allow_search_input and not data.approved_post_search:
-        legacy_values = {k: v for k, v in request_values.items()
-                         if k not in {"allow_search_input", "approved_post_search"}}
-        accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
+    # Requests made before capability defaults changed had false for omitted flags.
+    # Only permit legacy replay when the caller actually omitted the new defaults.
+    old_defaults = dict(request_values)
+    for flag in ("visual_reasoning", "session_persistence", "allow_downloads"):
+        if flag not in data.model_fields_set:
+            old_defaults[flag] = False
+    replay_values = [request_values, old_defaults]
+    if data.max_tokens is None:
+        # Earlier clients omitted the budget and were hashed with 60,000 tokens.
+        replay_values += [{**values, "max_tokens": 60000} for values in replay_values]
+    for values in replay_values:
+        accepted_digests.add(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest())
+        if data.allow_search_input and not data.approved_post_search:
+            legacy_values = {k: v for k, v in values.items()
+                             if k not in {"allow_search_input", "approved_post_search"}}
+            accepted_digests.add(hashlib.sha256(json.dumps(legacy_values, sort_keys=True).encode()).hexdigest())
     try:
         with transaction() as session:
             website = owned(session, Website, data.website_id, owner)
@@ -145,6 +175,9 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
                     if previous.job_type != "agent" or previous.payload_hash not in accepted_digests:
                         raise HTTPException(409, "Idempotency key was used for a different request")
                     return task_output(previous, session.get(AgentTask, previous.id))
+            options = resolved_task_options(data, cfg)
+            options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
+            options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
             try:
                 validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             except ValueError as exc:
@@ -205,7 +238,7 @@ def preview(data: TaskInput, owner: Owner):
             if dataset.website_id != website.id:
                 raise HTTPException(422, "Dataset must belong to the selected website")
         try:
-            options = data.model_dump()
+            options = resolved_task_options(data, settings())
             validate_post_endpoints(options["approved_post_search"], Policy(website.allowed_domains, website.configuration))
             dataset_id = data.dataset_id or website.configuration.get("extraction_dataset_id")
             if dataset_id:
@@ -247,12 +280,15 @@ def task(identifier: str, owner: Owner):
 
 
 @router.get("/tasks/{identifier}/steps")
-def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0):
+def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0,
+          newest_first: bool = False, through_number: Annotated[int | None, Query(ge=1)] = None):
     with Session() as session:
         task_for(session, identifier, owner)
-        return collection(
-            session, select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id).order_by(AgentStep.number), offset, limit
-        )
+        order = AgentStep.number.desc() if newest_first else AgentStep.number.asc()
+        query = select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id)
+        if through_number is not None:
+            query = query.where(AgentStep.number <= through_number)
+        return collection(session, query.order_by(order), offset, limit)
 
 
 @router.post("/tasks/{identifier}/review")

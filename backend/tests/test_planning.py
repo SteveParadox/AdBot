@@ -35,6 +35,15 @@ def decision(action="OBSERVE", **values):
     )
 
 
+def test_download_prohibitions_in_success_criteria_apply_to_new_and_saved_plans():
+    spec = specification("Find current documentation.", ["Avoid downloading files."],
+                         {"allow_downloads": True}, ["example.org"])
+    assert not spec["permissions"]["downloads"]
+    spec["permissions"]["downloads"] = True  # A plan saved before criteria were enforced.
+    with pytest.raises(PermissionError, match="Explicit task prohibition"):
+        guard(initial_plan(spec), decision("DOWNLOAD", target={"element_id": "e1"}), {})
+
+
 def test_literal_contract_complex_ambiguities_and_compaction():
     objectives = [
         "Find launch dates.",

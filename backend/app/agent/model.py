@@ -115,6 +115,10 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
     compact = copy.deepcopy(payload)
     current_page = compact.get("current_page")
     contract = schema.model_json_schema()
+    # Allocate more of a larger request budget to observed content, while preserving
+    # fixed upper bounds and the existing emergency compaction path.
+    scale = 1 if reduced else max(1, min(2, max_chars / 18000))
+    control_limit = int(40 * scale)
     if reduced:
         compact.pop("historical_hints", None)
         if isinstance(current_page, dict):
@@ -132,10 +136,10 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 {**row, "quote": _clip(row.get("quote"), 350)}
                 for row in candidates.get("rows", [])[:6]
             ]
-        current_page["text"] = _clip(current_page.get("text"), 5000)
-        current_page["viewport_text"] = _clip(current_page.get("viewport_text"), 2500)
+        current_page["text"] = _clip(current_page.get("text"), int(5000 * scale))
+        current_page["viewport_text"] = _clip(current_page.get("viewport_text"), int(2500 * scale))
         current_page["accessibility"] = _clip(current_page.get("accessibility"), 1500)
-        current_page["headings"] = [_clip(heading, 200) for heading in current_page.get("headings", [])[:15]]
+        current_page["headings"] = [_clip(heading, 200) for heading in current_page.get("headings", [])[:int(15 * scale)]]
         elements = current_page.get("elements", [])
         if isinstance(elements, list):
             query = set(re.findall(r"\w{3,}", compact.get("objective", "").casefold()))
@@ -186,7 +190,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 else e
                 for e in elements
             ]
-            for element in elements[:40]:
+            for element in elements[:control_limit]:
                 if isinstance(element, dict):
                     element["name"] = _clip(element.get("name"), 100)
                     if isinstance(element.get("options"), list):
@@ -200,15 +204,15 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                     form = element.get("form")
                     if isinstance(form, dict):
                         form["action"] = _clip(form.get("action"), 400)
-            current_page["elements"] = elements[:40]
+            current_page["elements"] = elements[:control_limit]
             current_page["semantic_changes"] = current_page.get("semantic_changes", [])[:5]
             current_page["removed_controls"] = current_page.get("removed_controls", [])[:4]
             if current_page.get("elements"):
                 current_page.pop("accessibility", None)  # The same roles and names already travel in elements.
             current_page["observation_metrics"] = {
                 **current_page.get("observation_metrics", {}),
-                "model_elements": min(40, len(elements)),
-                "model_truncated": len(elements) > 40,
+                "model_elements": min(control_limit, len(elements)),
+                "model_truncated": len(elements) > control_limit,
             }
 
     memory = compact.get("session_memory", compact.get("memory"))
@@ -447,21 +451,24 @@ class ModelClient:
         except ModelError:
             request_text = bounded_request_text(system, kind, payload, schema, cfg.ai_max_request_chars, reduced=True)
         content = request_text
-        if image_path:
+        if image_path and cfg.vision_available():
             from PIL import Image
             import io
 
-            with Image.open(image_path) as picture:
-                picture.thumbnail((1000, 750))
-                stream = io.BytesIO()
-                picture.convert("RGB").save(stream, format="JPEG", quality=65)
-            content = [
-                {"type": "text", "text": request_text},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(stream.getvalue()).decode()},
-                },
-            ]
+            try:
+                with Image.open(image_path) as picture:
+                    picture.thumbnail((1000, 750))
+                    stream = io.BytesIO()
+                    picture.convert("RGB").save(stream, format="JPEG", quality=65)
+                content = [
+                    {"type": "text", "text": request_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(stream.getvalue()).decode()},
+                    },
+                ]
+            except OSError:
+                logger.warning("Agent screenshot unavailable; continuing with text observation")
         body = {
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
             "max_tokens": cfg.ai_max_output_tokens,
@@ -510,6 +517,10 @@ class ModelClient:
                 endpoint = base.rstrip("/") + "/chat/completions"
                 provider_body = {**body, "model": model}
                 provider_name = provider_names[provider_index]
+                if isinstance(content, list) and not cfg.supports_vision(provider_name, model, native=native):
+                    # Fallback providers may be text-only; do not forward screenshots to them.
+                    provider_body["messages"] = [{"role": "system", "content": system},
+                                                 {"role": "user", "content": request_text}]
                 strict_output = (
                     provider_name in {"groq", "groq_secondary", "openrouter"} and "/gpt-oss-" in model
                 ) or (provider_name == "nvidia" and model.startswith("nvidia/nemotron-3.5-lightning-"))
@@ -521,9 +532,9 @@ class ModelClient:
                     provider_body["chat_template_kwargs"] = {"enable_thinking": cfg.nvidia_thinking_enabled}
                 if not native and "/gpt-oss-" in model:
                     if provider_names[provider_index] == "openrouter":
-                        provider_body["reasoning"] = {"effort": cfg.ai_reasoning_effort}
+                        provider_body["reasoning"] = {"effort": cfg.reasoning_effort_for(kind)}
                     else:
-                        provider_body["reasoning_effort"] = cfg.ai_reasoning_effort
+                        provider_body["reasoning_effort"] = cfg.reasoning_effort_for(kind)
                 if native:
                     origin = urlsplit(base)
                     endpoint = f"{origin.scheme}://{origin.netloc}/api/chat"
@@ -582,9 +593,16 @@ class ModelClient:
                         "think": False,
                         "stream": False,
                         "keep_alive": -1,
-                        "options": {"num_predict": cfg.ai_max_output_tokens, "num_ctx": 8192, "temperature": 0},
+                        "options": {"num_predict": cfg.ai_max_output_tokens, "num_ctx": cfg.ollama_context_for(model), "temperature": 0},
                     }
-                output_limit = cfg.ai_max_output_tokens
+                # Keep smaller native Ollama contexts and ordinary browser decisions
+                # from losing most of their input window to an oversized output reserve.
+                compact_output = native or (kind == "decide" and cfg.reasoning_effort_for(kind) == "low")
+                output_limit = min(cfg.ai_max_output_tokens, 2048) if compact_output else cfg.ai_max_output_tokens
+                if native:
+                    provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
+                else:
+                    provider_body["max_tokens"] = output_limit
                 # Count serialized messages, schema and framing. Known GPT-OSS deployments use
                 # a byte-based heuristic with slack. Unknown tokenizers keep a conservative bound.
                 uses_gpt_oss = provider_name in {"groq", "groq_secondary", "openrouter"} and model.startswith("openai/gpt-oss-")
@@ -610,7 +628,6 @@ class ModelClient:
                     provider_body["messages"][1]["content"] = original
                     return False
 
-                provider_estimate = estimate()
                 unavailable = False
                 has_fallback = position + 1 < len(provider_indices)
                 next_provider_index = provider_indices[position + 1] if has_fallback else 0
@@ -619,7 +636,17 @@ class ModelClient:
                 if uses_gpt_oss and context_limit is None:
                     context_limit = 131072
                 if native:
-                    context_limit = min(context_limit or 8192, 8192)
+                    context_limit = cfg.ollama_context_for(model)
+                    provider_body["options"] = {**provider_body["options"], "num_ctx": context_limit}
+                if context_limit is not None:
+                    # Reserve at most a quarter of constrained context for output; retain
+                    # the provider-specific upper bound and never exceed the configured cap.
+                    output_limit = min(output_limit, max(256, context_limit // 4))
+                    if native:
+                        provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
+                    else:
+                        provider_body["max_tokens"] = output_limit
+                provider_estimate = estimate()
                 if context_limit is not None and provider_estimate + output_limit > context_limit:
                     if rebuild(context_limit):
                         provider_estimate = estimate()
@@ -940,7 +967,7 @@ async def warm_local_fallback():
                     "prompt": "",
                     "stream": False,
                     "keep_alive": -1,
-                    "options": {"num_ctx": 8192},
+                    "options": {"num_ctx": cfg.ollama_context_for(cfg.ai_fallback_model)},
                 },
             )
             response.raise_for_status()

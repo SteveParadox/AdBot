@@ -21,7 +21,7 @@ type Evidence = { id: string; url: string; quote: string; step_id: number; sourc
 type Claim = { text: string; evidence_ids: string[] };
 type Task = Job & {
   planning?: Planning;
-  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number };
+  budget?: { elapsed_seconds: number; remaining_seconds: number; remaining_tokens: number; remaining_pages?: number };
   objective: string;
   execution?: { strategy: string; unique_records: number; matched_records: number; advertised_total: number | null;
     directory_pages: number; prevented_repetitions: number; evidence_count: number; recovery_actions?: number;
@@ -96,6 +96,17 @@ type Config = {
   session_persistence: boolean;
   max_tabs: number;
   max_concurrency: number;
+  max_agent_browser_concurrency?: number;
+  default_target_max_pages?: number;
+  default_target_max_duration_seconds?: number;
+  max_request_chars?: number;
+  max_output_tokens?: number;
+  collection_max_rows?: number;
+  classification_max_calls?: number;
+  max_evidence_records?: number;
+  ollama_context_tokens?: number;
+  model_timeout_seconds?: number;
+  primary_fallback_timeout_seconds?: number;
 };
 type Metrics = {
   tasks: number;
@@ -209,9 +220,9 @@ export default function AgentPanel({
   const [formInput, setFormInput] = useState(false),
     [authorized, setAuthorized] = useState(false),
     [memory, setMemory] = useState(true),
-    [vision, setVision] = useState(false),
-    [persist, setPersist] = useState(false);
-  const [downloads, setDownloads] = useState(false);
+    [vision, setVision] = useState(true),
+    [persist, setPersist] = useState(true);
+  const [downloads, setDownloads] = useState(true);
   const [readSearch, setReadSearch] = useState(true);
   const [postSearchUrl, setPostSearchUrl] = useState("");
   const [postSearchField, setPostSearchField] = useState("q");
@@ -229,16 +240,20 @@ export default function AgentPanel({
     queryFn: ({signal}) => queryApi<Collection<{ id: string; name: string; website_id: string }>>("/extraction/datasets", token, signal),
     enabled: Boolean(website),
   });
-  const taskOptions = {
-    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
-    max_steps: maxSteps, allow_form_input: formInput, allow_search_input: readSearch,
-    approved_post_search: approvedPostSearch,
-    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
-  };
   const config = useQuery({
     queryKey: ["agent-config", token],
     queryFn: ({signal}) => queryApi<Config>("/agent/config", token, signal),
   });
+  const taskOptions = {
+    objective, success_criteria: criteria.split("\n").filter(s => s.trim()), mode,
+    max_steps: Math.min(maxSteps, config.data?.max_steps ?? 500),
+    memory_enabled: memory,
+    visual_reasoning: vision && Boolean(config.data?.visual_reasoning),
+    session_persistence: persist && Boolean(config.data?.session_persistence),
+    allow_form_input: formInput, allow_search_input: readSearch,
+    approved_post_search: approvedPostSearch,
+    allow_downloads: downloads, dataset_id: dataset || null, output_format: outputFormat || null,
+  };
   const metrics = useQuery({
     queryKey: ["agent-metrics", token],
     queryFn: ({signal}) => queryApi<Metrics>("/agent/metrics", token, signal),
@@ -262,6 +277,7 @@ export default function AgentPanel({
   function submit(e: FormEvent) {
     e.preventDefault();
     run(async () => {
+      const parsedDatasetQuery = datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery);
       let identifier = website;
       if (!identifier) {
         const parsed = new URL(url);
@@ -271,8 +287,8 @@ export default function AgentPanel({
           allowed_domains: [parsed.hostname],
           authorized,
           configuration: {
-            max_pages: 30,
-            max_duration_seconds: 900,
+            max_pages: config.data?.default_target_max_pages ?? 30,
+            max_duration_seconds: config.data?.default_target_max_duration_seconds ?? 900,
             screenshots: true,
             delay_seconds: 1,
           },
@@ -284,24 +300,11 @@ export default function AgentPanel({
         token,
         "POST",
         {
+          ...taskOptions,
           website_id: identifier,
           priority,
           depends_on: dependency || null,
-          objective,
-          success_criteria: criteria.split("\n").filter((s) => s.trim()),
-          mode,
-          max_steps: Math.min(maxSteps, config.data?.max_steps || 500),
-          max_tokens: config.data?.max_tokens || 60000,
-          memory_enabled: memory,
-          visual_reasoning: vision,
-          session_persistence: persist,
-          allow_form_input: formInput,
-          allow_search_input: readSearch,
-          approved_post_search: approvedPostSearch,
-          allow_downloads: downloads,
-          dataset_id: dataset || null,
-          output_format: outputFormat || null,
-          dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery),
+          dataset_query: parsedDatasetQuery,
         },
         { "Idempotency-Key": crypto.randomUUID() },
       );
@@ -359,8 +362,15 @@ export default function AgentPanel({
           <p className="hint">
             Limits: {config.data?.max_steps} steps,{" "}
             {config.data?.max_tokens.toLocaleString()} tokens,{" "}
-            {config.data?.max_tabs} tabs, {config.data?.max_concurrency}{" "}
-            concurrent jobs.
+            {config.data?.max_tabs} tabs, {config.data?.max_agent_browser_concurrency ?? config.data?.max_concurrency}{" "}
+            configured concurrent agent/browser jobs (actual availability depends on resources).
+          </p>
+          <p className="hint">
+            New targets: {config.data?.default_target_max_pages ?? 30} pages,{" "}
+            {(config.data?.default_target_max_duration_seconds ?? 900) / 60} minutes. Existing targets keep their own configured limits.
+            {" "}Model request: {config.data?.max_request_chars?.toLocaleString() ?? "server default"} characters; output: {config.data?.max_output_tokens?.toLocaleString() ?? "server default"} tokens.
+            {" "}Collection: {config.data?.collection_max_rows?.toLocaleString() ?? "server default"} rows, {config.data?.classification_max_calls ?? "server default"} classification batches.
+            {" "}Evidence: {config.data?.max_evidence_records ?? "server default"} records. Model timeout: {config.data?.model_timeout_seconds ?? "server default"} seconds; failover timeout: {config.data?.primary_fallback_timeout_seconds ?? "server default"} seconds.
           </p>
         </details>
         {!config.data?.configured && (
@@ -501,11 +511,11 @@ export default function AgentPanel({
             <label>
               <input
                 type="checkbox"
-                checked={vision}
+                checked={vision && Boolean(config.data?.visual_reasoning)}
                 disabled={!config.data?.visual_reasoning}
                 onChange={(e) => setVision(e.target.checked)}
               />
-              Vision-capable model
+              Visual reasoning (when a compatible model is configured)
             </label>
             <label>
               <input
@@ -518,11 +528,11 @@ export default function AgentPanel({
             <label>
               <input
                 type="checkbox"
-                checked={persist}
+                checked={persist && Boolean(config.data?.session_persistence)}
                 disabled={!config.data?.session_persistence}
                 onChange={(e) => setPersist(e.target.checked)}
               />
-              Encrypted browser session
+              Encrypted browser session (when a key is configured)
             </label>
           </div>
           {!website && (
@@ -541,7 +551,7 @@ export default function AgentPanel({
             <Play size={15} />
             Start agent task
           </Button>
-          <Button type="button" variant="outline" disabled={busy || !website || objective.length < 8} onClick={() => run(async () => {
+          <Button type="button" variant="outline" disabled={busy || !config.data || !website || objective.length < 8} onClick={() => run(async () => {
             setPreview(await api<Planning>("/agent/preview", token, "POST", { ...taskOptions, dataset_query: datasetQuery.trim() === "{}" ? null : JSON.parse(datasetQuery), website_id: website }));
           })}>Preview task understanding</Button>
           </div>
@@ -677,20 +687,29 @@ function AgentDetail({
     queryKey: ["agent-task", id, token],
     queryFn: ({signal}) => queryApi<Task>("/agent/tasks/" + id, token, signal),
   });
+  const historyPageSize = 100;
+  const [history, setHistory] = useState<{ page: number; through: number } | null>(null);
+  const historyPage = history?.page ?? 0;
   const steps = useQuery({
     queryKey: ["agent-steps", id, token],
     queryFn: ({signal}) =>
-      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=100`, token, signal),
+      queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&newest_first=true`, token, signal),
   });
+  const olderSteps = useQuery({
+    queryKey: ["agent-steps", id, token, history],
+    queryFn: ({signal}) => queryApi<Collection<Step>>(`/agent/tasks/${id}/steps?limit=${historyPageSize}&offset=${historyPage * historyPageSize}&newest_first=true&through_number=${history?.through}`, token, signal),
+    enabled: history !== null,
+  });
+  const displayedSteps = historyPage ? olderSteps : steps;
   const events = useJobEvents(id, token, task.data?.status, ["agent-task", "agent-steps"], 100);
-  const latest = steps.data?.items.at(-1),
+  const latest = steps.data?.items[0],
     pending = steps.data?.items.find(
       (s) => s.id === task.data?.pending_step_id,
     );
   const imageEvent = [...events]
     .reverse()
     .find((e) => typeof e.details.screenshot_path === "string" && e.details.screenshot_path);
-  const capturedStep = [...(steps.data?.items || [])].reverse().find((s) => s.observation.screenshot_path);
+  const capturedStep = steps.data?.items.find((s) => s.observation.screenshot_path);
   const capture =
     (imageEvent?.details.screenshot_path as string | undefined) ||
     capturedStep?.observation.screenshot_path;
@@ -759,7 +778,7 @@ function AgentDetail({
             {t.prompt_tokens + t.completion_tokens} tokens · {t.model_calls}{" "}
             model calls
           </span>
-          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining</span>}
+          {t.budget && <span className="pill">{Math.floor(t.budget.elapsed_seconds)}s elapsed · {Math.floor(t.budget.remaining_seconds)}s budget remaining · {t.budget.remaining_tokens} tokens remaining{t.budget.remaining_pages !== undefined ? ` · ${t.budget.remaining_pages} pages remaining` : ""}</span>}
         </div>
         {t.execution && t.execution.strategy !== "general" && (
           <p className="hint">
@@ -927,13 +946,22 @@ function AgentDetail({
           <h2>Observed actions and verification</h2>
           <p className="hint">These metrics describe automated sessions only. Filter X-AdBot-Automation or the AdBotMonitor user agent in your site analytics to exclude this traffic from visitor reports.</p>
         </div>
-        {steps.error && (
+        {displayedSteps.error && (
           <p role="alert" className="error">
-            {steps.error.message}
+            {displayedSteps.error.message}
           </p>
         )}
+        <div className="button-row">
+          <Button variant="outline" disabled={!history}
+            onClick={() => setHistory(current => current && current.page > 1 ? { ...current, page: current.page - 1 } : null)}>Newer steps</Button>
+          <span className="hint">Page {historyPage + 1} · {displayedSteps.data?.total ?? steps.data?.total ?? 0} recorded steps</span>
+          <Button variant="outline" disabled={!latest || (historyPage + 1) * historyPageSize >= (displayedSteps.data?.total ?? 0)}
+            onClick={() => {
+              if (latest) setHistory(current => ({ page: (current?.page ?? 0) + 1, through: current?.through ?? latest.number }));
+            }}>Older steps</Button>
+        </div>
         <div className="event-list">
-          {steps.data?.items.map((step) => (
+          {[...(displayedSteps.data?.items ?? [])].reverse().map((step) => (
             <div className="event" key={step.id}>
               <span className="step-number">{step.number}</span>
               <div>

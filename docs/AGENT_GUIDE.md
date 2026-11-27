@@ -82,8 +82,8 @@ The primary provider gets one request. Any HTTP response other than 200, timeout
 network failure, invalid response, schema mismatch, or exhausted primary token
 reserve immediately switches the same request to the fallback. The fallback uses
 the configured retry budget and separate 60-second timeout for local inference by
-default. Model responses are capped at 800 output tokens by default, which is
-enough for the structured action and verification JSON.
+default. Model responses have a 4,096-token upper limit by default; native Ollama,
+low-effort decisions and smaller known context windows receive smaller output reservations.
 If the fallback returns malformed JSON or a response that fails the action schema,
 it retries internally before the agent records a failed step.
 When fallback is enabled,
@@ -96,7 +96,7 @@ continue to trigger fallback as before.
 Rejected primary requests release their token reservation before fallback, so they
 do not consume the task token budget.
 
-The agent also bounds each serialized model request to 18,000 characters by
+The agent also bounds each serialized model request to 36,000 characters by
 default (`ADBOT_AI_MAX_REQUEST_CHARS`). It prioritizes the goal, current URL,
 visible page text, and controls, then removes supplementary accessibility and
 old-memory data if needed. This prevents oversized observations from reaching
@@ -140,8 +140,9 @@ authentication key, not the LLM key), and choose **AI Agent**.
 Existing target settings govern browser engine, headed/headless mode, robots
 handling, page limit, navigation timeout, session duration and allowed domains.
 Add needed resource hosts explicitly in **Websites → Configure**. New targets
-created from the agent panel allow only the starting hostname, use 30 pages and a
-900-second session budget. All clicks execute autonomously in every mode,
+created from the agent panel allow only the starting hostname and default to 100 pages
+and a 3,600-second session budget (operator-configurable). Existing registered targets
+retain their configured page and time budgets. All clicks execute autonomously in every mode,
 including consequential buttons and form submissions.
 
 Existing deployments with `ADBOT_AGENT_MAX_STEPS=30` must update that setting to
@@ -221,21 +222,37 @@ All names below have the `ADBOT_` prefix.
 | AI_MODEL | Required when enabling a provider |
 | AI_BASE_URL / AI_API_KEY | Generic compatible endpoint and secret |
 | GROQ_BASE_URL / GROQ_API_KEY | Groq endpoint and secret |
-| AI_TIMEOUT_SECONDS | `30`; 1–120 seconds per HTTP request |
+| AI_TIMEOUT_SECONDS | `60`; 1–120 seconds per primary HTTP request |
+| AI_PRIMARY_FALLBACK_TIMEOUT_SECONDS | `30`; bounded timeout for provider-chain attempts |
+| AI_OLLAMA_CONTEXT_TOKENS | `8192`; native Ollama context ceiling, configurable up to 32768 subject to model and host capacity |
+| AGENT_MAX_EVIDENCE_RECORDS | `80`; stored source evidence records per agent task (1–200) |
 | AI_RETRIES | `2`; bounded transport retries |
-| AI_MAX_OUTPUT_TOKENS | `1800`; maximum per model response |
+| AI_MAX_OUTPUT_TOKENS | `4096`; maximum per model response, reduced for constrained contexts |
+| AI_MAX_REQUEST_CHARS | `36000`; maximum serialized request characters |
 | AI_JSON_MODE | `true`; sends `response_format: json_object` |
 | AGENT_MAX_STEPS | `500`; server ceiling, max 500 |
-| AGENT_MAX_TOKENS | `60000`; token budget ceiling |
-| AGENT_MAX_TABS | `4`; maximum simultaneous tabs |
+| AGENT_MAX_TOKENS | `250000`; token budget ceiling; omitted API task budget inherits this ceiling |
+| AGENT_MAX_TABS | `6`; maximum simultaneous tabs |
+| AGENT_DEFAULT_TARGET_MAX_PAGES | `100`; new dashboard target page budget |
+| AGENT_DEFAULT_TARGET_MAX_DURATION_SECONDS | `3600`; new dashboard target time budget |
+| MAX_BROWSER_SESSIONS / MAX_CONCURRENT_AGENTS / MAX_CONCURRENCY | `2` each; retain host-aware concurrency controls |
 | AGENT_MAX_RETRIES | `3`; consecutive action/model recovery failures |
 | AGENT_MEMORY_ENABLED | `true`; permit reusable memories |
-| AGENT_VISUAL_REASONING | `false`; permit screenshot input to a vision-capable model |
-| BROWSER_SESSION_PERSISTENCE | `false`; permit encrypted cookies/local storage checkpoints |
+| AGENT_VISUAL_REASONING | `true`; enable screenshot reasoning for compatible models |
+| AI_VISION_MODELS | comma-separated exact `provider:model` IDs for additional verified vision-capable models |
+| AI_REASONING_EFFORT | `auto`; high for planning/verification, medium for decisions, low for other supported GPT-OSS calls; explicit low/medium/high overrides |
+| BROWSER_SESSION_PERSISTENCE | auto-enabled with a valid key; explicit false opts out |
 | SESSION_ENCRYPTION_KEY | Fernet key; required when enabling session persistence |
 
-Use a vision-capable model before enabling images; text-only models may reject
-image inputs. Image delivery is optional and downscaled before model requests.
+New tasks default to visual reasoning when a compatible non-native provider is configured,
+encrypted session persistence when the server has a valid key, and bounded observed-link
+downloads. Each can be turned off per task. The Google Gemini provider is recognized
+for visual input; for other verified compatible endpoints, set `ADBOT_AI_VISION_MODELS`
+(e.g. an exact `openai_compatible:gpt-4o` entry). Text-only fallback providers and native
+Ollama do not receive images. Images are downscaled before model requests. Existing explicit
+server environment values are respected; update older `.env` files to adopt the new defaults.
+Download limits, domain checks, explicit no-download constraints and authenticated artifact
+handling are unchanged. Automatic browser downloads remain disabled.
 The initializer generates a session key for new `.env` files. To add one to an
 existing deployment:
 
@@ -262,7 +279,7 @@ maximum session duration.
 | GET | `/api/agent/config` | Sanitized provider readiness and limits |
 | POST / GET | `/api/agent/tasks` | Enqueue / paginate tasks |
 | GET | `/api/agent/tasks/{id}` | Status, objective, usage, memory and result |
-| GET | `/api/agent/tasks/{id}/steps` | Observations, decisions and actual outcomes |
+| GET | `/api/agent/tasks/{id}/steps` | Observations, decisions and outcomes. Set `newest_first=true` for newest first and `through_number` to keep older pages stable as new steps arrive. |
 | POST | `/api/agent/tasks/{id}/review` | Approve/decline the pending step and supply a reply |
 | GET / DELETE | `/api/agent/memories` / `/api/agent/memories/{id}` | Inspect / forget reusable knowledge |
 | GET | `/api/agent/metrics` | Success, duration, step and usage metrics |
@@ -278,7 +295,7 @@ exact pending `step_id` and reject stale/already answered requests.
   "objective": "Find the most recent AI release and cite its source.",
   "mode": "supervised",
   "max_steps": 20,
-  "max_tokens": 60000,
+  "max_tokens": 250000,
   "allow_form_input": false,
   "allow_downloads": false,
   "memory_enabled": true

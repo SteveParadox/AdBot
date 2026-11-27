@@ -21,10 +21,10 @@ Topic classification prefilters from observed tags and specific purpose text. Ex
 | Configuration | Default | Scope |
 | --- | ---: | --- |
 | `ADBOT_AGENT_COLLECTION_BATCH_ROWS` | 250 | Rows read per observation |
-| `ADBOT_AGENT_COLLECTION_MAX_ROWS` | 2,000 | Unique rows in a task |
-| `ADBOT_AGENT_COLLECTION_MAX_BYTES` | 4,000,000 | Serialized record bytes in a task |
-| `ADBOT_AGENT_CLASSIFICATION_BATCH_ROWS` | 12 | Rows per semantic classification call |
-| `ADBOT_AGENT_CLASSIFICATION_MAX_CALLS` | 12 | Semantic classification batches per task |
+| `ADBOT_AGENT_COLLECTION_MAX_ROWS` | 5,000 | Unique rows in a task |
+| `ADBOT_AGENT_COLLECTION_MAX_BYTES` | 8,000,000 | Serialized record bytes in a task |
+| `ADBOT_AGENT_CLASSIFICATION_BATCH_ROWS` | 24 | Rows per semantic classification call |
+| `ADBOT_AGENT_CLASSIFICATION_MAX_CALLS` | 32 | Semantic classification batches per task |
 
 Storage, step, time, and model token budgets preserve collected evidence when reached. Increase collection limits in line with the worker's memory and task deadline. The limits are deployment settings shared by the API and workers.
 

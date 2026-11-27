@@ -226,3 +226,17 @@ def test_extraction_dictionary_keeps_dynamic_keys_and_local_validation():
     assert result.values["launch_month"].value == "May"
     with pytest.raises(ValidationError):
         validate_response('{"values":{"launch_month":{"unknown":"unsupported"}}}', AIRecord)
+
+def test_larger_prompt_budget_preserves_more_observed_content():
+    controls = [{"element_id": f"link{i}", "visible": True, "actionable": True,
+                 "name": f"Reference {i}"} for i in range(70)]
+    payload = {"objective": "Read references", "current_page": {
+        "text": "x" * 11000, "elements": controls
+    }}
+    small = json.loads(bounded_request_text("System", "decide", payload, Decision, 18000))
+    large_text = bounded_request_text("System", "decide", payload, Decision, 36000)
+    large = json.loads(large_text)
+    assert len(large["current_page"]["text"]) > len(small["current_page"]["text"])
+    assert len(large["current_page"]["elements"]) > len(small["current_page"]["elements"])
+    assert len("System") + len(large_text) <= 36000
+    assert len(payload["current_page"]["elements"]) == 70

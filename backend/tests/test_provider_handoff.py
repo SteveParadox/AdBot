@@ -72,11 +72,12 @@ async def test_new_task_respects_shared_cooldown_then_retries_groq(providers, mo
 async def test_failure_hands_off_once_and_stays_local(providers, monkeypatch, status):
     calls = []
     original = httpx.AsyncClient
+    monkeypatch.setattr(providers, "ai_primary_fallback_timeout_seconds", 17)
 
     async def respond(request):
         calls.append(request.url.host)
         if request.url.host == "groq.test":
-            assert request.extensions["timeout"]["read"] == 10
+            assert request.extensions["timeout"]["read"] == 17
             return httpx.Response(status, headers={"retry-after": "3600"})
         body = json.loads(request.content)
         assert body["model"] == "fixture-local-model"

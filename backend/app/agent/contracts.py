@@ -150,14 +150,14 @@ class TaskInput(Strict):
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
     mode: Literal["assisted", "autonomous", "supervised"] = "supervised"
     max_steps: int = Field(500, ge=1, le=500)
-    max_tokens: int = Field(60000, ge=2000, le=1000000)
+    max_tokens: int | None = Field(None, ge=2000, le=1000000)
     memory_enabled: bool = True
-    visual_reasoning: bool = False
-    session_persistence: bool = False
+    visual_reasoning: bool | None = None
+    session_persistence: bool | None = None
     allow_form_input: bool = False
     allow_search_input: bool = True
     approved_post_search: list[ApprovedPostSearch] = Field(default_factory=list, max_length=8)
-    allow_downloads: bool = False
+    allow_downloads: bool = True
     dataset_id: str | None = Field(None, max_length=36)
     output_format: Literal["answer", "json", "csv"] | None = None
     dataset_query: DatasetQuery | None = None

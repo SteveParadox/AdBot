@@ -843,3 +843,200 @@ def test_step_limit_defaults_and_validation(client, target, agent_config, monkey
             Settings(_env_file=None, agent_max_steps=limit)
     monkeypatch.setattr(agent_config, "agent_max_steps", 100)
     assert client.post("/api/agent/tasks", json={**body, "max_steps": 500}).json()["options"]["max_steps"] == 100
+
+def test_new_task_capability_defaults_and_explicit_opt_out(client, target, agent_config, monkeypatch):
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
+    monkeypatch.setattr(agent_config, "ai_vision_models", "local:fixture-model-not-live-llm")
+    monkeypatch.setattr(agent_config, "ai_ollama_native", False)
+    monkeypatch.setattr(agent_config, "browser_session_persistence", True)
+    monkeypatch.setattr(agent_config, "session_encryption_key", SecretStr(Fernet.generate_key().decode()))
+    config = client.get("/api/agent/config").json()
+    assert config["visual_reasoning"] is True
+    assert config["session_persistence"] is True
+    task = new_task(client, target)
+    assert all(task["options"][key] is True for key in (
+        "visual_reasoning", "session_persistence", "allow_downloads"
+    ))
+    opted_out = new_task(client, target, visual_reasoning=False, session_persistence=False, allow_downloads=False)
+    assert all(opted_out["options"][key] is False for key in (
+        "visual_reasoning", "session_persistence", "allow_downloads"
+    ))
+
+
+def test_unavailable_capabilities_are_not_granted(client, target, agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
+    monkeypatch.setattr(agent_config, "ai_vision_models", "")
+    monkeypatch.setattr(agent_config, "browser_session_persistence", False)
+    task = new_task(client, target)
+    assert task["options"]["visual_reasoning"] is False
+    assert task["options"]["session_persistence"] is False
+    assert task["options"]["allow_downloads"] is True
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    for flag in ("visual_reasoning", "session_persistence"):
+        for endpoint in ("preview", "tasks"):
+            result = client.post(f"/api/agent/{endpoint}", json={**body, flag: True})
+            assert result.status_code == 422, result.text
+
+
+def test_server_session_opt_out_after_task_creation(client, target, agent_config, monkeypatch):
+    from app.agent.runner import AgentRunner
+
+    monkeypatch.setattr(agent_config, "browser_session_persistence", True)
+    headers = {"Idempotency-Key": "persistent-task"}
+    body = {"website_id": target["id"], "objective": "Read current documentation.", "session_persistence": True}
+    task = client.post("/api/agent/tasks", json=body, headers=headers).json()
+    with transaction() as session:
+        session.get(AgentTask, task["id"]).encrypted_session = "old-encrypted-state"
+    monkeypatch.setattr(agent_config, "browser_session_persistence", False)
+    replay = client.post("/api/agent/tasks", json=body, headers=headers)
+    assert replay.status_code == 201 and replay.json()["id"] == task["id"]
+    runner = AgentRunner(*claim())
+    assert runner.options["session_persistence"] is False
+    assert "storage_state" not in runner.context_options()
+
+
+def test_vision_model_compatibility_and_adaptive_reasoning(agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "agent_visual_reasoning", True)
+    monkeypatch.setattr(agent_config, "ai_vision_models", "local:fixture-model-not-live-llm")
+    monkeypatch.setattr(agent_config, "ai_ollama_native", False)
+    assert agent_config.vision_available()
+    assert not agent_config.supports_vision("local", "text-only")
+    assert not agent_config.supports_vision("local", "fixture-model-not-live-llm", native=True)
+    monkeypatch.setattr(agent_config, "ai_ollama_native", True)
+    assert not agent_config.vision_available()
+    monkeypatch.setattr(agent_config, "ai_reasoning_effort", "auto")
+    assert agent_config.reasoning_effort_for("plan") == "high"
+    assert agent_config.reasoning_effort_for("verify") == "high"
+    assert agent_config.reasoning_effort_for("decide") == "medium"
+    assert agent_config.reasoning_effort_for("classify") == "low"
+    monkeypatch.setattr(agent_config, "ai_reasoning_effort", "low")
+    assert agent_config.reasoning_effort_for("verify") == "low"
+
+
+def test_session_persistence_auto_requires_valid_key():
+    from app.config import Settings
+
+    kwargs = {"_env_file": None, "api_keys": "x" * 40, "ai_provider": "disabled",
+              "browser_session_persistence": None}
+    assert Settings(**kwargs, session_encryption_key="").browser_session_persistence is False
+    assert Settings(**kwargs, session_encryption_key=Fernet.generate_key().decode()).browser_session_persistence is True
+    with pytest.raises(ValidationError, match="valid ADBOT_SESSION_ENCRYPTION_KEY"):
+        Settings(**kwargs, session_encryption_key="invalid")
+    with pytest.raises(ValidationError, match="valid ADBOT_SESSION_ENCRYPTION_KEY"):
+        Settings(**{**kwargs, "browser_session_persistence": True}, session_encryption_key="")
+    assert Settings(**{**kwargs, "browser_session_persistence": False},
+                    session_encryption_key=Fernet.generate_key().decode()).browser_session_persistence is False
+
+
+def test_old_capability_defaults_idempotency_replay(client, target, agent_config):
+    headers = {"Idempotency-Key": "old-capability-defaults"}
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    task_id = client.post("/api/agent/tasks", json=body, headers=headers).json()["id"]
+    old = TaskInput(**body).model_dump(exclude={
+        "priority", "depends_on", "dataset_id", "dataset_query", "output_format"
+    })
+    old.update(visual_reasoning=False, session_persistence=False, allow_downloads=False)
+    with transaction() as session:
+        session.get(Job, task_id).payload_hash = hashlib.sha256(
+            json.dumps(old, sort_keys=True).encode()
+        ).hexdigest()
+    assert client.post("/api/agent/tasks", json=body, headers=headers).json()["id"] == task_id
+    assert client.post("/api/agent/tasks", json={**body, "allow_downloads": True},
+                       headers=headers).status_code == 409
+
+def test_server_budget_defaults_and_explicit_limits(client, target, agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "agent_max_tokens", 250000)
+    monkeypatch.setattr(agent_config, "agent_default_target_max_pages", 100)
+    monkeypatch.setattr(agent_config, "agent_default_target_max_duration_seconds", 3600)
+    monkeypatch.setattr(agent_config, "max_concurrency", 4)
+    monkeypatch.setattr(agent_config, "max_concurrent_agents", 3)
+    monkeypatch.setattr(agent_config, "max_browser_sessions", 2)
+    config = client.get("/api/agent/config").json()
+    assert config["max_tokens"] == 250000
+    assert config["default_target_max_pages"] == 100
+    assert config["default_target_max_duration_seconds"] == 3600
+    assert config["max_agent_browser_concurrency"] == 2
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    headers = {"Idempotency-Key": "automatic-budget"}
+    response = client.post("/api/agent/tasks", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    task = response.json()
+    assert task["options"]["max_tokens"] == 250000
+    assert task["budget"]["remaining_pages"] == target["configuration"]["max_pages"]
+    explicit = client.post("/api/agent/tasks", json={**body, "max_tokens": 60000})
+    assert explicit.status_code == 201
+    assert explicit.json()["options"]["max_tokens"] == 60000
+    assert client.post("/api/agent/tasks", json={**body, "max_tokens": 60000},
+                       headers=headers).status_code == 409
+    capped = client.post("/api/agent/tasks", json={**body, "max_tokens": 500000})
+    assert capped.status_code == 201
+    assert capped.json()["options"]["max_tokens"] == 250000
+
+
+def test_legacy_token_default_idempotency_replay(client, target, agent_config):
+    headers = {"Idempotency-Key": "legacy-token-default"}
+    body = {"website_id": target["id"], "objective": "Find current AI documentation."}
+    task = client.post("/api/agent/tasks", json=body, headers=headers).json()
+    previous_payload = TaskInput(**body).model_dump(exclude={
+        "priority", "depends_on", "dataset_id", "dataset_query", "output_format"
+    })
+    previous_payload.update(max_tokens=60000, visual_reasoning=False,
+                            session_persistence=False, allow_downloads=False)
+    with transaction() as session:
+        session.get(Job, task["id"]).payload_hash = hashlib.sha256(
+            json.dumps(previous_payload, sort_keys=True).encode()
+        ).hexdigest()
+    replay = client.post("/api/agent/tasks", json=body, headers=headers)
+    assert replay.status_code == 201
+    assert replay.json()["id"] == task["id"]
+    assert client.post("/api/agent/tasks", json={**body, "max_tokens": 100000},
+                       headers=headers).status_code == 409
+
+def test_step_history_newest_first_and_pagination(client, target, agent_config):
+    task = new_task(client, target)
+    with transaction() as session:
+        session.add_all([
+            AgentStep(job_id=task["id"], number=number, observation={}, decision={}, outcome={})
+            for number in range(1, 106)
+        ])
+    url = f"/api/agent/tasks/{task['id']}/steps"
+    original = client.get(url + "?limit=100").json()
+    assert original["total"] == 105
+    assert original["items"][0]["number"] == 1
+    latest = client.get(url + "?limit=100&newest_first=true").json()
+    assert latest["items"][0]["number"] == 105
+    assert latest["items"][-1]["number"] == 6
+    with transaction() as session:
+        session.add(AgentStep(job_id=task["id"], number=106, observation={}, decision={}, outcome={}))
+    older = client.get(url + "?limit=100&offset=100&newest_first=true&through_number=105").json()
+    assert older["total"] == 105
+    assert [step["number"] for step in older["items"]] == [5, 4, 3, 2, 1]
+    assert client.get(url + "?newest_first=true", headers=OTHER_AUTH).status_code == 404
+
+
+def test_ollama_context_configuration(agent_config, monkeypatch):
+    monkeypatch.setattr(agent_config, "ai_ollama_context_tokens", 16384)
+    monkeypatch.setattr(agent_config, "ai_context_windows", {})
+    assert agent_config.ollama_context_for("example") == 16384
+    monkeypatch.setattr(agent_config, "ai_context_windows", {"example": 4096})
+    assert agent_config.ollama_context_for("example") == 4096
+    monkeypatch.setattr(agent_config, "ai_context_windows", {"example": 65536})
+    assert agent_config.ollama_context_for("example") == 16384
+    monkeypatch.setattr(agent_config, "ai_context_windows", {"local": 8192, "example": 4096})
+    assert agent_config.ollama_context_for("example") == 4096
+
+
+def test_research_evidence_budget_is_configurable():
+    from app.agent.research import capture_evidence
+
+    store = [{"id": f"old-{i}", "url": "https://example.test/old", "quote": f"Old quote {i}"}
+             for i in range(40)]
+    observation = {"url": "https://example.test/new", "research_chunks": [
+        {"quote": "Orion released its documentation.", "entities": ["Orion"], "heading": "Release"},
+        {"quote": "Orion updated its documentation.", "entities": ["Orion"], "heading": "Update"},
+    ]}
+    assert capture_evidence(observation, store, 1, ["Orion"], [], max_records=41) == 1
+    assert len(store) == 41
+    assert capture_evidence(observation, store, 2, ["Orion"], [], max_records=41) == 0
