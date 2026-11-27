@@ -85,6 +85,7 @@ def task_output(job, task):
         "budget": {
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, job.snapshot["configuration"]["max_duration_seconds"] - elapsed),
+            "remaining_pages": max(0, job.snapshot["configuration"]["max_pages"] - job.pages_visited),
             "remaining_tokens": max(0, task.options["max_tokens"] - task.prompt_tokens - task.completion_tokens),
         },
     }
@@ -108,6 +109,13 @@ def configuration(owner: Owner):
         "session_persistence": cfg.browser_session_persistence,
         "max_tabs": cfg.agent_max_tabs,
         "max_concurrency": cfg.max_concurrency,
+        "max_agent_browser_concurrency": min(cfg.max_concurrency, cfg.max_browser_sessions, cfg.max_concurrent_agents),
+        "default_target_max_pages": cfg.agent_default_target_max_pages,
+        "default_target_max_duration_seconds": cfg.agent_default_target_max_duration_seconds,
+        "max_request_chars": cfg.ai_max_request_chars,
+        "max_output_tokens": cfg.ai_max_output_tokens,
+        "collection_max_rows": cfg.agent_collection_max_rows,
+        "classification_max_calls": cfg.agent_classification_max_calls,
     }
 
 
@@ -120,6 +128,9 @@ def resolved_task_options(data: TaskInput, cfg):
     options = data.model_dump(exclude={"priority", "depends_on"})
     options["visual_reasoning"] = vision if data.visual_reasoning is None else data.visual_reasoning
     options["session_persistence"] = bool(cfg.browser_session_persistence) if data.session_persistence is None else data.session_persistence
+    # Keep the legacy schema default for request hashing, but omitted budgets inherit
+    # the deployment ceiling. Explicit smaller requests remain binding.
+    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens) if "max_tokens" in data.model_fields_set else cfg.agent_max_tokens
     return options
 
 
@@ -128,7 +139,6 @@ def create_task(data: TaskInput, owner: Owner, idempotency_key: Annotated[str | 
     cfg = settings()
     options = resolved_task_options(data, cfg)
     options["max_steps"] = min(data.max_steps, cfg.agent_max_steps)
-    options["max_tokens"] = min(data.max_tokens, cfg.agent_max_tokens)
     options["memory_enabled"] = data.memory_enabled and cfg.agent_memory_enabled
     request_values = (
         data.model_dump(exclude={"priority", "depends_on"})
