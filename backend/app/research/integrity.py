@@ -7,6 +7,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from time import time
 
 WINDOWS = {"day": 1, "week": 7, "month": 30, "year": 365}
 ISO = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)$")
@@ -110,16 +111,17 @@ def claim_freshness(ids, evidence, sources, window, now=None):
 
 
 def offer_is_current(observed_at, valid_until=None, now=None):
-    now = now or datetime.now(timezone.utc)
     if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool):
         return False
-    age = now.timestamp() - observed_at
+    current = time() if now is None else now.timestamp()
+    age = current - observed_at
     if not 0 <= age <= 120:
         return False
     if valid_until:
         if not isinstance(valid_until, str) or not ISO.fullmatch(valid_until):
             return False
         try:
+            now = now or datetime.fromtimestamp(current, timezone.utc)
             end = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
             if len(valid_until) == 10:
                 return now.date() <= end.date()
