@@ -115,6 +115,10 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
     compact = copy.deepcopy(payload)
     current_page = compact.get("current_page")
     contract = schema.model_json_schema()
+    # Allocate more of a larger request budget to observed content, while preserving
+    # fixed upper bounds and the existing emergency compaction path.
+    scale = 1 if reduced else max(1, min(2, max_chars / 18000))
+    control_limit = int(40 * scale)
     if reduced:
         compact.pop("historical_hints", None)
         if isinstance(current_page, dict):
@@ -132,10 +136,10 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 {**row, "quote": _clip(row.get("quote"), 350)}
                 for row in candidates.get("rows", [])[:6]
             ]
-        current_page["text"] = _clip(current_page.get("text"), 5000)
-        current_page["viewport_text"] = _clip(current_page.get("viewport_text"), 2500)
+        current_page["text"] = _clip(current_page.get("text"), int(5000 * scale))
+        current_page["viewport_text"] = _clip(current_page.get("viewport_text"), int(2500 * scale))
         current_page["accessibility"] = _clip(current_page.get("accessibility"), 1500)
-        current_page["headings"] = [_clip(heading, 200) for heading in current_page.get("headings", [])[:15]]
+        current_page["headings"] = [_clip(heading, 200) for heading in current_page.get("headings", [])[:int(15 * scale)]]
         elements = current_page.get("elements", [])
         if isinstance(elements, list):
             query = set(re.findall(r"\w{3,}", compact.get("objective", "").casefold()))
@@ -186,7 +190,7 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                 else e
                 for e in elements
             ]
-            for element in elements[:40]:
+            for element in elements[:control_limit]:
                 if isinstance(element, dict):
                     element["name"] = _clip(element.get("name"), 100)
                     if isinstance(element.get("options"), list):
@@ -200,15 +204,15 @@ def bounded_request_text(system, kind, payload, schema, max_chars, *, reduced=Fa
                     form = element.get("form")
                     if isinstance(form, dict):
                         form["action"] = _clip(form.get("action"), 400)
-            current_page["elements"] = elements[:40]
+            current_page["elements"] = elements[:control_limit]
             current_page["semantic_changes"] = current_page.get("semantic_changes", [])[:5]
             current_page["removed_controls"] = current_page.get("removed_controls", [])[:4]
             if current_page.get("elements"):
                 current_page.pop("accessibility", None)  # The same roles and names already travel in elements.
             current_page["observation_metrics"] = {
                 **current_page.get("observation_metrics", {}),
-                "model_elements": min(40, len(elements)),
-                "model_truncated": len(elements) > 40,
+                "model_elements": min(control_limit, len(elements)),
+                "model_truncated": len(elements) > control_limit,
             }
 
     memory = compact.get("session_memory", compact.get("memory"))
