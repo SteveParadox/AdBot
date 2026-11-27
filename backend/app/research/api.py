@@ -126,7 +126,13 @@ def enqueue(data, owner, key, retry_of=None):
                 context = build_context(data, history, intent, mode)
             snapshot["research_context"] = context
             values.update(conversation_id=thread.id, country=context["country"], freshness=context["freshness"])
-            budget = budget_for(mode)
+            # Auto routing is decided inside the charged worker, never at enqueue.
+            # A configured auto envelope is optional; explicit modes retain their
+            # own caps. A direct fallback needs a small web-capable envelope.
+            semantic = data.mode == Mode.AUTO and not retry_of and intent != "follow_up"
+            snapshot["research_semantic_route"] = semantic
+            budget = (settings().research_budgets.get("auto") or
+                      budget_for(Mode.QUICK if mode == Mode.DIRECT else mode)) if semantic else budget_for(mode)
             snapshot["configuration"] = {"max_duration_seconds": budget.seconds}
             job = Job(owner=owner, job_type="research", website_id=None, idempotency_key=key, payload_hash=digest,
                       snapshot=snapshot)

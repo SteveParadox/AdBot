@@ -55,6 +55,7 @@ class ResearchRunner:
             self.saved = job.execution_state.get("research_checkpoint")
             self.reference_at = job.snapshot.get("research_reference_at", task.created_at)
             self.prior_queries = job.snapshot.get("research_prior_queries", [])
+            self.semantic_route = job.snapshot.get("research_semantic_route", False)
             before = job.snapshot.get("research_history_before", task.created_at)
             self.context = job.snapshot.get("research_context")
             self.history = [] if self.context is not None else previous_turns(session, task.conversation_id, job.owner, before)
@@ -102,7 +103,7 @@ class ResearchRunner:
         engine = Research(self.owner, self.question, self.mode, self.intent, self.budget,
                           deadline, self.history, self.publish, self.gate, usage=self.usage, charge=self.charge,
                           context=self.context, conversation=self.conversation, checkpoint=self.checkpoint, saved=self.saved,
-                          reference_at=self.reference_at, prior_queries=self.prior_queries)
+                          reference_at=self.reference_at, prior_queries=self.prior_queries, semantic_route=self.semantic_route)
         self.result = await engine.run()
 
     def persist(self, session):
@@ -110,6 +111,7 @@ class ResearchRunner:
         if self.result is None:
             raise RuntimeError("Research ended without a durable result")
         task.result = self.result
+        task.mode = self.result.get("effective_mode", task.mode)
         job = session.get(Job, self.id)
         job.execution_state = {key: value for key, value in job.execution_state.items() if key != "research_checkpoint"}
         for index, paragraph in enumerate(self.result["answer"].split("\n\n")[:30]):

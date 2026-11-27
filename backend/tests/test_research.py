@@ -164,7 +164,9 @@ def mock_network(monkeypatch, cfg, *, first_code=429, slow=False, empty=False, m
             kind = content["purpose"]
             assert data["format"] and data["think"] is False
             assert "untrusted data" in data["messages"][0]["content"]
-            if kind == "research_direct":
+            if kind == "research_route":
+                reply = {"mode": "quick", "needs_web": True, "schedule": False, "confidence": .95}
+            elif kind == "research_direct":
                 reply = {"answer": "The answer is **4**."}
             elif malformed:
                 reply = {}

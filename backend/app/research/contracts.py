@@ -2,6 +2,7 @@
 
 import re
 from enum import StrEnum
+from typing import Literal
 
 import pycountry
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -55,6 +56,22 @@ class Question(Strict):
         if value and not pycountry.countries.get(alpha_2=value):
             raise ValueError("Use an ISO 3166-1 alpha-2 country code")
         return value
+
+
+class SemanticRoute(Strict):
+    mode: Literal["direct", "quick", "deep", "shopping", "fact_check", "technical"]
+    needs_web: bool
+    schedule: bool = False
+    confidence: float = Field(ge=0, le=1)
+
+
+class AnswerGroup(Strict):
+    heading: Literal["answer", "findings", "comparison", "implications", "recommendations", "caveats"]
+    claims: list[int] = Field(min_length=1, max_length=40)
+
+
+class AnswerLayout(Strict):
+    groups: list[AnswerGroup] = Field(min_length=1, max_length=8)
 
 
 class Plan(Strict):

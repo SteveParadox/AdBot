@@ -7,3 +7,10 @@ Relative single-day requests receive a resolved ISO date. The browser supplies i
 Public HTML table rows and explicitly marked datetime observations are retained within bounded extraction limits. Existing robots, public-network, read-only and citation controls remain in force. Diversification may combine two responding providers within existing quotas. Logs emit stage names, modes and numeric counters without dumping questions or page contents.
 
 Remaining work: model-based semantic routing, structured schedule adapters, adaptive budget reservation, automatic post-synthesis targeted retrieval, cross-batch narrative synthesis and live provider/model evaluation. Missing evidence does not prove an event is absent.
+
+
+## Adaptive orchestration
+
+Auto tasks may use an optional operator-configured auto budget envelope (ADBOT_RESEARCH_BUDGETS with an auto entry); otherwise they retain the original fallback budget, except direct fallback uses the quick envelope to permit a web route. The charged worker classifies the objective once; explicit modes, retries and existing follow-up constraints remain authoritative. A persisted checkpoint records the selected strategy. Low-confidence or malformed classification falls back to the deterministic router. A route cannot bypass an explicit web requirement or expand the durable budget.
+
+Initial search reserves a round and some pages for one post-synthesis recovery in eligible modes. Recovery targets uncovered subquestions, preserves verified claims and uses only remaining charged limits. Interrupted recovery is disclosed, not silently repeated. The model can group verified claims using a strict index-only layout; no unchecked narrative facts enter the report. Publisher-declared schema.org Event/SportsEvent records are collected from public retrieved documents and filtered by explicit event date when known; timezone-less timestamps are not treated as converted local dates. This is not a live sports feed, nor a guarantee that all events were listed.

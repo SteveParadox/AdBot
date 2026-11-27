@@ -46,6 +46,18 @@ def quote_record(source, quote, location, kind="quote"):
 
 
 def pdf_evidence(doc, source, question):
+    from .schedule import event_day, schedule_request
+    events = []
+    if schedule_request(question) or target_date:
+        for index, event in enumerate(doc.metadata.get("schedule_events", [])[:100]):
+            day = event_day(event.get("startDate"), offset_minutes)
+            if target_date and day != target_date:
+                continue
+            quote = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            if len(quote) <= 1000:
+                events.append(quote_record(source, quote, f"json-ld:event-{index + 1}", "structured"))
+            if len(events) >= 24:
+                break
     keywords = terms(question) | terms(source["query"])
     candidates = []
     for block, loc in zip(doc.blocks, doc.block_locations):
@@ -81,7 +93,7 @@ def pdf_evidence(doc, source, question):
     return list(unique.values())
 
 
-def text_evidence(doc, source, question):
+def text_evidence(doc, source, question, *, target_date=None, offset_minutes=None):
     if doc.metadata.get("document_type") == "pdf":
         return pdf_evidence(doc, source, question)
     keywords = terms(question) | terms(source["query"])
@@ -103,7 +115,7 @@ def text_evidence(doc, source, question):
             unique[quote.casefold()] = quote_record(source, quote, f"normalized-text:block-{block}:sentence-{offset}")
         if len(unique) == 8:
             break
-    return list(unique.values())
+    return [*events, *unique.values()]
 
 
 AVAILABILITY = {

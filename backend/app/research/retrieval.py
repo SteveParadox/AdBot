@@ -273,6 +273,11 @@ def extract(response, shopping):
                     # fields between a JSON-LD object and a DOM product.
                     products = fallback
         observations = html_observations(tree)
+        from .schedule import structured_events
+        # Keep the structured records separate from ordinary prose and metadata dates.
+        events = structured_events(tree)
+        if events:
+            metadata["schedule_events"] = events
         text = trafilatura.extract(tree, include_comments=False, include_tables=True, favor_precision=True) or ""
     check_robots_directives(directives)
     if "noarchive" in directives:

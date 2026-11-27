@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     research_parallelism: int = Field(4, ge=1, le=8)
     research_cache_seconds: int = Field(300, ge=0, le=3600)
     research_excluded_domains: str = ""
-    research_budgets: dict[Literal["direct", "quick", "deep", "shopping", "fact_check", "technical"], ResearchBudget] = Field(default_factory=dict)
+    research_budgets: dict[Literal["auto", "direct", "quick", "deep", "shopping", "fact_check", "technical"], ResearchBudget] = Field(default_factory=dict)
     max_concurrent_agents: int = Field(2, ge=1, le=8)
     max_browser_sessions: int = Field(2, ge=1, le=8)
     priority_aging_seconds: int = Field(300, ge=1, le=86400)
