@@ -116,6 +116,10 @@ def configuration(owner: Owner):
         "max_output_tokens": cfg.ai_max_output_tokens,
         "collection_max_rows": cfg.agent_collection_max_rows,
         "classification_max_calls": cfg.agent_classification_max_calls,
+        "max_evidence_records": cfg.agent_max_evidence_records,
+        "ollama_context_tokens": cfg.ai_ollama_context_tokens,
+        "model_timeout_seconds": cfg.ai_timeout_seconds,
+        "primary_fallback_timeout_seconds": cfg.ai_primary_fallback_timeout_seconds,
     }
 
 
@@ -276,11 +280,13 @@ def task(identifier: str, owner: Owner):
 
 
 @router.get("/tasks/{identifier}/steps")
-def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0):
+def steps(identifier: str, owner: Owner, offset: Offset = 0, limit: Limit = 100, after_id: int = 0,
+          newest_first: bool = False):
     with Session() as session:
         task_for(session, identifier, owner)
+        order = AgentStep.number.desc() if newest_first else AgentStep.number.asc()
         return collection(
-            session, select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id).order_by(AgentStep.number), offset, limit
+            session, select(AgentStep).where(AgentStep.job_id == identifier, AgentStep.id > after_id).order_by(order), offset, limit
         )
 
 
