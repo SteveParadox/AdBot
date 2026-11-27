@@ -588,7 +588,13 @@ class ModelClient:
                         "keep_alive": -1,
                         "options": {"num_predict": cfg.ai_max_output_tokens, "num_ctx": 8192, "temperature": 0},
                     }
-                output_limit = cfg.ai_max_output_tokens
+                # Keep smaller native Ollama contexts and ordinary browser decisions
+                # from losing most of their input window to an oversized output reserve.
+                output_limit = min(cfg.ai_max_output_tokens, 2048) if native or (kind == "decide" and cfg.reasoning_effort_for(kind) == "low") else cfg.ai_max_output_tokens
+                if native:
+                    provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
+                else:
+                    provider_body["max_tokens"] = output_limit
                 # Count serialized messages, schema and framing. Known GPT-OSS deployments use
                 # a byte-based heuristic with slack. Unknown tokenizers keep a conservative bound.
                 uses_gpt_oss = provider_name in {"groq", "groq_secondary", "openrouter"} and model.startswith("openai/gpt-oss-")
@@ -624,6 +630,15 @@ class ModelClient:
                     context_limit = 131072
                 if native:
                     context_limit = min(context_limit or 8192, 8192)
+                    provider_body["options"] = {**provider_body["options"], "num_ctx": context_limit}
+                if context_limit is not None:
+                    # Reserve at most a quarter of constrained context for output; retain
+                    # the provider-specific upper bound and never exceed the configured cap.
+                    output_limit = min(output_limit, max(256, context_limit // 4))
+                    if native:
+                        provider_body["options"] = {**provider_body["options"], "num_predict": output_limit}
+                    else:
+                        provider_body["max_tokens"] = output_limit
                 if context_limit is not None and provider_estimate + output_limit > context_limit:
                     if rebuild(context_limit):
                         provider_estimate = estimate()
