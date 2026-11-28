@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 
 def schedule_request(question):
-    return bool(re.search(r"\b(fixtures?|schedules?|timetables?|kickoffs?|events?|matches)\b", question, re.I))
+    return bool(re.search(r"\b(fixtures?|schedules?|timetables?|kick[ -]?offs?|events?|match(?:es)?)\b", question, re.I))
 
 
 def plain(value, limit):
@@ -39,6 +39,17 @@ def local_start(value, offset_minutes=0):
         timezone(timedelta(minutes=offset_minutes or 0))).isoformat(timespec="minutes")
 
 
+def valid_unzoned_start(value):
+    """Accept a valid publisher-local timestamp without inferring a timezone."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?", value):
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def name(value):
     return plain(value.get("name"), 120) if isinstance(value, dict) else plain(value, 120)
 
@@ -54,6 +65,7 @@ def structured_events(tree):
         except (ValueError, RecursionError):
             continue
     result = []
+    seen = set()
     for _ in range(400):
         if not stack or len(result) >= 100:
             break
@@ -71,7 +83,7 @@ def structured_events(tree):
         if event:
             title = name(value)
             start = plain(value.get("startDate"), 80)
-            if title and (event_day(start) or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?", start)):
+            if title and (event_day(start) or valid_unzoned_start(start)):
                 record = {"event": title, "startDate": start}
                 for field in ("homeTeam", "awayTeam", "location", "superEvent", "organizer"):
                     observed = name(value.get(field))
@@ -80,7 +92,10 @@ def structured_events(tree):
                 status = plain(value.get("eventStatus"), 100)
                 if status:
                     record["eventStatus"] = status
-                result.append(record)
+                key = tuple(sorted(record.items()))
+                if key not in seen:
+                    seen.add(key)
+                    result.append(record)
         for key in ("@graph", "mainEntity", "itemListElement", "item", "subEvent", "event"):
             if key in value:
                 stack.append(value[key])
