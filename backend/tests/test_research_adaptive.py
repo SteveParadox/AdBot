@@ -169,3 +169,17 @@ def test_schedule_coverage_ignores_duplicate_observations():
                          "c": {"event_observation": {"key": "match2"}}}
     assert instance.missing_schedule_observations([{"kind": "fact", "evidence": ["a"]}]) == 1
     assert instance.missing_schedule_observations([{"kind": "fact", "evidence": ["a", "c"]}]) == 0
+
+
+def test_structured_events_reject_invalid_local_times_and_deduplicate():
+    from app.research.schedule import schedule_request
+
+    tree = html.fromstring("""<html><script type="application/ld+json">
+      [{"@type":"SportsEvent","name":"Valid","startDate":"2026-11-28T12:00:00"},
+       {"@type":"SportsEvent","name":"Valid","startDate":"2026-11-28T12:00:00"},
+       {"@type":"SportsEvent","name":"Invalid date","startDate":"2026-02-30T12:00:00"},
+       {"@type":"SportsEvent","name":"Invalid time","startDate":"2026-11-28T29:00:00"}]
+      </script></html>""")
+    assert structured_events(tree) == [{"event": "Valid", "startDate": "2026-11-28T12:00:00"}]
+    assert schedule_request("What is the match time today?")
+    assert schedule_request("When is kick-off?")
