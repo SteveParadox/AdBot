@@ -26,7 +26,7 @@ def event_day(value, offset_minutes=0):
         if dt.tzinfo is None:
             return None  # Unknown local zone; cannot convert safely.
         return dt.astimezone(timezone(timedelta(minutes=offset_minutes or 0))).date().isoformat()
-    except (ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -56,7 +56,12 @@ def name(value):
 
 def structured_events(tree):
     stack = []
-    for node in tree.xpath('//script[@type="application/ld+json"]')[:24]:
+    for node in tree.xpath('//script[@type]')[:256]:
+        media_type = node.get("type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/ld+json":
+            continue
+        if len(stack) >= 24:
+            break
         raw = node.text or ""
         if len(raw) > 100_000:
             continue
@@ -89,6 +94,12 @@ def structured_events(tree):
                     observed = name(value.get(field))
                     if observed:
                         record[field] = observed
+                # Rescheduled or cancelled events can retain their previous date.
+                # Preserve only explicitly published dates; never infer a new time.
+                for field in ("endDate", "previousStartDate"):
+                    observed_date = plain(value.get(field), 80)
+                    if event_day(observed_date) or valid_unzoned_start(observed_date):
+                        record[field] = observed_date
                 status = plain(value.get("eventStatus"), 100)
                 if status:
                     record["eventStatus"] = status
