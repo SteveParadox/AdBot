@@ -20,8 +20,13 @@ class WorkItem:
     dependencies: tuple[str, ...] = ()
 
     def __post_init__(self):
-        if not self.item_id.strip() or not self.objective.strip():
+        if (not isinstance(self.role, AgentRole)
+                or any(not isinstance(value, str) or not value.strip()
+                       for value in (self.item_id, self.objective))):
             raise ValueError("Work item requires an ID and objective")
+        if (not isinstance(self.dependencies, tuple) or len(self.dependencies) > 20
+                or any(not isinstance(value, str) or not value.strip() for value in self.dependencies)):
+            raise ValueError("Invalid dependencies")
         if len(set(self.dependencies)) != len(self.dependencies):
             raise ValueError("Duplicate dependencies")
 
@@ -33,15 +38,19 @@ class CollaborationPlan:
     items: tuple[WorkItem, ...]
 
     def __post_init__(self):
-        if not self.workspace_id.strip() or not self.objective.strip():
+        if any(not isinstance(value, str) or not value.strip()
+               for value in (self.workspace_id, self.objective)):
             raise ValueError("Plan requires workspace and objective")
-        if not 1 <= len(self.items) <= 20:
+        if not isinstance(self.items, tuple) or not 1 <= len(self.items) <= 20:
             raise ValueError("Invalid number of work items")
         dependency_order(self.items)
 
 
 def dependency_order(items: tuple[WorkItem, ...]) -> tuple[str, ...]:
     """Validate a DAG and return a deterministic topological order."""
+    if (not isinstance(items, tuple) or not 1 <= len(items) <= 20
+            or any(not isinstance(item, WorkItem) for item in items)):
+        raise ValueError("Invalid work items")
     by_id = {item.item_id: item for item in items}
     if len(by_id) != len(items):
         raise ValueError("Duplicate work item")
@@ -73,6 +82,15 @@ class WorkResult:
     item_id: str
     evidence_ids: tuple[str, ...]
     summary: str
+
+    def __post_init__(self):
+        if any(not isinstance(value, str) or not value.strip()
+               for value in (self.item_id, self.summary)):
+            raise ValueError("Invalid work result")
+        if (not isinstance(self.evidence_ids, tuple) or not self.evidence_ids
+                or any(not isinstance(value, str) or not value.strip() for value in self.evidence_ids)
+                or len(set(self.evidence_ids)) != len(self.evidence_ids)):
+            raise ValueError("Work results require unique evidence references")
 
 
 class EvidenceWorkspace(Protocol):
