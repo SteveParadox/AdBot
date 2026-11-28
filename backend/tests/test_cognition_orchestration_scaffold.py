@@ -23,3 +23,23 @@ def test_dependency_order():
 def test_invalid_graph(items):
     with pytest.raises(ValueError):
         CollaborationPlan("workspace", "Compare facts", items)
+
+
+def test_reject_mutable_or_invalid_plan_inputs():
+    with pytest.raises(ValueError):
+        WorkItem("a", "researcher", "objective")
+    with pytest.raises(ValueError):
+        WorkItem("a", AgentRole.RESEARCHER, "objective", ["b"])
+    with pytest.raises(ValueError):
+        CollaborationPlan("workspace", "objective", [item("a")])
+    with pytest.raises(ValueError):
+        dependency_order(tuple(item(str(i)) for i in range(21)))
+
+
+def test_result_requires_unique_evidence():
+    from app.cognition.orchestration.contracts import WorkResult
+
+    assert WorkResult("a", ("e1",), "summary").evidence_ids == ("e1",)
+    for refs in ((), ("e1", "e1"), ["e1"]):
+        with pytest.raises(ValueError):
+            WorkResult("a", refs, "summary")
