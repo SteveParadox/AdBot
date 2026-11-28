@@ -1,6 +1,6 @@
 # Collaborative research agents scaffold
 
-Status: read-only research role contracts and DAG validation. No supervisor inference, worker dispatch, browser access, or messaging runtime.
+Status: read-only research role contracts, DAG validation and report coverage diagnostics. No supervisor inference, worker dispatch, browser access, or messaging runtime.
 
 ## Boundaries
 - Start with authorized research, document analysis and report composition. The original user objective and authorized source scope remain immutable.
@@ -12,3 +12,7 @@ Status: read-only research role contracts and DAG validation. No supervisor infe
 
 ## Next implementation
 Design durable plan/item records, scope-checked evidence workspace, atomic dependency transitions and parent resource accounting. Add integration fixtures for fan-in, restart, duplicate delivery, isolation and cancellation. Gate the feature behind explicit opt-in.
+
+## Additional reference implementation
+
+`report_coverage` reports complete, failed, missing and dependency-blocked report sections and rejects inconsistent completion claims. It does not schedule work. See `test_cognition_orchestration_diagnostics.py`. Design reference: https://docs.python.org/3/library/graphlib.html.
