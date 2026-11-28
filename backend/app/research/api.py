@@ -111,6 +111,9 @@ def enqueue(data, owner, key, retry_of=None):
                 if original_task.conversation_id != thread.id:
                     raise HTTPException(409, "Retry must stay in the original conversation")
                 intent, mode = original_task.intent, Mode(original_task.mode)
+                previous_queries = [*original_job.snapshot.get("research_prior_queries", []), *original_task.result.get("queries", [])]
+                snapshot["research_prior_queries"] = list(dict.fromkeys(q[:350] for q in previous_queries if isinstance(q, str)))[-32:]
+                snapshot["research_reference_at"] = original_job.snapshot.get("research_reference_at", original_task.created_at)
                 snapshot["research_history_before"] = original_job.snapshot.get(
                     "research_history_before", original_task.created_at
                 )
@@ -118,12 +121,23 @@ def enqueue(data, owner, key, retry_of=None):
                 context = original_job.snapshot.get("research_context") or build_context(data, history, intent, mode)
             else:
                 snapshot["research_history_before"] = time.time()
+                snapshot["research_reference_at"] = snapshot["research_history_before"]
                 history = previous_turns(session, thread.id, owner, snapshot["research_history_before"])
                 intent, mode = route(data, history)
                 context = build_context(data, history, intent, mode)
             snapshot["research_context"] = context
             values.update(conversation_id=thread.id, country=context["country"], freshness=context["freshness"])
-            budget = budget_for(mode)
+            # Auto routing is decided inside the charged worker, never at enqueue.
+            # A configured auto envelope is optional; explicit modes retain their
+            # own caps. A direct fallback needs a small web-capable envelope.
+            semantic = data.mode == Mode.AUTO and not retry_of and intent != "follow_up"
+            snapshot["research_semantic_route"] = semantic
+            budget = (settings().research_budgets.get("auto") or
+                      budget_for(Mode.QUICK if mode == Mode.DIRECT else mode)) if semantic else budget_for(mode)
+            if retry_of:
+                # Retry the effective strategy under the original authorized envelope.
+                from ..config import ResearchBudget
+                budget = ResearchBudget.model_validate(original_task.budget)
             snapshot["configuration"] = {"max_duration_seconds": budget.seconds}
             job = Job(owner=owner, job_type="research", website_id=None, idempotency_key=key, payload_hash=digest,
                       snapshot=snapshot)

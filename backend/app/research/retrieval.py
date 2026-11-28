@@ -180,11 +180,50 @@ def check_robots_directives(directives):
         raise PolicyError("Source excludes indexing or quotations")
 
 
+def html_observations(tree):
+    """Bounded public DOM rows, preserving explicit headers and dates."""
+    records = []
+    for table in tree.xpath("//table[not(ancestor-or-self::*[@hidden or @aria-hidden='true'])]")[:20]:
+        caption = clean(" ".join(table.xpath("./caption//text()")), 160)
+        # Multi-row and spanning headers cannot safely be mapped by position.
+        header_cells = table.xpath("./thead/tr[1]/th | ./tr[1]/th")
+        headers = [clean(cell.text_content(), 100) for cell in header_cells[:12]]
+        simple = not table.xpath(".//th[@colspan or @rowspan] | .//td[@colspan or @rowspan]") and len(table.xpath("./thead/tr")) <= 1
+        for row in table.xpath("./tr[td] | ./tbody/tr[td]")[:40]:
+            if row.xpath("ancestor-or-self::*[@hidden or @aria-hidden='true']"):
+                continue
+            if row.xpath(".//*[@hidden or @aria-hidden='true']"):
+                continue
+            cells = [clean(cell.text_content(), 120) for cell in row.xpath("./td | ./th")[:12]]
+            if len(cells) < 2 or not any(cells):
+                continue
+            parts = [f"{headers[i]}: {cell}" if simple and len(headers) == len(cells) and headers[i] else cell
+                     for i, cell in enumerate(cells) if cell]
+            times = [clean(value, 80) for value in row.xpath(".//time/@datetime")[:4]]
+            records.append(clean(" | ".join(p for p in [caption, *parts, *times] if p), 460))
+            if len(records) >= 100:
+                return records
+    for element in tree.xpath("//time[@datetime][not(ancestor-or-self::*[@hidden or @aria-hidden='true'])]")[:60]:
+        parent = element.getparent()
+        if parent is None or parent.tag not in {"li", "p", "div", "article", "section", "span"}:
+            continue
+        if parent.xpath(".//*[@hidden or @aria-hidden='true']") or len(parent.xpath(".//time")) != 1:
+            continue
+        label = clean(parent.text_content(), 300)
+        observed = clean(element.get("datetime"), 80)
+        if label and observed:
+            records.append(clean(f"{label} | {observed}", 460))
+        if len(records) >= 100:
+            break
+    return list(dict.fromkeys(records))
+
+
 def extract(response, shopping):
     if response.mime == "application/pdf":
         raise ValueError("PDF extraction requires the isolated asynchronous parser")
     text = response.body.decode(response.encoding, "replace")
     metadata, products, links = {}, [], []
+    observations = []
     published = modified = None
     directives = robots_directives(response.headers.get("x-robots-tag", ""))
     canonical = response.url
@@ -233,11 +272,18 @@ def extract(response, shopping):
                     # Keep each offer independently scoped; never transfer
                     # fields between a JSON-LD object and a DOM product.
                     products = fallback
+        observations = html_observations(tree)
+        from .schedule import structured_events
+        # Keep the structured records separate from ordinary prose and metadata dates.
+        events = structured_events(tree)
+        if events:
+            metadata["schedule_events"] = events
         text = trafilatura.extract(tree, include_comments=False, include_tables=True, favor_precision=True) or ""
     check_robots_directives(directives)
     if "noarchive" in directives:
         metadata["robots_noarchive"] = True
-    blocks = [clean(line, 1800) for line in text.splitlines()[:300] if len(line.strip()) >= 25]
+    blocks = [clean(line, 1800) for line in text.splitlines()[:300] if len(line.strip()) >= 8]
+    blocks = list(dict.fromkeys([*observations, *blocks]))[:300]
     title = metadata.get("og:title") or metadata.get("title") or urlsplit(response.url).hostname
     return Document(
         response.url, canonical, title[:200],
@@ -517,11 +563,12 @@ class Fetcher:
             if (cfg.research_browser_enabled and response.status != 304 and response.mime == "text/html"
                     and ((shopping and not any(price_value(offer.get("price", ""), offer.get("priceCurrency", ""))
                                                   for product in doc.products for offer in product["offers"]))
-                         or (not shopping and not doc.products and sum(map(len, doc.blocks)) < 200))):
+                         or (not shopping and not doc.products and not doc.metadata.get("schedule_events")
+                             and sum(map(len, doc.blocks)) < 200))):
                 # Shell validators cannot refresh scripts or API data. Keep
                 # incomplete shells out of the cache even if rendering failed.
                 doc = replace(await self.render(response, doc, shopping), cacheable=False)
-            if not doc.blocks and not doc.products and not doc.links and not doc.table_rows:
+            if not doc.blocks and not doc.products and not doc.links and not doc.table_rows and not doc.metadata.get("schedule_events"):
                 await self.discard_document(cache_key)
                 return None
             if (cfg.research_cache_seconds and doc.cacheable and not doc.metadata.get("robots_noarchive")
@@ -571,7 +618,7 @@ class Fetcher:
                         self.metrics["browser_launches"] += 1
                     rendered = await self.render_in_context(response)
                     document = await database_call(extract, rendered, shopping)
-                    return document if document.blocks or document.products or document.links else doc
+                    return document if document.blocks or document.products or document.links or document.metadata.get("schedule_events") else doc
             except PolicyError:
                 raise
             except (PlaywrightError, etree.LxmlError, TimeoutError, ValueError):

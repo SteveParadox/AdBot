@@ -56,6 +56,9 @@ def research(monkeypatch):
     ("Compare laptops from Nigerian retailers", Mode.SHOPPING, "product_comparison"),
     ("Verify that this statement is true", Mode.FACT_CHECK, "fact_check"),
     ("PostgreSQL and Cassandra benchmark", Mode.TECHNICAL, "technical"),
+    ("Compare PostgreSQL and Cassandra for high-throughput applications", Mode.DEEP, "technical"),
+    ("What is cataclysm?", Mode.DIRECT, "general"),
+    ("List Premier League fixtures today", Mode.QUICK, "current"),
     ("Deep research on battery storage", Mode.DEEP, "deep_research"),
 ])
 def test_route_modes(name, mode, intent):
@@ -161,7 +164,9 @@ def mock_network(monkeypatch, cfg, *, first_code=429, slow=False, empty=False, m
             kind = content["purpose"]
             assert data["format"] and data["think"] is False
             assert "untrusted data" in data["messages"][0]["content"]
-            if kind == "research_direct":
+            if kind == "research_route":
+                reply = {"mode": "quick", "needs_web": True, "schedule": False, "confidence": .95}
+            elif kind == "research_direct":
                 reply = {"answer": "The answer is **4**."}
             elif malformed:
                 reply = {}

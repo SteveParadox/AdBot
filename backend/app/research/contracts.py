@@ -2,11 +2,13 @@
 
 import re
 from enum import StrEnum
+from typing import Literal
 
 import pycountry
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..config import ResearchBudget, settings
+from .objectives import comparison_request, definition_request
 
 
 class Strict(BaseModel):
@@ -25,7 +27,7 @@ class Mode(StrEnum):
 
 DEFAULTS = {
     Mode.DIRECT: ResearchBudget(seconds=45, requests=0, pages=0, rounds=0, calls=3, tokens=12000, browsers=0),
-    Mode.QUICK: ResearchBudget(seconds=45, requests=4, pages=5, rounds=1, calls=4, tokens=22000, browsers=1),
+    Mode.QUICK: ResearchBudget(seconds=45, requests=5, pages=6, rounds=2, calls=6, tokens=22000, browsers=1),
     Mode.DEEP: ResearchBudget(seconds=220, requests=18, pages=24, rounds=4, calls=11, tokens=75000, browsers=4),
     Mode.SHOPPING: ResearchBudget(seconds=100, requests=12, pages=14, rounds=2, calls=7, tokens=48000, browsers=3),
     Mode.FACT_CHECK: ResearchBudget(seconds=85, requests=10, pages=12, rounds=2, calls=7, tokens=46000, browsers=2),
@@ -42,6 +44,7 @@ class Question(Strict):
     mode: Mode = Mode.AUTO
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     freshness: str | None = Field(default=None, pattern=r"^(day|week|month|year)$")
+    utc_offset_minutes: int | None = Field(default=None, ge=-840, le=840)
     conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 
@@ -51,6 +54,22 @@ class Question(Strict):
         if value and not pycountry.countries.get(alpha_2=value):
             raise ValueError("Use an ISO 3166-1 alpha-2 country code")
         return value
+
+
+class SemanticRoute(Strict):
+    mode: Literal["direct", "quick", "deep", "shopping", "fact_check", "technical"]
+    needs_web: bool
+    schedule: bool = False
+    confidence: float = Field(ge=0, le=1)
+
+
+class AnswerGroup(Strict):
+    heading: Literal["answer", "findings", "comparison", "implications", "recommendations", "caveats"]
+    claims: list[int] = Field(min_length=1, max_length=40)
+
+
+class AnswerLayout(Strict):
+    groups: list[AnswerGroup] = Field(min_length=1, max_length=8)
 
 
 class Plan(Strict):
@@ -103,8 +122,8 @@ INTENTS = [
     ("financial", r"\b(stock price|market cap|exchange rate|inflation|interest rates?|earnings)\b"),
     ("news", r"\b(news|breaking|headlines)\b"),
     ("local", r"\b(near me|opening hours|local events|restaurants? in|weather in)\b"),
-    ("current", r"\b(current|latest|today|recent|recently|this (year|week|month))\b"),
-    ("technical", r"\b(technical|open.source|github|postgresql|cassandra|benchmark|compare|research)\b"),
+    ("current", r"\b(current|latest|today|tomorrow|yesterday|tonight|recent|recently|this (year|week|month))\b"),
+    ("technical", r"\b(technical|open.source|github|benchmark|compare|research)\b"),
 ]
 
 
@@ -132,6 +151,8 @@ def route(question, history):
         r"|^(what is|calculate)\s+[\d+*/(). -]+\??$|^(explain|define|what is)\s+(a |an |the )?"
         r"(python (tuple|list|dictionary)s?|recursion|gravity|photosynthesis|a prime number)\b", text
     )
-    if intent == "general" and direct and not question.freshness and not question.country:
+    if intent == "general" and (direct or definition_request(question.question)) and not question.freshness and not question.country:
         return intent, Mode.DIRECT
+    if intent in {"general", "technical", "documentation"} and comparison_request(question.question):
+        return intent, Mode.DEEP
     return intent, mapping.get(intent, Mode.QUICK)

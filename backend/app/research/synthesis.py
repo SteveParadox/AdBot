@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from ..agent.model import ModelError, bounded_request_text
-from .contracts import Mode, Summary, Verification
+from .contracts import AnswerLayout, Mode, Summary, Verification
 from .evidence import citation_markdown
 from .integrity import freshness_status
 from .ranking import lexical_scores
@@ -130,3 +130,26 @@ def report_markdown(claims, evidence, sources, mode):
         for title, kinds in sections
         if (selected := [claim for claim in claims if claim["kind"] in kinds])
     )
+
+ 
+def arranged_report(claims, evidence, sources, mode, layout):
+    """Validate a complete permutation; only server-owned headings and verified text."""
+    if not layout:
+        return report_markdown(claims, evidence, sources, mode)
+    try:
+        groups = AnswerLayout.model_validate(layout).groups
+    except ValueError:
+        return report_markdown(claims, evidence, sources, mode)
+    indexes = [i for group in groups for i in group.claims]
+    if sorted(indexes) != list(range(len(claims))):
+        return report_markdown(claims, evidence, sources, mode)
+    headings = {"answer": "Answer", "findings": "Key findings", "comparison": "Comparison",
+                "implications": "Implications", "recommendations": "Recommendations", "caveats": "Caveats"}
+    result = []
+    for group in groups:
+        # Adjacent verified facts become a readable paragraph, while each
+        # claim retains its own citation, qualifiers and labels.
+        selected = [claims[i] for i in group.claims]
+        paragraphs = citation_markdown(selected, evidence, sources).split("\n\n")
+        result.append("## " + headings[group.heading] + "\n\n" + " ".join(paragraphs))
+    return "\n\n".join(result)

@@ -30,7 +30,7 @@ def source_record(doc, query, provider):
         "domain": urlsplit(doc.url).hostname, "independence_group": source_domain(doc.url),
         "published_at": doc.published, "modified_at": doc.modified,
         "retrieved_at": doc.retrieved, "content_hash": doc.digest, "query": query,
-        "metadata": doc.metadata, "provider": provider,
+        "metadata": {k: v for k, v in doc.metadata.items() if k != "schedule_events"}, "provider": provider,
         "credibility": source_signals(doc.url, doc.metadata),
     }
 
@@ -81,27 +81,50 @@ def pdf_evidence(doc, source, question):
     return list(unique.values())
 
 
-def text_evidence(doc, source, question):
+def text_evidence(doc, source, question, *, target_date=None, offset_minutes=None, schedule=False):
     if doc.metadata.get("document_type") == "pdf":
         return pdf_evidence(doc, source, question)
+    from .schedule import event_day, local_start, schedule_request
+    events = []
+    if schedule or schedule_request(question) or target_date:
+        for index, event in enumerate(doc.metadata.get("schedule_events", [])[:100]):
+            day = event_day(event.get("startDate"), offset_minutes)
+            if target_date and day != target_date:
+                continue
+            observation = {**event, "local_date": day}
+            converted = local_start(event.get("startDate"), offset_minutes)
+            if converted:
+                observation["local_start"] = converted
+            quote = json.dumps(observation, ensure_ascii=False, separators=(",", ":"))
+            if len(quote) <= 1000:
+                record = quote_record(source, quote, f"json-ld:event-{index + 1}", "structured")
+                identity = {"event": " ".join(event["event"].casefold().split()),
+                            "start": converted or event.get("startDate"), "status": event.get("eventStatus", "")}
+                key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
+                record["event_observation"] = {"local_date": day, "original_start": event.get("startDate"), "key": key}
+                events.append(record)
+            if len(events) >= 24:
+                break
     keywords = terms(question) | terms(source["query"])
+    title_match = bool(terms(question) & terms(doc.title))
     scored = []
     for block_number, block in enumerate(doc.blocks, 1):
         context_score = int(bool(terms(block) & keywords))
         for offset, quote in enumerate(re.split(r"(?<=[.!?])\s+", block), 1):
             quote = quote[:460].strip()
             score = len(terms(quote) & keywords) * 2 + context_score
-            if score and len(quote) >= 35:
-                scored.append((score, block_number, offset, quote))
+            structured = " | " in quote and title_match
+            if (score or structured) and len(quote) >= 8:
+                scored.append((score + int(structured), block_number, offset, quote))
     relevance = lexical_scores(question, [row[3] for row in scored])
     scored = [row for _, row in sorted(zip(relevance, scored), key=lambda pair: (-pair[0], -pair[1][0], pair[1][1], pair[1][2]))]
     unique = {}
     for _, block, offset, quote in scored:
         if quote.casefold() not in unique:
             unique[quote.casefold()] = quote_record(source, quote, f"normalized-text:block-{block}:sentence-{offset}")
-        if len(unique) == 4:
+        if len(unique) == 8:
             break
-    return list(unique.values())
+    return [*events, *unique.values()]
 
 
 AVAILABILITY = {
