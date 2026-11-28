@@ -1,6 +1,6 @@
 # Intelligent long-term memory scaffold
 
-Status: contracts and pure filtering only; not wired to the agent.
+Status: contracts, filtering and an opt-in process-local reference store; not wired to the agent.
 
 ## Boundaries
 - Keep existing agent memory unchanged. The future adapter wraps the existing workspace and website scope; historical facts never replace fresh verification.
@@ -12,3 +12,7 @@ Status: contracts and pure filtering only; not wired to the agent.
 
 ## Next implementation
 Implement authenticated storage adapters and migrations, retention/deletion, embedding versioning, retrieval evaluation, and opt-in runner integration. Test isolation, stale evidence, unsupported providers and existing memory compatibility. No cross-workspace sharing.
+
+## Additional reference implementation
+
+`ResearchMemoryStore` implements scoped lookup, deterministic lexical matching, expiration, idempotent inserts, conflicting-identity rejection and bounded capacity for caller-supplied redacted research summaries. This is not a persistent or authenticated store. Callers must enforce authorization and verify provenance. See `test_cognition_memory_retention.py`. Design reference: https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint/langgraph/store/base/__init__.py.
