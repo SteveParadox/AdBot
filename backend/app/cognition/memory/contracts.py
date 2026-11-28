@@ -20,7 +20,8 @@ class MemoryScope:
     website_id: str
 
     def __post_init__(self):
-        if not self.workspace_id.strip() or not self.website_id.strip():
+        if any(not isinstance(value, str) or not value.strip() or value != value.strip()
+               for value in (self.workspace_id, self.website_id)):
             raise ValueError("Memory requires an explicit workspace and website")
 
 
@@ -35,11 +36,16 @@ class MemoryRecord:
     expires_at: datetime
 
     def __post_init__(self):
-        if not self.record_id.strip() or not self.source_task_id.strip() or not self.summary.strip():
+        if not isinstance(self.scope, MemoryScope) or not isinstance(self.kind, MemoryKind):
+            raise ValueError("Invalid memory scope or kind")
+        if any(not isinstance(value, str) or not value.strip()
+               for value in (self.record_id, self.source_task_id, self.summary)):
             raise ValueError("Memory requires identity, provenance and summary")
-        if not self.evidence_ids or any(not item.strip() for item in self.evidence_ids):
+        if (not isinstance(self.evidence_ids, tuple) or not self.evidence_ids
+                or any(not isinstance(item, str) or not item.strip() for item in self.evidence_ids)
+                or len(set(self.evidence_ids)) != len(self.evidence_ids)):
             raise ValueError("Memory requires evidence")
-        if self.expires_at.utcoffset() is None:
+        if not isinstance(self.expires_at, datetime) or self.expires_at.utcoffset() is None:
             raise ValueError("Expiration must be timezone-aware")
 
 
@@ -50,7 +56,9 @@ class RetrievalQuery:
     limit: int = 3
 
     def __post_init__(self):
-        if not self.objective.strip() or not 1 <= self.limit <= 20:
+        if (not isinstance(self.scope, MemoryScope) or not isinstance(self.objective, str)
+                or not self.objective.strip() or type(self.limit) is not int
+                or not 1 <= self.limit <= 20):
             raise ValueError("Invalid retrieval query")
 
 
@@ -72,7 +80,8 @@ def eligible_records(query: RetrievalQuery, records: tuple[MemoryRecord, ...],
     seen: set[str] = set()
     eligible = []
     for record in records:
-        if record.scope != query.scope or record.expires_at <= now or record.record_id in seen:
+        if (not isinstance(record, MemoryRecord) or record.scope != query.scope
+                or record.expires_at <= now or record.record_id in seen):
             continue
         seen.add(record.record_id)
         eligible.append(record)
