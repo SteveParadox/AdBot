@@ -183,3 +183,18 @@ def test_structured_events_reject_invalid_local_times_and_deduplicate():
     assert structured_events(tree) == [{"event": "Valid", "startDate": "2026-11-28T12:00:00"}]
     assert schedule_request("What is the match time today?")
     assert schedule_request("When is kick-off?")
+
+
+def test_structured_events_preserve_explicit_rescheduling_information():
+    tree = html.fromstring("""<html><script type="Application/LD+JSON; charset=utf-8">
+      {"@type":"SportsEvent","name":"Rescheduled match",
+       "startDate":"2026-11-29T16:00:00Z","endDate":"2026-11-29T18:00:00Z",
+       "previousStartDate":"2026-11-28T16:00:00Z",
+       "eventStatus":"https://schema.org/EventRescheduled"}
+      </script></html>""")
+    assert structured_events(tree) == [{
+        "event": "Rescheduled match", "startDate": "2026-11-29T16:00:00Z",
+        "endDate": "2026-11-29T18:00:00Z", "previousStartDate": "2026-11-28T16:00:00Z",
+        "eventStatus": "https://schema.org/EventRescheduled",
+    }]
+    assert event_day("2026-11-29T16:00:00Z", "invalid") is None
