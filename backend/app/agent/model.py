@@ -381,6 +381,7 @@ class ModelClient:
         self.on_provider_event = None
         self.provider_cooldowns = {}
         self.request_adaptations = {}
+        self.request_text_limits = {}
         self.contract_cooldowns = {}
         self.authentication_rejections = {}
 
@@ -457,7 +458,8 @@ class ModelClient:
             "During verification, check all captured records against the original objective, the coverage count and the source context. "
             "Do not COMPLETE while required dataset or export phases remain pending. "
             "During verification, check supplied artifact records against all requested output constraints; source quotations alone do not establish that an exported dataset satisfies them. "
-            "If blocked, ASK_USER or FAIL instead of claiming completion. "
+            "Before reporting a blocker, check available authorized search and discovery routes. "
+            "If blocked, ASK_USER or FAIL. For FAIL, describe the missing prerequisite in reason and text. "
             "Keep explanations brief. For unused claims return an empty array [], never null. "
             "Never set required fields to null. Omit unused optional fields when the response format permits it."
         ) if kind not in {"route", "classify", "verify", "synthesize"} else (
@@ -484,7 +486,7 @@ class ModelClient:
                 "Respect modal, disabled and readonly states. Do not download or submit unless explicitly authorized. "
                 "Complete only after required evidence, coverage and artifact phases are satisfied. "
                 "Cite exact stored evidence IDs for each claim; repair any verification feedback. "
-                "If blocked, ASK_USER or FAIL with a concise explanation. Keep output short."
+                "If blocked, ASK_USER or FAIL with a concise task-specific reason. Keep output short."
             )
         if kind == "verify" and not system_prompt:
             system = (
@@ -704,10 +706,12 @@ class ModelClient:
                 def estimate():
                     return request_estimate(provider_body, compact_tokenizer=uses_gpt_oss or native)
 
-                def rebuild(limit, *, aggressive=False):
+                def rebuild(limit, *, aggressive=False, text_limit=None, drop_image=False):
                     original = provider_body["messages"][1]["content"]
                     old_text = original[0]["text"] if isinstance(original, list) else original
                     ceiling = min(cfg.ai_max_request_chars, len(old_text) * (1 if aggressive else 3) // (2 if aggressive else 4))
+                    if text_limit is not None:
+                        ceiling = min(ceiling, text_limit)
                     while ceiling > 0:
                         try:
                             smaller = bounded_request_text(system, kind, payload, schema, ceiling + len(system),
@@ -716,11 +720,17 @@ class ModelClient:
                             break
                         provider_body["messages"] = copy.deepcopy(provider_body["messages"])
                         provider_body["messages"][1]["content"] = (
-                            [{"type": "text", "text": smaller}, *original[1:]] if isinstance(original, list) else smaller
+                            [{"type": "text", "text": smaller}, *original[1:]]
+                            if isinstance(original, list) and not drop_image else smaller
                         )
-                        if smaller != old_text and (limit is None or estimate() + output_limit <= limit):
+                        if len(smaller) < len(old_text) and (limit is None or estimate() + output_limit <= limit):
                             return True
                         ceiling = ceiling * 3 // 4
+                    if drop_image and isinstance(original, list):
+                        provider_body["messages"] = copy.deepcopy(provider_body["messages"])
+                        provider_body["messages"][1]["content"] = old_text
+                        if limit is None or estimate() + output_limit <= limit:
+                            return True
                     provider_body["messages"][1]["content"] = original
                     return False
 
@@ -734,6 +744,12 @@ class ModelClient:
                 if native:
                     context_limit = cfg.ollama_context_for(model)
                     provider_body["options"] = {**provider_body["options"], "num_ctx": context_limit}
+                size_key = (provider_index, model, kind)
+                learned_limit = self.request_text_limits.get(size_key)
+                current_content = provider_body["messages"][1]["content"]
+                current_text = current_content[0]["text"] if isinstance(current_content, list) else current_content
+                if learned_limit is not None and len(current_text) > learned_limit:
+                    rebuild(context_limit, text_limit=learned_limit)
                 if context_limit is not None:
                     # Reserve at most a quarter of constrained context for output; retain
                     # the provider-specific upper bound and never exceed the configured cap.
@@ -756,6 +772,7 @@ class ModelClient:
                         self.active_provider_index = next_provider_index
                     continue
                 context_retry = False
+                size_retry = False
                 for attempt in range(attempts + 1):
                     if chain_deadline is not None and time.monotonic() >= chain_deadline:
                         failures.append({"provider": provider_name, "model": model, "purpose": kind,
@@ -856,6 +873,9 @@ class ModelClient:
                                 category = None
                                 if response.status_code in {401, 403}:
                                     self.authentication_rejections[provider_index] = response.status_code
+                                if response.status_code == 413:
+                                    size_retry = True
+                                    raise ModelContextExceeded("Provider returned HTTP 413 for the request payload")
                                 if response.status_code in {400, 413, 422}:
                                     detail = bytearray()
                                     async for chunk in response.aiter_bytes():
@@ -937,7 +957,7 @@ class ModelClient:
                             await database_call(cooldown, quota_key, shared_reset)
                         data = json.loads(raw)
                         if not isinstance(data, dict):
-                            raise ModelError("Invalid model response envelope")
+                            raise TypeError("Invalid model response envelope")
                         usage = (
                             {
                                 "prompt_tokens": data.get("prompt_eval_count", provider_estimate),
@@ -997,10 +1017,15 @@ class ModelClient:
                         await database_call(release, quota_key, quota_receipt)
                         if not settled:
                             await charge(0, 0, (time.monotonic() - started) * 1000, False, reservation)
-                        if not context_retry and rebuild(context_limit, aggressive=True):
+                        if not context_retry and rebuild(context_limit, aggressive=True, drop_image=size_retry):
                             context_retry = True
                             provider_estimate = estimate()
-                            await record_unavailable("Provider context limit reached; retrying a smaller request")
+                            if size_retry:
+                                self.request_text_limits[size_key] = len(provider_body["messages"][1]["content"])
+                            await record_unavailable(
+                                "Provider returned HTTP 413; retrying with a smaller payload" if size_retry else
+                                "Provider context limit reached; retrying a smaller request"
+                            )
                             continue
                         await record_unavailable(str(exc), failure_category="context")
                         if has_fallback:
@@ -1044,7 +1069,6 @@ class ModelClient:
                         unavailable = True
                         break
                     except (ValueError, KeyError, IndexError, TypeError) as exc:
-                        self.contract_cooldowns[contract_key] = time.monotonic() + cfg.ai_failure_cooldown_seconds
                         validation_errors = []
                         if isinstance(exc, ValidationError):
                             validation_errors = [
@@ -1062,29 +1086,30 @@ class ModelClient:
                         await record_unavailable(reason, validation_errors=validation_errors, failure_category="response_contract")
                         if not settled:
                             await charge(0, 0, (time.monotonic() - started) * 1000, False, reservation)
+                        malformed_reply = isinstance(exc, (ValidationError, json.JSONDecodeError, KeyError, IndexError, TypeError))
+                        if malformed_reply and not context_retry and (has_fallback or cloud_chain or attempt + 1 < attempts):
+                            correction = "Return one JSON object matching the response schema. Use the required keys and types."
+                            if validation_errors:
+                                correction += " Validation errors: " + ", ".join(
+                                    f"{error['field']}: {error['type']}" for error in validation_errors
+                                )
+                            messages = provider_body["messages"]
+                            if native:
+                                provider_body["messages"] = [*messages, {"role": "user", "content": correction}]
+                            else:
+                                provider_body["messages"] = [
+                                    {**messages[0], "content": messages[0]["content"] + "\n" + correction},
+                                    *messages[1:],
+                                ]
+                            context_retry = True
+                            continue
+                        self.contract_cooldowns[contract_key] = time.monotonic() + cfg.ai_failure_cooldown_seconds
                         if has_fallback or cloud_chain:
                             self.fallback_active = True
                             self.active_provider_index = next_provider_index
                             logger.warning("primary_model_failed; trying fallback: %s", exc.__class__.__name__)
                             unavailable = True
                             break
-                        if attempt + 1 < attempts:
-                            if native:
-                                correction = "Return valid JSON matching the schema."
-                                if hasattr(exc, "errors"):
-                                    correction += (
-                                        " Validation errors: "
-                                        + "; ".join(
-                                            ".".join(str(part) for part in e["loc"]) + ": " + e["type"] + " " + e["msg"]
-                                            for e in exc.errors(include_input=False, include_context=False)
-                                        )[:300]
-                                    )
-                                provider_body["messages"] = provider_body["messages"][:3] + [
-                                    {"role": "user", "content": correction}
-                                ]
-                            logger.warning("fallback_model_returned_invalid_json; retrying: %s", exc.__class__.__name__)
-                            await backoff(None, attempt)
-                            continue
                         raise ModelError("Model response did not match the required JSON schema") from None
                 if unavailable and (has_fallback or cloud_chain):
                     continue

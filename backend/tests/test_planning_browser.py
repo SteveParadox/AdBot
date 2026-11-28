@@ -11,6 +11,111 @@ from test_extraction import setup_dataset
 pytestmark = pytest.mark.browser
 
 
+@pytest.mark.usefixtures("agent_config", "agent_servers")
+async def test_general_discovery_rejects_premature_terminal_failure(client, target, monkeypatch):
+    from testsupport.model_fixture import decide
+
+    homepage_evidence = []
+
+    async def responses(self, kind, payload, schema, account, image_path=None, timeout_cap_seconds=None):
+        if kind == "route":
+            return schema(informational=False, subject="")
+        if kind == "decide" and payload["current_page"]["url"].endswith("/agent/news"):
+            homepage_evidence.extend(payload["session_memory"]["evidence"])
+            assert payload["task_plan"]["active_subtask"] == "research"
+            return schema(decision="FAIL", observation="News homepage", reason="The homepage lacks the weather outlook.",
+                          confidence=0.99, expected_result="Stop", text="Unrelated homepage copy")
+        if kind == "decide" and not payload["session_memory"]["evidence"]:
+            return schema(decision="EXTRACT", observation="Weather article", reason="Capture the observed forecast.",
+                          confidence=1, expected_result="Forecast evidence", text="Clear skies are expected on Sunday.")
+        return schema.model_validate(decide({"purpose": kind, **payload}))
+
+    monkeypatch.setattr(ModelClient, "request", responses)
+    set_url(client, target, "/agent/news")
+    task = new_task(client, target, objective="Sunday weather outlook", mode="autonomous", allow_search_input=False)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + task["id"]).json()
+    assert result["planning"]["route"] == "general"
+    assert not homepage_evidence
+    assert result["planning"]["replans"]
+    assert result["status"] == "completed", result.get("error_message")
+    assert any(url.endswith("/agent/article/weather") for url in result["memory"]["visited_urls"])
+
+
+@pytest.mark.usefixtures("agent_config", "agent_servers")
+async def test_terminal_failure_is_reassessed_and_reports_the_blocker(client, target, monkeypatch):
+    decisions = []
+
+    async def responses(self, kind, payload, schema, account, image_path=None, timeout_cap_seconds=None):
+        if kind == "route":
+            return schema(informational=False, subject="")
+        assert kind == "decide"
+        decisions.append(payload["current_page"]["url"])
+        return schema(decision="FAIL", observation="Weather article", reason="The authorized page has no tide forecast.",
+                      confidence=1, expected_result="Stop", text="Clear skies are expected on Sunday.")
+
+    monkeypatch.setattr(ModelClient, "request", responses)
+    set_url(client, target, "/agent/article/weather")
+    task = new_task(client, target, objective="tide forecast", allow_search_input=False)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + task["id"]).json()
+    assert result["status"] == "failed"
+    assert len(decisions) == 2
+    assert "The authorized page has no tide forecast." in result["error_message"]
+    assert "Clear skies" not in result["error_message"]
+
+
+@pytest.mark.parametrize("opener", ["link", "dialog"])
+@pytest.mark.usefixtures("agent_config", "agent_servers")
+async def test_title_lookup_opens_search_and_verifies_source(client, target, monkeypatch, opener):
+    from fastapi.responses import HTMLResponse
+    from app.fixture import app as fixture
+    from testsupport.model_fixture import decide
+
+    objective = "Google Sheets Data Cleaning and Formulas"
+    title = "Google Sheets Data Cleaning Checklist and Formulas"
+    search_form = """<form method="get" action="/agent/title-search" role="search">
+        <label>Search documentation<input type="search" name="q"></label><button>Search</button></form>"""
+    queries = []
+
+    def home():
+        control = '<a href="/agent/title-search">Search ⌘K</a>' if opener == "link" else (
+            '<button onclick="document.querySelector(\'dialog\').showModal()">Open search</button>'
+            f'<dialog aria-label="Search documentation">{search_form}</dialog>'
+        )
+        return f"<title>Documentation</title><main><h1>Documentation</h1>{control}</main>"
+
+    def search(q: str = ""):
+        queries.append(q)
+        result = f'<a href="/agent/title-source">{title}</a>' if q == "Google Sheets Data Cleaning" else ""
+        return f"<title>Search</title><main><h1>Search</h1>{search_form}{result}</main>"
+
+    def source():
+        return (f"<title>{title}</title><main><article><h1>{title}</h1>"
+                "<p>In Google Sheets, preserve the original data and validate row counts after cleaning with formulas.</p>"
+                "</article></main>")
+
+    monkeypatch.setattr(fixture.router, "routes", list(fixture.router.routes))
+    for path, handler in (("home", home), ("search", search), ("source", source)):
+        fixture.get(f"/agent/title-{path}", response_class=HTMLResponse)(handler)
+
+    async def responses(self, kind, payload, schema, account, image_path=None, timeout_cap_seconds=None):
+        if kind == "synthesize":
+            assert all(row["url"].endswith("/agent/title-source") for row in payload["evidence"])
+            return schema(claims=[{"text": row["quote"], "evidence_ids": [row["id"]]} for row in payload["evidence"]])
+        return schema.model_validate(decide({"purpose": kind, **payload}))
+
+    monkeypatch.setattr(ModelClient, "request", responses)
+    set_url(client, target, "/agent/title-home")
+    task = new_task(client, target, objective=objective, mode="autonomous", allow_search_input=True, allow_form_input=False)
+    await execute(*claim())
+    result = client.get("/api/agent/tasks/" + task["id"]).json()
+    assert result["status"] == "completed", result.get("error_message")
+    assert result["planning"]["route"] == "informational"
+    assert result["result"]["verification"]["complete"]
+    assert [query for query in queries if query] == [objective, "Google Sheets Data Cleaning"]
+
+
 @pytest.mark.parametrize("engine", ["firefox", "webkit"])
 async def test_agent_through_policy_proxy_on_other_engines(client, target, agent_config, agent_servers, engine):  # noqa: F811
     set_url(client, target, "/agent/news")

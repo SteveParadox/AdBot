@@ -21,13 +21,14 @@ from .controller import Controller, NavigationFailed
 from .directory import DirectoryCollection, directory_link, directory_result, matching_collection
 from .routing import (ExecutionRoute, InformationalAssessment, RouteAssessment, ambiguous_subject, assessed_entity,
                       collection_kinds, exhaustive_request, inventory_route, requested_operation, select_route,
-                      task_text_only, words)
+                      task_text_only, title_lookup, words)
 from .memory import action_key, decrypt_session, encrypt_session, relevant_memories, semantic_action_key
 from .model import ModelDeadlineExceeded, ModelBudgetExceeded, ModelClient, ModelContextExceeded, ModelError, ModelProvidersUnavailable
 from .structure import add_capture, classification_request
 from .discovery import (
-    MAX_SEARCH_ATTEMPTS, automatic_capture, compact_page, frontier_candidate, navigation_candidate, relevant_group_signatures,
-    search_attempt_key, search_candidate, search_control, search_query_allowed, task_token_allowance, unchanged_scrolls, update_frontier,
+    MAX_SEARCH_ATTEMPTS, automatic_capture, compact_page, concepts, frontier_candidate, navigation_candidate, relevant_group_signatures,
+    search_attempt_key, search_candidate, search_control, search_opener, search_query_allowed, task_token_allowance,
+    title_navigation_candidate, unchanged_scrolls, update_frontier,
 )
 from .research import (
     capture_evidence, comparison_coverage, comparison_dimensions, comparison_entities, coverage, destination_key, guard_navigation, ranked_chunks,
@@ -896,10 +897,13 @@ class AgentRunner(Runner):
         research = route.name in {"comparison", "research", "informational"} and not route.entity and not self.snapshot.get("extraction")
         self.research_mode = research
         self.informational_mode = route.name == "informational"
+        self.title_lookup_mode = self.informational_mode and title_lookup(self.objective)
         self.comparison_mode = route.name == "comparison"
         self.recommendation_mode = research and requested_operation(self.objective) == "recommendation"
         enumeration = route.name == "enumeration"
         self.enumeration_mode = enumeration
+        general_discovery = (route.name == "general" and self.mode == "autonomous"
+                             and not self.options["allow_form_input"] and not self.snapshot.get("extraction"))
         await self.restore_tabs(controller)
         observe_options = {**({"research": True} if research else {})}
         cfg = settings()
@@ -947,7 +951,7 @@ class AgentRunner(Runner):
                 )
                 if len(visited) > 100:
                     visited.pop(next(iter(visited)))
-            if research or enumeration or use_directory:
+            if research or enumeration or use_directory or general_discovery:
                 self.remember_discovery(observation)
             def record_observation():
                 with transaction() as session:
@@ -975,6 +979,8 @@ class AgentRunner(Runner):
                     consecutive_failures = 0
             decision = None
             deterministic = False
+            opener_key = None
+            reassessing_blocker = False
             scoped_search = False
             semantic_key = None
             prevented = False
@@ -993,7 +999,15 @@ class AgentRunner(Runner):
                         deterministic = decision is not None or terminal is not None
                         if directory.state["pages"]:
                             await self.checkpoint(controller)
-                    if research:
+                    if self.title_lookup_mode and not self.memory["evidence"]:
+                        decision = title_navigation_candidate(observation, self.objective, self.policy,
+                                                              self.discovery_exclusions())
+                    if decision is None and read_search and (self.informational_mode or general_discovery) and not self.memory["evidence"]:
+                        decision, opener_key = self.discover_search(observation, approved_posts)
+                    if general_discovery and decision is None and not self.memory["evidence"]:
+                        decision = frontier_candidate(self.memory.get("discovery_frontier", {}), observation,
+                                                      self.policy, self.discovery_exclusions(), minimum=15)
+                    if research and decision is None:
                         if self.memory.pop("recover_with_navigation", False):
                             decision = self.discovery_alternative(observation)
                         decision = decision or await self.research_decision(observation)
@@ -1035,7 +1049,8 @@ class AgentRunner(Runner):
                                 {
                                     "objective": self.objective,
                                     "success_criteria": self.options["success_criteria"],
-                                    "current_page": self.research_model_page(observation) if research or enumeration or use_directory else observation,
+                                    "current_page": (self.research_model_page(observation)
+                                                     if research or enumeration or use_directory or general_discovery else observation),
                                     "session_memory": self.context_memory(observation, plan),
                                     "execution_route": {"name": route.name, "guidance": route.guidance},
                                     "historical_hints": self.hints,
@@ -1045,7 +1060,7 @@ class AgentRunner(Runner):
                                     "approved_post_search": approved_posts,
                                     "task_plan": plan,
                                     **({"discovery": self.discovery_context(observation)}
-                                       if research or enumeration or use_directory else {}),
+                                       if research or enumeration or use_directory or general_discovery else {}),
                                     **({"rejected_collection_sources": self.memory.get("rejected_collection_sources", [])[-8:],
                                         "rejected_collection_scopes": self.memory.get("rejected_collection_scopes", [])[-8:],
                                         "verified_partial_record_count": len(self.memory.get("research_partial", {}).get("structured_records", []))}
@@ -1060,7 +1075,35 @@ class AgentRunner(Runner):
                 if terminal is not None:
                     await self.finish_directory(directory, controller, observation, step_id, number, terminal)
                     return
-                if decision.decision == "OBSERVE" and self.memory["recent_actions"]:
+                if decision.decision == "FAIL":
+                    from .planning import replan
+
+                    blocker = " ".join(controller.observer.safe_text(decision.reason).split())[:360]
+                    alternative = None
+                    if self.mode == "autonomous" and not self.options["allow_form_input"]:
+                        if read_search:
+                            alternative, opener_key = self.discover_search(observation, approved_posts)
+                        if alternative is None:
+                            alternative = self.discovery_alternative(observation)
+                    if number < self.options["max_steps"] and len(self.memory["planning"]["replans"]) < 20:
+                        if alternative is None and not self.memory.get("terminal_reassessment"):
+                            self.memory["terminal_reassessment"] = True
+                            reassessing_blocker = True
+                            alternative = Decision(
+                                decision="OBSERVE", observation="The model reported a blocker",
+                                reason="Reassess the blocker against a fresh observation and the original requirements",
+                                confidence=1, expected_result="Confirm the blocker or identify a viable next action",
+                            )
+                        if alternative is not None:
+                            replan(self.memory["planning"], alternative.reason, observation, action_only=True)
+                            self.memory["terminal_failure_feedback"] = blocker
+                            decision = alternative
+                            await self.checkpoint(controller)
+                    if decision.decision == "FAIL":
+                        decision = decision.model_copy(update={
+                            "text": blocker, "reason": blocker, "observation": "The task has an unresolved blocker",
+                        })
+                if decision.decision == "OBSERVE" and not reassessing_blocker and self.memory["recent_actions"]:
                     previous = self.memory["recent_actions"][-1]
                     if previous["action"] == "OBSERVE" and not previous.get("outcome", {}).get("page_changed", False):
                         raise ValueError(
@@ -1142,7 +1185,7 @@ class AgentRunner(Runner):
                     if target:
                         guard_navigation(self.memory.get("research_destinations", {}), target, observation["url"],
                                          len(self.memory["evidence"]) + (len(directory.state["records"]) if use_directory else 0))
-                if not deterministic:
+                if not deterministic and not reassessing_blocker:
                     semantic_key = semantic_action_key(decision_data, observation)
                     entries = self.memory.get("semantic_attempts", {})
                     if semantic_key is not None and entries.get(semantic_key, 0) >= 2:
@@ -1151,7 +1194,8 @@ class AgentRunner(Runner):
                         raise ValueError("Blocked a repeated action with no new evidence; choose a different observed route")
                 from .planning import guard
 
-                if (research or enumeration or use_directory) and (
+                if (research or enumeration or use_directory or general_discovery or opener_key
+                    or reassessing_blocker or decision.decision == "FAIL") and (
                     decision.decision in {"NAVIGATE", "GO_BACK", "OPEN_TAB", "OBSERVE", "SCROLL",
                                           "EXTRACT", "SUMMARIZE", "CAPTURE_RECORDS", "COMPLETE", "FAIL"}
                     or (read_search and decision.decision == "SEARCH")
@@ -1164,6 +1208,9 @@ class AgentRunner(Runner):
                     # action remains useful when a model echoes a completed phase.
                     decision.subtask_id = None
                 guard(self.memory["planning"], decision, observation)
+                if opener_key is not None and decision.decision == "CLICK":
+                    self.memory.setdefault("search_openers", []).append(opener_key)
+                    await self.checkpoint(controller)
                 if read_search and decision.decision == "SEARCH":
                     element = next((e for e in observation["elements"] if e["element_id"] == decision.target.element_id), {})
                     scoped_search = (search_control(element, approved_posts)
@@ -1177,7 +1224,7 @@ class AgentRunner(Runner):
                         raise ValueError("Read-only search attempt limit reached; inspect the observed sources")
                     attempts.append(attempt)
                     await self.checkpoint(controller)
-                if not (research and decision.decision == "COMPLETE") and any(
+                if not reassessing_blocker and not (research and decision.decision == "COMPLETE") and any(
                     f["action_key"] == key and f["fingerprint"] == observation["fingerprint"]
                     for f in self.memory["failures"]
                 ):
@@ -1216,7 +1263,7 @@ class AgentRunner(Runner):
                 elif decision.decision == "EXPORT_DATASET":
                     outcome = await self.export_dataset()
                 elif decision.decision == "FAIL":
-                    raise RuntimeError("Agent reported task blocked: " + decision.text)
+                    raise RuntimeError("Task blocked before verified completion. " + decision.text)
                 elif decision.decision == "COMPLETE":
                     if directory and (directory.state["pages"] or not self.memory.get("structured_capture")):
                         raise ValueError("Exhaustive completion requires verified coverage of the requested collection")
@@ -1245,8 +1292,9 @@ class AgentRunner(Runner):
                         outcome = await controller.act(decision, {**self.options, "allow_read_search": True,
                                                                   "approved_post_search": approved_posts},
                                                        approved, read_only=True)
-                    elif read_link:
-                        outcome = await controller.act(decision, self.options, approved, read_only=True, prefer_navigation=True)
+                    elif read_link or (opener_key is not None and decision.decision == "CLICK"):
+                        outcome = await controller.act(decision, self.options, approved, read_only=True,
+                                                       prefer_navigation=opener_key is None, open_search=opener_key is not None)
                     else:
                         outcome = (await controller.act(decision, self.options, approved, read_only=True)
                                    if deterministic else await controller.act(decision, self.options, approved))
@@ -1260,7 +1308,7 @@ class AgentRunner(Runner):
                     self.rank_research(after)
                     await self.save_research_observation(after, step_id, controller, persist=False)
                     next_observation = after
-                elif enumeration and not no_browser_action:
+                elif (enumeration or general_discovery) and not no_browser_action:
                     next_observation = after
                 if (
                     self.snapshot.get("extraction")
@@ -1411,6 +1459,7 @@ class AgentRunner(Runner):
                     and decision
                     and decision.decision in {"CLICK", "TYPE", "SEARCH", "PRESS_KEY", "SET_CHECKED", "SELECT_OPTION"}
                     and not scoped_search
+                    and opener_key is None
                 )
                 original_error = controller.observer.safe_text(str(exc))[:500]
                 if ambiguous_write:
@@ -1432,7 +1481,7 @@ class AgentRunner(Runner):
                     category = classify_failure(exc)
                 else:
                     category = replan(self.memory["planning"], safe_reason, observation,
-                                      action_only=safe_error == "Task does not authorize form input")
+                                      action_only=general_discovery or safe_error == "Task does not authorize form input")
                 def record_failure():
                     with transaction() as session:
                         owned_job(session, self.id, self.token)
@@ -1513,6 +1562,17 @@ class AgentRunner(Runner):
         return frontier_candidate(self.memory.get("discovery_frontier", {}), observation, self.policy,
                                   self.discovery_exclusions())
 
+    def discover_search(self, observation, approved_posts):
+        attempts = self.memory.get("search_attempts", [])
+        if len(attempts) >= MAX_SEARCH_ATTEMPTS:
+            return None, None
+        decision = search_candidate(observation, self.objective, self.policy, attempts, approved_posts,
+                                    short_title=self.title_lookup_mode)
+        openers = self.memory.get("search_openers", [])
+        if decision is not None or len(openers) >= MAX_SEARCH_ATTEMPTS:
+            return decision, None
+        return search_opener(observation, self.policy, openers)
+
     def discovery_context(self, observation):
         return {
             **observation.get("discovery", {}),
@@ -1520,6 +1580,7 @@ class AgentRunner(Runner):
             "unexplored_count": len(self.memory.get("discovery_frontier", {})),
             "evidence_count": len(self.memory["evidence"]),
             "search_attempts": len(self.memory.get("search_attempts", [])),
+            "reassessed_blocker": self.memory.get("terminal_failure_feedback"),
             "instruction": "Assess record groups first. If automatic mapping is uncertain, map observed fields "
                            "using CAPTURE_RECORDS or extract exact source text. If unsuitable, prefer site search "
                            "or an unexplored source. A new URL is not qualifying evidence.",
@@ -1906,7 +1967,11 @@ class AgentRunner(Runner):
         entities = comparison_entities(self.objective, self.memory["planning"]["plan"]["intent"].get("entities", []))
         criteria = [*self.verification_criteria(), *self.research_dimensions()]
         store = self.memory["evidence"]
-        if capture_evidence(observation, store, step_id, entities, criteria,
+        title_supported = not self.title_lookup_mode or any(
+            concepts(self.objective) <= concepts(title)
+            for title in [observation.get("title", ""), *observation.get("headings", [])[:1]]
+        )
+        if title_supported and capture_evidence(observation, store, step_id, entities, criteria,
                             max_records=settings().agent_max_evidence_records):
             self.memory["research_coverage"] = coverage(store, entities, criteria)
         history = self.memory.setdefault("research_destinations", {})
@@ -2040,6 +2105,8 @@ class AgentRunner(Runner):
         route = self.memory.get("execution_route")
         if route:
             state["route"] = "structured_discovery" if self.memory.get("structured_capture") else route["name"]
+            if route["name"] == "general":
+                state["research_evidence_required"] = True
             if route.get("entity"):
                 state["plan"]["intent"]["entities"] = [route["entity"].removeprefix("semantic:")]
         if getattr(self, "research_mode", False):

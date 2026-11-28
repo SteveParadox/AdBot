@@ -168,6 +168,18 @@ def ambiguous_subject(objective):
                                              | {"login", "password", "buy", "pay", "register", "upload", "open"}))
 
 
+def title_lookup(objective):
+    """Recognize a short heading while leaving commands to their normal routes."""
+    tokens = words(objective)
+    return (bool(re.fullmatch(r"[\w][\w .+-]{0,159}", objective.strip()))
+            and 2 <= len(tokens) <= 8
+            and sum(word[:1].isupper() for word in objective.split()) >= 2
+            and not set(tokens) & ((_INVENTORY | _SCOPE_MODIFIERS | _EXHAUSTIVE) - {"and"} | {
+                "please", "click", "clean", "edit", "update", "remove", "delete", "change", "write",
+                "create", "build", "install", "send", "run", "add", "fix", "copy", "login", "buy", "pay",
+            }))
+
+
 def assessed_entity(objective, assessment):
     """A model may locate literal wording. Deterministic checks still own eligibility."""
     phrase = assessment.entity_phrase.strip()
@@ -249,4 +261,6 @@ def select_route(objective, options, has_dataset=False):
         return ExecutionRoute("research", "Find relevant evidence, distinguish direct observations from inference, and cite each supported answer.")
     if intent == "navigation":
         return ExecutionRoute(intent, "Prefer a uniquely relevant observed link and verify the destination.")
+    if not has_dataset and task_text_only(objective, options) and title_lookup(objective):
+        return ExecutionRoute("informational", "Look up the supplied title and verify the matching source.")
     return ExecutionRoute("general", "Follow the original requirements and available controls.")

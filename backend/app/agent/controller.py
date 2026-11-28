@@ -202,7 +202,8 @@ class Controller:
             "form": {k: live["form"][k] for k in ("method", "action")} if live["form"] else None,
         }
 
-    async def act(self, decision, options, approved=False, *, read_only=False, prefer_navigation=False):
+    async def act(self, decision, options, approved=False, *, read_only=False, prefer_navigation=False,
+                  open_search=False):
         self.check_page()
         self.prune_tabs()
         action = decision.decision
@@ -344,7 +345,7 @@ class Controller:
             try:
                 result = await self.engine.perform(
                     self.page, decision, locator, self.active, binding=binding,
-                    require_content=read_only and action == "CLICK",
+                    require_content=read_only and action == "CLICK" and not open_search,
                 )
                 result["semantic"] = {
                     "role": element["role"],

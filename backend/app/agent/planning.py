@@ -363,7 +363,7 @@ def evaluate(state, observation, evidence, dataset_count=0, artifact=False, veri
             node["kind"] == "research"
             and observation.get("url", "").startswith(("http://", "https://"))
             and source_verified is not False
-            and (not state.get("research_evidence_required") or bool(evidence))
+            and (not state.get("research_evidence_required") or bool(evidence) or verified)
             and (research_ready or verified)
             or node["kind"] == "collect"
             and (bool(evidence) if collection_complete is None else collection_complete)

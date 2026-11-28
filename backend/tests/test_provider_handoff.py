@@ -38,6 +38,35 @@ def successful(headers=None):
     )
 
 
+@pytest.mark.parametrize("rejection", ["size", "contract"])
+async def test_provider_recovers_before_handoff(providers, monkeypatch, rejection):
+    requests = []
+    original = httpx.AsyncClient
+
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            if rejection == "size":
+                return httpx.Response(413)
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"unexpected":true}'}}]})
+        return successful()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(respond), **kw))
+    model = ModelClient()
+    payload = {"objective": "Find the release notes", "current_page": {"text": "Fixture text. " * 900}}
+    result = await model.request("decide", payload, Reply, lambda *args: (1, 1))
+    assert result.status == "ok"
+    assert [request.url.host for request in requests] == ["groq.test", "groq.test"]
+    first, second = (json.loads(request.content) for request in requests)
+    if rejection == "size":
+        assert len(requests[1].content) < len(requests[0].content)
+        await model.request("decide", payload, Reply, lambda *args: (1, 1))
+        assert len(requests[2].content) <= len(requests[1].content)
+    else:
+        assert second["messages"][1:] == first["messages"][1:]
+        assert "status: missing" in second["messages"][0]["content"]
+
+
 async def test_new_task_respects_shared_cooldown_then_retries_groq(providers, monkeypatch):
     calls = []
     original = httpx.AsyncClient

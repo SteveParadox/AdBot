@@ -337,3 +337,26 @@ def test_ambiguous_custom_search_is_not_selected():
     page = {"url": "https://example.test/", "elements": [element]}
     assert search_interface(element) is None
     assert search_candidate(page, "List buying tools", Policy(["example.test"]), []) is None
+def test_title_lookup_and_search_controls_inside_dialogs():
+    from app.agent.discovery import search_candidate, search_opener
+    from app.agent.routing import select_route
+
+    objective = "Google Sheets Data Cleaning and Formulas"
+    policy = Policy(["example.test"])
+    assert select_route(objective, {}).name == "informational"
+    assert select_route("Delete Google Sheets Data", {}).name == "general"
+    observed = {
+        "url": "https://example.test/",
+        "elements": [{"element_id": "open", "role": "button", "name": "Search ⌘K", "actionable": True}],
+    }
+    decision, key = search_opener(observed, policy, [])
+    assert decision.target.element_id == "open"
+    assert search_opener(observed, policy, [key]) == (None, None)
+    observed.update(dialogs=[{"visible": True}], elements=[
+        {"element_id": "outside", "role": "searchbox", "type": "search", "tag": "input",
+         "actionable": True, "blocked_by_modal": True},
+        {"element_id": "inside", "role": "searchbox", "type": "search", "tag": "input", "actionable": True},
+    ])
+    search = search_candidate(observed, objective, policy, [], short_title=True)
+    assert search.target.element_id == "inside"
+    assert search.text == objective
