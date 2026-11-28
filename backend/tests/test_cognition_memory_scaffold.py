@@ -26,3 +26,17 @@ def test_query_validation():
         RetrievalQuery(MemoryScope("workspace", "website"), "question", 21)
     with pytest.raises(ValueError):
         MemoryScope("", "website")
+
+
+def test_malformed_memory_inputs_fail_closed():
+    scope = MemoryScope("workspace", "website")
+    now = datetime.now(timezone.utc)
+    for evidence in (["evidence"], ("evidence", "evidence"), ("",)):
+        with pytest.raises(ValueError):
+            MemoryRecord("id", scope, MemoryKind.EPISODIC, "summary", "task", evidence, now)
+    with pytest.raises(ValueError):
+        MemoryRecord("id", scope, "episodic", "summary", "task", ("evidence",), now)
+    with pytest.raises(ValueError):
+        RetrievalQuery(scope, "question", True)
+    with pytest.raises(ValueError):
+        MemoryScope("workspace ", "website")
